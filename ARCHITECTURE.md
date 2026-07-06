@@ -1,7 +1,15 @@
 # ALBION MVP — Архитектура и внутреннее устройство
 
-> ⚠️ Этот файл для LLM-разработчиков и технических участников проекта.
+> ⚠️ Этот файл для LLM-разработчиков и технических участников.
 > Пользовательскую документацию см. в README.md.
+
+---
+
+## 📋 Ревизия
+
+| Версия | Дата | Изменения |
+|--------|------|-----------|
+| 2.0 | 2026-07-06 | Scheduler → SQLite, Dead Letter Queue, Inline buttons, Kill Switch, WAL-mode, Idempotency TTL, NOTIFICATION_REQUESTED |
 
 ---
 
@@ -20,15 +28,15 @@
                   │           Event Bus (pub/sub)          │
                   │         src/events/bus.py              │
                   │                                       │
-                  │  Любой компонент подписывается на       │
-                  │  события и публикует свои              │
+                  │  + 10s timeout per handler             │
+                  │  + Dead Letter Queue при ошибках       │
                   └──────────────┬────────────────────────┘
                                  │
               ┌──────────────────┼──────────────────┐
               ▼                  ▼                  ▼
    ┌──────────────────┐  ┌──────────────┐  ┌──────────────┐
    │  Workflow Engine  │  │   AI Layer   │  │  Scheduler   │
-   │  (state machine)  │  │ (LLM клиент) │  │ (delayed job)│
+   │  (state machine)  │  │ (LLM клиент) │  │ (SQLite-based)│
    │ src/workflows/    │  │ src/ai/      │  │ src/scheduler/│
    └────────┬─────────┘  └──────┬───────┘  └──────┬───────┘
             │                   │                 │
@@ -49,8 +57,15 @@
                   │       SQLite — состояние системы      │
                   │  src/db/                              │
                   │                                       │
-                  │  users, conversations, incidents,     │
-                  │  notifications, workflows, leads      │
+                  │  WAL-mode + busy_timeout=5000         │
+                  │                                       │
+                  │  Таблицы:                             │
+                  │  • users, incidents, notifications    │
+                  │  • workflow_instances                 │
+                  │  • leads, conversations               │
+                  │  • scheduled_actions ★                │
+                  │  • dead_letter_queue ★                │
+                  │  • idempotency_keys (с TTL)           │
                   └───────────────────────────────────────┘
 ```
 
@@ -60,122 +75,133 @@
 
 **Файл:** `src/events/bus.py`
 
-Это **in-memory pub/sub** (не Redis — пока не нужно). Все компоненты общаются ТОЛЬКО через события. Нет прямых вызовов между модулями.
+In-memory pub/sub. Все компоненты общаются ТОЛЬКО через события.
 
-### События (src/events/types.py)
+### Ключевые изменения v2.0
+
+| Аспект | Было | Стало |
+|--------|------|-------|
+| **Таймаут** | ∞ (висел навсегда) | 10 секунд (`asyncio.wait_for`) |
+| **Ошибки** | логировались и терялись | → `SYSTEM_DLQ_ALERT` → DLQ handler записывает в БД |
+| **Dead Letter Queue** | нет | Таблица `dead_letter_queue` + алерт координатору |
+
+### События
 
 ```python
 @dataclass
 class Event:
-    type: str                    # "lesson.absent", "lead.new", ...
-    data: dict                   # полезная нагрузка
-    timestamp: str = ...        # ISO формат
-    idempotency_key: str | None  # для защиты от дублей
+    type: str
+    data: dict
+    timestamp: str = ...        # ISO 8601
+    idempotency_key: str | None
 
 class EventTypes:
-    LESSON_ABSENT = "lesson.absent"       # репетитор отметил отсутствие
-    LESSON_CANCELLED = "lesson.cancelled" # занятие отменено
-    MESSAGE_INCOMING = "message.incoming" # новое сообщение в Telegram
-    MESSAGE_CLASSIFIED = "message.classified"  # AI классифицировал intent
-    LEAD_NEW = "lead.new"                # новый лид создан
-    NOTIFICATION_SENT = "notification.sent"    # отправить сообщение
-    WORKFLOW_STARTED = "workflow.started"
-    WORKFLOW_COMPLETED = "workflow.completed"
-    WORKFLOW_FAILED = "workflow.failed"
-    SCHEDULER_TICK = "scheduler.tick"    # тик от планировщика
+    # Lessons
+    LESSON_ABSENT / LESSON_CANCELLED / LESSON_RESCHEDULED
+
+    # Messages
+    MESSAGE_INCOMING / MESSAGE_CLASSIFIED
+
+    # Leads
+    LEAD_NEW
+
+    # Notifications — честная стейт-машина
+    NOTIFICATION_REQUESTED     # "отправь это сообщение"
+    NOTIFICATION_DELIVERED     # "успешно отправлено"
+    NOTIFICATION_FAILED        # "ошибка отправки"
+
+    # Workflows
+    WORKFLOW_STARTED / WORKFLOW_COMPLETED / WORKFLOW_FAILED
+
+    # System
+    SCHEDULER_TICK
+    SYSTEM_DLQ_ALERT           # событие в DLQ
+    SYSTEM_KILL_SWITCH         # смена уровня kill switch
 ```
 
-### Как работает
+### Обработка ошибок
 
 ```python
-# Подписка
-bus.subscribe(EventTypes.LESSON_ABSENT, my_handler)
+async def publish(self, event: Event) -> None:
+    for handler in handlers:
+        try:
+            await asyncio.wait_for(handler(event), timeout=10.0)
+        except TimeoutError:
+            await self._publish_alert(event, handler, "Timeout 10s")
+        except Exception as e:
+            await self._publish_alert(event, handler, str(e))
 
-# Публикация
-await bus.publish(Event(EventTypes.LESSON_ABSENT, {"lesson_id": "..."}))
-
-# Wildcard — ловит всё
-bus.subscribe("*", log_all_events)
+async def _publish_alert(self, event, handler, error):
+    # Публикует SYSTEM_DLQ_ALERT → DLQ handler запишет в БД
+    await bus.publish(Event(SYSTEM_DLQ_ALERT, {...}))
 ```
-
-### Важно для LLM-разработчика
-- Хендлеры выполняются **последовательно** в порядке подписки
-- Если хендлер упал — другие продолжаются (try/except в bus.py)
-- Для параллельного выполнения — `asyncio.gather` (пока не нужно в MVP)
 
 ---
 
 ## ⚙️ Workflow Engine — state machine
 
-**Файлы:** `src/workflows/engine.py`, `src/workflows/absence.py`, `src/workflows/lead_capture.py`, `src/workflows/cancellation.py`
+**Файлы:** `src/workflows/engine.py`, `absence.py`, `lead_capture.py`, `cancellation.py`, `dlq_handler.py`
 
 ### Workflow Engine (engine.py)
 
-Управляет жизненным циклом бизнес-процессов.
+Управление жизненным циклом. **Отложенные действия теперь через SQLite.**
 
-**Методы:**
 ```python
-engine.start_workflow("absence_notification", data={})  # → workflow_id
-engine.complete_workflow(wf_id, result={})
-engine.fail_workflow(wf_id, error="...")
-engine.schedule_delayed_action(wf_id, delay_min=5, action="notify_parent", action_data={})
+class WorkflowEngine:
+    async def start_workflow(wtype, data) -> int
+    async def complete_workflow(wid, result)
+    async def fail_workflow(wid, error)
+    async def schedule_action(wid, delay_min, action, payload) -> str  # ★
 ```
-
-**Состояния:** `pending → running → waiting → completed/failed`
-
-**Как работает отложенное действие:**
-1. Workflow пишет в `data._delayed` массив `{execute_at, action, data, workflow_id}`
-2. Scheduler (src/scheduler/scheduler.py) тикает каждые 30 секунд
-3. Находит просроченные действия и публикует `SCHEDULER_TICK`
-4. Workflow handler получает тик и выполняет нужный action
 
 ### Сценарий #1: Absence → Notification (absence.py)
 
 ```
-1. Событие: LESSON_ABSENT {lesson_id, reported_by}
-2. AbsenceWorkflow.handle_lesson_absent():
-   a. Получает lesson из MeritHub/Airtable
-   b. Помечает absent в обоих сервисах
-   c. Получает student (parent_telegram_id)
-   d. Создаёт incident (статус: pending)
-   e. Создаёт workflow (статус: running)
-   f. Планирует notify_parent через 5 минут
+1. LESSON_ABSENT {lesson_id}
+   → Помечает absent в Airtable + MeritHub
+   → Создаёт incident (status: pending)
+   → Создаёт workflow (status: running)
+   → scheduled_actions: notify_parent через 5 мин
 
-3. Через 5 мин: SCHEDULER_TICK {action: "notify_parent"}
-   a. Проверяет — не resolved ли инцидент?
-   b. Если нет — публикует NOTIFICATION_SENT
-      "Миша отсутствовал на занятии. Всё ли в порядке? /ok 1"
-   c. Планирует escalate через 15 минут
+2. SCHEDULER_TICK {action: "notify_parent"}
+   → _check_incident_active(incident_id) ← ★ проверка!
+   → Если resolved/escalated → пропускаем
+   → NOTIFICATION_REQUESTED с callback_data для кнопки
 
-4. Вариант А: Родитель пишет /ok 1
-   → resolve_absence(1, "parent") → статус resolved
+3. Вариант А: Родитель нажал кнопку
+   → callback_query "resolve:1:nonce"
+   → resolve_absence(1, "parent")
+   → editMessageText — убираем кнопки
+   → workflow complete
 
-5. Вариант Б: Через 15 мин SCHEDULER_TICK {action: "escalate"}
-   → статус escalated
-   → координатору: "Эскалация: инцидент #1"
-   → workflow completed
+4. Вариант Б: 15 мин тишины
+   → SCHEDULER_TICK {action: "escalate"}
+   → _check_incident_active() ← ★ ещё одна проверка!
+   → NOTIFICATION_REQUESTED координатору
+   → workflow complete (escalated)
+
+5. Если хендлер упал:
+   → SYSTEM_DLQ_ALERT → DLQ handler
+   → workflow → failed
+   → координатору: "⚠️ Ошибка обработки"
 ```
 
 ### Сценарий #2: Lead Capture (lead_capture.py)
 
 ```
 1. Клиент пишет: "Ищу репетитора по математике"
-2. MESSAGE_INCOMING → AI.classify_intent() → {"intent": "lead"}
-3. MESSAGE_CLASSIFIED → LeadCaptureWorkflow.handle_classified()
-   a. AI.extract_entities() → {subject: "mathematics", grade_level: "9"}
-   b. LEAD_NEW → handle_lead_new()
-   c. Сохраняет в локальную БД + Airtable mock
-   d. NOTIFICATION_SENT → координатору
+2. MESSAGE_INCOMING → AI.classify_intent() → intent=lead
+3. MESSAGE_CLASSIFIED → AI.extract_entities() → {subject, grade}
+4. LEAD_NEW → Сохраняет в локальную БД + Airtable mock
+5. NOTIFICATION_REQUESTED → координатору
 ```
 
 ### Сценарий #3: Cancellation (cancellation.py)
 
 ```
-1. Клиент пишет об отмене → AI.classify → {"intent": "cancellation"}
-2. LESSON_CANCELLED → handle_cancelled()
-   a. Проверка: за сколько часов до урока?
-   b. Отмена в обоих сервисах
-   c. Уведомление репетитору + координатору
+1. Клиент пишет об отмене → AI.classify → intent=cancellation
+2. LESSON_CANCELLED → отмена в сервисах
+3. NOTIFICATION_REQUESTED → репетитору + координатору
 ```
 
 ---
@@ -184,34 +210,20 @@ engine.schedule_delayed_action(wf_id, delay_min=5, action="notify_parent", actio
 
 **Файлы:** `src/ai/client.py`, `src/ai/classifier.py`
 
-### LLMClient (client.py)
-
-Абстракция над OpenRouter API. **Ключевая особенность — mock fallback.**
+### LLMClient
 
 ```python
 class LLMClient:
-    async def extract_entities(text) -> dict
-        # Извлекает: subject, grade_level, goal, is_lead
-        # Из сообщения: "Ищу репетитора по математике для 9 класса"
-        #             → {"subject": "mathematics", "grade_level": "9", "is_lead": true}
-
-    async def classify_intent(text) -> dict
-        # Определяет: intent (lead/cancellation/absence_report/question/other)
-        # confidence (0-1)
+    async def extract_entities(text) -> dict      # subject, grade, goal, is_lead
+    async def classify_intent(text) -> dict        # intent + confidence
 ```
 
-**Когда AI в деле:**
-- Классификация намерений входящих сообщений
-- Извлечение сущностей для заявок
-- (в будущем) Генерация отчётов, перевод, ответы на вопросы
+**Mock-режим** (без `OPENROUTER_API_KEY`):
+- По ключевым словам возвращает предопределённые JSON
+- Все тесты проходят без интернета
 
-**Когда AI НЕ в деле:**
-- Расчёт комиссий
-- Сверка оплат
-- Workflow transitions
-- Бизнес-правила
-
-**Mock-режим:** если `OPENROUTER_API_KEY` не указан — возвращает предопределённые JSON-ответы по ключевым словам. Все тесты проходят без интернета.
+**Когда AI в деле:** классификация, извлечение данных, (в будущем) генерация отчётов
+**Когда AI НЕ в деле:** расчёты, workflow-переходы, бизнес-правила
 
 ---
 
@@ -219,34 +231,83 @@ class LLMClient:
 
 **Файлы:** `src/db/models.py`, `src/db/migrations.py`, `src/db/repository.py`
 
-### Схема
+### Прагмы (v2.0)
 
 ```sql
-users           -- telegram_id, role, name, language
-conversations   -- user_id, role, content (история для AI)
-workflow_instances  -- workflow_type, state, data (JSON)
-incidents       -- lesson_ref, student/tutor/coordinator, type, status
-notifications   -- recipient, type, channel, status
-leads           -- source, raw_message, extracted_data (JSON), status
-idempotency_keys -- key, handler (защита от дублей)
+PRAGMA journal_mode=WAL;         -- конкурентные чтения/записи
+PRAGMA busy_timeout=5000;        -- ждать до 5с вместо ошибки lock
+PRAGMA synchronous=NORMAL;       -- баланс скорости/безопасности
+```
+
+### Ключевые таблицы
+
+```sql
+-- ★ НОВАЯ: отложенные действия (вместо in-memory)
+CREATE TABLE scheduled_actions (
+    id TEXT PRIMARY KEY,          -- UUID[:8]
+    workflow_id INTEGER,
+    execute_at TIMESTAMP NOT NULL, -- когда выполнить
+    action TEXT NOT NULL,          -- "notify_parent" / "escalate"
+    payload TEXT DEFAULT '{}',    -- JSON
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending','running','done','failed')),
+    attempts INTEGER DEFAULT 0,   -- ≤ 3 попытки
+    last_error TEXT,
+    locked_until TIMESTAMP,       -- для claim-механизма
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_scheduled_pending ON scheduled_actions(status, execute_at);
+
+-- ★ НОВАЯ: мёртвые события
+CREATE TABLE dead_letter_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,          -- "event_bus" / "scheduler"
+    event_type TEXT,
+    payload TEXT DEFAULT '{}',
+    error TEXT NOT NULL,
+    attempts INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- idempotency keys (авто-чистка через 24 часа)
+CREATE TABLE idempotency_keys (
+    key TEXT PRIMARY KEY,
+    handler TEXT NOT NULL,
+    response TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_idempotency_created ON idempotency_keys(created_at);
 ```
 
 ### Repository Pattern
 
-Каждая таблица = отдельный класс репозитория:
-
 ```python
-class UserRepository(Repository):
-    async def get_by_telegram_id(tg) -> dict | None
-    async def create(tg, role, name, **kw) -> int
+class ScheduledActionRepository(Repository):
+    async def create(wid, execute_at, action, payload) -> str
+    async def claim_pending(limit=20) -> list[dict]  # ★ атомарный захват
+    async def mark_done(aid)
+    async def mark_failed(aid, error)
+    async def requeue(aid)              # после временной ошибки
+    async def cleanup_old(hours=24)      # удаление выполненных
 
-class IncidentRepository(Repository):
-    async def create(**kw) -> int
-    async def get(id) -> dict | None
-    async def update_status(id, status, resolution)
+class DeadLetterQueueRepository(Repository):
+    async def put(source, event_type, payload, error) -> int
+    async def count() -> int
 ```
 
-Важно: все репозитории принимают `db_path: str`. По умолчанию — `albion.db`, в тестах — временный файл.
+### Claim-механизм (защита от дублей при падениях)
+
+```sql
+-- Шаг 1: выбираем кандидатов
+SELECT id FROM scheduled_actions
+WHERE status='pending' AND execute_at <= datetime('now') AND attempts < 3
+LIMIT 20;
+
+-- Шаг 2: атомарно забираем каждый
+UPDATE scheduled_actions
+SET status='running', attempts=attempts+1, locked_until=datetime('now','+2 minutes')
+WHERE id=? AND status='pending';
+-- Если rowcount == 1 — мы забрали, выполняем action
+```
 
 ---
 
@@ -254,37 +315,23 @@ class IncidentRepository(Repository):
 
 **Файлы:** `src/integrations/`
 
-### base.py — Датаклассы
+### Датаклассы (base.py)
 
 ```python
-@dataclass
-class Tutor:       id, name, subjects, telegram_id
-@dataclass
-class Student:     id, name, grade_level, parent_telegram_id
-@dataclass
-class Lesson:      id, student_id, tutor_id, subject, start/end_time, status
-@dataclass
-class Lead:        id, raw_message, extracted_data, status
+@dataclass class Tutor:     id, name, subjects, telegram_id
+@dataclass class Student:   id, name, grade_level, parent_telegram_id
+@dataclass class Lesson:    id, student_id, tutor_id, subject, start/end, status
+@dataclass class Lead:      id, raw_message, extracted_data, status
 ```
 
-### MockAirtableService
+### MockAirtableService / MockMeritHubService
 
-In-memory dict'ы с seed-данными (3 tutor'а, 2 student'а, 2 lesson'а).
+In-memory с seed-данными (3 tutor, 2 student, 2 lesson). Методы: `get_*`, `mark_absent`, `cancel_lesson`, `check_low_balance`.
 
-Методы: `get_tutor`, `get_student`, `get_lesson`, `mark_absent`, `cancel_lesson`, `create_lead`
-
-### MockMeritHubService
-
-In-memory с seed: 1 урок, 2 баланса (150 и 20).
-
-Методы: `get_lesson`, `mark_absent`, `cancel_lesson`, `get_balance`, `check_low_balance`
-
-### Как заменить на реальные сервисы
-
+**Замена на реальные сервисы:**
 1. Создать `src/integrations/airtable_real.py`
-2. Реализовать те же методы, но через REST API
-3. Заменить `MockAirtableService()` на `RealAirtableService()` в workflows
-4. (В идеале) Ввести DI/abstract classes — но для MVP норм и прямое создание
+2. Реализовать те же методы через REST API
+3. Заменить импорт в workflows
 
 ---
 
@@ -292,55 +339,116 @@ In-memory с seed: 1 урок, 2 баланса (150 и 20).
 
 **Файл:** `src/bot/handlers.py`
 
-Использует `python-telegram-bot` v21+.
+Библиотека: `python-telegram-bot` v21+.
 
 ### Команды
 
+| Команда | Описание |
+|---------|----------|
+| `/start` | Приветствие + справка |
+| `/status` | Состояние: AI, БД, Kill Switch |
+| `/absent <ID>` | Отметить отсутствие ученика |
+| `/mock_absent` | ★ Демо: absent через 10 секунд |
+| `/ok <ID>` | ★ Запасной способ закрыть инцидент |
+| `/kill_switch <0|1|2>` | ★ Управление отправкой |
+| `/replay` | ★ (заглушка) перезапуск события из DLQ |
+
+### Kill Switch (v2.0)
+
 ```python
-/start      → приветствие + справка
-/status     → состояние системы (AI: mock/live, DB: ok, время)
-/absent ID  → публикует LESSON_ABSENT
-/ok ID      → вызывает resolve_absence(incident_id)
+_kill_switch_level = 2  # 0=выкл, 1=только координаторам, 2=полностью
+
+def can_send(telegram_id: str | None) -> bool:
+    if level == 2: return True
+    if level == 1 and telegram_id and "coordinator" in str(telegram_id): return True
+    return False
 ```
 
-### Message handler
+### Inline Buttons (v2.0)
 
-Любое текстовое сообщение → `MESSAGE_INCOMING` → AI классифицирует.
-
-### Notification handler
-
-Подписан на `NOTIFICATION_SENT` → отправляет сообщение пользователю через `app.bot.send_message()`.
-
-### Polling vs Webhook
+Вместо `/ok 1` — под сообщением кнопка `✅ Всё в порядке`.
 
 ```python
-# src/main.py
-if webhook:
-    await app.run_webhook(listen="0.0.0.0", port=8443)
-else:
-    await app.run_polling(drop_pending_updates=True)
+# Формирование (в absence.py)
+callback_data = f"resolve:{incident_id}:{nonce}"
+kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Всё в порядке", callback_data=callback_data)]])
+
+# Обработка (в bot/handlers.py)
+async def handle_callback(upd, ctx):
+    data = query.data  # "resolve:1:abc123"
+    resolve_absence(inc_id)
+    await query.edit_message_text("✅ Всё в порядке! 🙌")
+```
+
+**Особенности:**
+- После нажатия — `editMessageText` убирает кнопки (нельзя нажать дважды)
+- Nonce в callback_data для базовой защиты от подделки
+- Если инцидент уже resolved — `query.answer()` с "уже закрыто"
+
+### NOTIFICATION_REQUESTED → NOTIFICATION_DELIVERED (v2.0)
+
+```python
+# Публикация запроса
+await bus.publish(Event(NOTIFICATION_REQUESTED, {
+    "telegram_id": parent_tg, "message": "...",
+    "callback_data": "resolve:1:abc",
+}))
+
+# В bot/handlers.py — реальная отправка
+async def notif_handler(event):
+    if not can_send(tg): return  # kill switch
+    if callback_data:
+        kb = InlineKeyboardMarkup(...)
+        await app.bot.send_message(chat_id=tg, reply_markup=kb)
+    else:
+        await app.bot.send_message(chat_id=tg)
+    # После успеха
+    await bus.publish(Event(NOTIFICATION_DELIVERED, {...}))
+    # При ошибке
+    await bus.publish(Event(NOTIFICATION_FAILED, {...}))
+```
+
+### DLQ Alert → координатору
+
+```python
+# В bot/handlers.py
+async def dlq_alert_handler(event):
+    await app.bot.send_message(
+        chat_id="coordinator_1",
+        text=f"⚠️ *Системный алерт:* необработанное событие\n"
+             f"Тип: `{event_type}`\nХендлер: `{handler}`\nОшибка: {error}",
+    )
+
+bus.subscribe(SYSTEM_DLQ_ALERT, dlq_alert_handler)
 ```
 
 ---
 
-## ⏰ Scheduler
+## ⏰ Scheduler (SQLite-based)
 
 **Файл:** `src/scheduler/scheduler.py`
 
-In-memory список отложенных действий. Тикает каждые 30 секунд.
+**Больше никаких in-memory списков.** Все отложенные задачи переживают рестарт.
 
 ```python
-_scheduled = [
-    {
-        "id": "act_0_1748950000.0",
-        "execute_at": 1748950000.0,  # unix timestamp
-        "action_type": "notify_parent",
-        "data": {"workflow_id": 1, "incident_id": 1}
-    }
-]
+async def scheduler_loop(interval=30):
+    while True:
+        tasks = await ScheduledActionRepository().claim_pending(limit=20)
+        for task in tasks:
+            payload = json.loads(task["payload"])
+            await bus.publish(Event(SCHEDULER_TICK, {
+                "action": task["action"],
+                "workflow_id": task["workflow_id"],
+                "data": payload,
+            }))
+            # Если тик упал — action останется running
+            # и через locked_until (2 мин) reaper его вернёт в pending
+        await asyncio.sleep(interval)
 ```
 
-При тике: `SCHEDULER_TICK {action, data, workflow_id}` → workflow handler получает и исполняет.
+**Безопасность:** `attempts < 3` — после трёх неудач статус → `failed`, запись → DLQ.
+
+**Cleanup:** фоновая задача раз в час удаляет `done` задачи старше 24ч.
 
 ---
 
@@ -348,8 +456,7 @@ _scheduled = [
 
 **Файл:** `src/utils/logging.py`
 
-Два потока:
-- **stdout** — человекочитаемый (`2026-07-03 12:34:56 | INFO | workflows.absence | ...`)
+- **stdout** — человекочитаемый
 - **albion.log** — JSON-structured (ротация 1MB × 5 файлов)
 
 ```json
@@ -360,45 +467,39 @@ _scheduled = [
 
 ## 🔒 Безопасность (MVP)
 
-1. **Idempotency keys** — каждый webhook/команда может иметь ключ; повторные вызовы игнорируются
-2. **Rate limiting** — 1 запрос/сек на пользователя (в middleware)
-3. **Pydantic validation** — все входные данные валидируются
-4. **No secrets in code** — `.env`, в `.gitignore`
-5. **Prompt injection** — системный промпт + выходная валидация (базовая)
+1. **Kill Switch** — 3 уровня (0/1/2). Выкатываешь фичу с level=1, проверяешь час, переключаешь на 2
+2. **Idempotency keys** — с TTL 24 часа, авто-чистка раз в час
+3. **Claim-механизм** — атомарный захват задач, защита от дублей
+4. **Dead Letter Queue** — упавшие события не теряются
+5. **Rate limiting** — 1 req/sec (в middleware)
+6. **Проверка статуса** — перед каждым действием `_check_incident_active()`
+7. **WAL-mode** — нет `database is locked` при конкурентном доступе
 
 ---
 
 ## 🧪 Тестирование
 
-**Файлы:** `tests/`
-
-### Структура
+**18 тестов** — все проходят.
 
 | Файл | Тестов | Что проверяет |
-|------|--------|--------------|
-| test_event_bus.py | 4 | pub/sub, wildcard, исключения |
-| test_absence_workflow.py | 4 | создание инцидента, mark absent, resolve |
+|------|--------|---------------|
+| test_event_bus.py | 4 | pub/sub, wildcard, исключения не ломают шину |
+| test_absence_workflow.py | 5 | создание инцидента, mark absent, resolve, check_incident_active |
 | test_lead_capture.py | 2 | создание лида, пустое сообщение |
 | test_cancellation.py | 2 | отмена урока, несуществующий урок |
-| test_mocks.py | 5 | Airtable: tutor, student, mark_absent, lead; MeritHub: lesson, absent, balance |
+| test_mocks.py | 5 | Airtable/MeritHub корректность |
 
 ### Паттерн тестирования
 
 ```python
 @pytest.mark.asyncio
 async def test_absence_creates_incident(db_path):
-    # 1. Создаём workflow с временной БД
+    # db_path — temp .db с инициализированной схемой
     wf = AbsenceWorkflow(db_path)
-
-    # 2. Публикуем событие (не через bus, а напрямую)
-    await wf.handle_lesson_absent(Event(EventTypes.LESSON_ABSENT, {...}))
-
-    # 3. Проверяем состояние в БД
+    await wf.handle_lesson_absent(Event(LESSON_ABSENT, {...}))
     inc = await IncidentRepository(db_path).get(1)
     assert inc["status"] == "pending"
 ```
-
-**Фикстура db_path:** создаёт временный файл .db, инициализирует схему, после теста удаляет.
 
 ---
 
@@ -407,16 +508,16 @@ async def test_absence_creates_incident(db_path):
 ### Локально (polling)
 
 ```bash
-python -m src.main
-# или
 bash scripts/run.sh
+# или
+python -m src.main
 ```
 
 ### VPS/сервер (webhook)
 
 ```bash
 python -m src.main --webhook
-# нужен TELEGRAM_WEBHOOK_URL в .env (публичный HTTPS URL)
+# нужен TELEGRAM_WEBHOOK_URL (публичный HTTPS URL)
 ```
 
 ### Docker
@@ -427,69 +528,60 @@ docker-compose up -d
 
 ---
 
+## 🔧 Быстрый старт для LLM-разработчика
+
+```bash
+git clone <repo> && cd albion-mvp
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+# создать бота у @BotFather, получить токен
+echo "TELEGRAM_BOT_TOKEN=ваш_токен" >> .env
+python -m src.main
+# в Telegram: /status, /mock_absent, /kill_switch
+```
+
+---
+
 ## 🧩 Как добавить новый workflow
 
-1. Создать `src/workflows/new_feature.py`
-2. В классе-воркфлоу определить хендлеры событий
-3. В `register_handlers()` подписаться на события
-4. Вызвать `register_handlers()` в `src/main.py`
-5. Написать тесты в `tests/`
-
-**Пример — добавление Payment Workflow:**
-
 ```python
-# workflows/payment.py
-class PaymentWorkflow:
-    async def handle_payment(self, event):
-        # логика проверки оплаты
-        ...
+# 1. src/workflows/my_feature.py
+class MyWorkflow:
+    async def handle_event(self, event):
+        # логика
+        await engine.schedule_action(wid, delay_min, "my_action", {})
 
 async def register_handlers():
-    bus.subscribe("payment.received", PaymentWorkflow().handle_payment)
-```
+    bus.subscribe(EventTypes.SOME_EVENT, MyWorkflow().handle_event)
 
-```python
-# main.py — добавить строку
-from src.workflows.payment import register_handlers as reg_payment
-await reg_payment()
+# 2. src/main.py
+from src.workflows.my_feature import register_handlers as reg_my
+await reg_my()
+
+# 3. tests/test_my_feature.py
+# 4. pytest tests/ -v
 ```
 
 ---
 
-## 💡 Key Decisions для LLM-разработчика
+## 📈 Roadmap
 
-### Почему Event Bus, а не прямой вызов?
-
-- **Тестируемость**: каждый handler можно вызвать изолированно
-- **Расширяемость**: новый handler = subscribe, не трогая старый код
-- **Graceful degradation**: при падении одного компонента остальные работают
-
-### Почему mock'и, а не реальные API?
-
-- MVP должен работать без интернета и ключей
-- Разработка и тестирование не зависят от внешних сервисов
-- Замена mock → real — это просто импорт другого класса
-
-### Почему LLM — сменяемый слой, а не ядро?
-
-- Стоимость: не платить за токены на бизнес-логике
-- Доступность: система работает даже при падении API
-- Гибкость: Claude ↔ GPT ↔ локальная Llama без переписывания
-
-### Почему SQLite, а не PostgreSQL?
-
-- MVP: zero config, один файл, легко переносить
-- На 1000 клиентов и 10000 занятий SQLite справляется отлично
-- Миграция на Postgres = поменять строчку в config.py
+| Этап | Содержание |
+|------|-----------|
+| ✅ MVP (сейчас) | Scheduler→SQLite, DLQ, Inline buttons, Kill Switch, 18 тестов |
+| 🟡 Ближайшее | Замена mock'ов на реальные API (Airtable, MeritHub, Xero) |
+| 🟡 | Web Dashboard для координатора |
+| 🔵 Будущее | PostgreSQL, Redis, CI/CD |
 
 ---
 
-## 📈 Что дальше (пост-MVP)
+## 💡 Key Decisions
 
-1. Замена mock'ов на реальные API (Airtable, MeritHub, Xero)
-2. Inline-кнопки в Telegram (вместо `/ok 1`)
-3. Веб-дашборд для координатора
-4. PostgreSQL вместо SQLite
-5. Redis вместо in-memory scheduler
-6. CI/CD (GitHub Actions — тесты)
-7. OpenRouter с реальным ключом
+| Решение | Почему |
+|---------|--------|
+| **Scheduler в SQLite, не Redis** | Нет внешних зависимостей в MVP, простота деплоя |
+| **Event Bus последовательный** | Нет race conditions с SQLite, легче дебажить |
+| **LLM — сменяемый слой** | Экономия токенов, graceful degradation при падении API |
+| **Inline buttons вместо /ok** | UX: родители не пишут команды вручную |
+| **Kill Switch трехуровневый** | Безопасный деплой: протестировать на координаторах → включить всем |
+| **Mock'и без DI** | MVP: прямая зависимость проще, чем контейнеры |

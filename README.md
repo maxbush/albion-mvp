@@ -1,8 +1,9 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-MVP-yellow" alt="Status">
   <img src="https://img.shields.io/badge/python-3.13-blue" alt="Python">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  <img src="https://img.shields.io/badge/tests-18/18-green" alt="Tests">
   <img src="https://img.shields.io/badge/LLM-Claude%20%7C%20GPT%20%7C%20any-orange" alt="LLM">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
 
 <h1 align="center">🤖 ALBION MVP</h1>
@@ -10,17 +11,31 @@
 
 ---
 
-## 📋 Что это
+## 🎯 Что это
 
 ALBION автоматизирует **повторяющиеся задачи координатора** репетиторских услуг:
 
 | Сценарий | Приоритет | Экономия времени |
 |----------|-----------|-----------------|
-| 🔔 **Оповещения о неявке** ученика → родителю | №1 | ~4 часа/день |
+| 🔔 **Оповещения о неявке** ученика → родителю (с кнопкой подтверждения) | №1 | ~4 часа/день |
 | 📥 **Захват заявок** (leads) с AI-извлечением | №2 | ~15 мин на заявку |
 | 🔄 **Отмена/перенос** занятий | №3 | ~10 мин на обращение |
 
-## 🏗 Архитектура
+## ✨ Ключевые фичи v2.0
+
+| Фича | Описание |
+|------|----------|
+| 🛡 **Scheduler в SQLite** | Никаких in-memory списков. Перезапуск бота не теряет отложенные уведомления |
+| ⚰️ **Dead Letter Queue** | Упавшие события не теряются — пишутся в БД, координатор получает алерт |
+| 🔘 **Inline кнопки** | Вместо `/ok 1` — кнопка *"✅ Всё в порядке"* под сообщением |
+| 🔌 **Kill Switch** | 3 уровня: 0=всё выкл, 1=только координаторам, 2=полностью. Безопасный деплой |
+| 📨 **Честные статусы уведомлений** | `requested → delivered / failed` |
+| 🗄 **WAL-mode SQLite** | Нет ошибок `database is locked` при конкурентном доступе |
+| 🎬 **Демо-режим** | `/mock_absent` — absent через 10 секунд вместо 5 минут |
+
+---
+
+## 🏗 Архитектура (схема)
 
 ```
          Telegram Bot (Polling / Webhook)
@@ -28,15 +43,17 @@ ALBION автоматизирует **повторяющиеся задачи к
                ┌─────▼─────┐
                │  Event    │
                │   Bus     │◄──── AI Layer (LLM via OpenRouter)
+               │ 10s timeout│      Mock fallback без ключа
+               │  + DLQ    │
                └─────┬─────┘
                      │
           ┌──────────┼──────────┐
           ▼          ▼          ▼
    ┌──────────┐ ┌────────┐ ┌────────┐
    │ Workflow │ │Scheduler│ │  Logs  │
-   │ Handlers │ │(delayed)│ │ JSON   │
-   └────┬─────┘ └────────┘ └────────┘
-        │
+   │ Handlers │ │SQLite   │ │ JSON   │
+   └────┬─────┘ │ based   │ └────────┘
+        │       └────────┘
    ┌────▼────────────────────────────┐
    │      Integration Layer          │
    │  Airtable (mock) │ MeritHub     │
@@ -44,18 +61,20 @@ ALBION автоматизирует **повторяющиеся задачи к
    └─────────────────────────────────┘
 ```
 
-**Ключевая идея:** LLM — **сменяемый слой**, не ядро. Без OpenAI/Claude всё работает.
+**LLM — сменяемый слой.** Без OpenAI/Claude всё работает (mock-режим).
 
-## 🚀 Быстрый старт (локально)
+---
+
+## 🚀 Быстрый старт
 
 ```bash
 # 1. Склонировать
 git clone <repo> && cd albion-mvp
 
-# 2. Запустить (автоматически установит всё)
+# 2. Запустить (автоматически)
 bash scripts/run.sh
 # Или руками:
-python3 -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # 3. Создать бота у @BotFather, получить токен
@@ -66,14 +85,29 @@ echo "TELEGRAM_BOT_TOKEN=ваш_токен" >> .env
 python -m src.main
 ```
 
+---
+
 ## 🤖 Команды бота
 
 | Команда | Описание | Пример |
 |---------|----------|--------|
 | `/start` | Приветствие и справка | — |
-| `/status` | Состояние системы | — |
-| `/absent ID` | Отметить отсутствие | `/absent lesson_1` |
-| `/ok ID` | Подтвердить что всё ок | `/ok 1` |
+| `/status` | Состояние системы (AI, БД, Kill Switch) | — |
+| `/absent ID` | Отметить отсутствие ученика | `/absent lesson_1` |
+| `/mock_absent` | 🎬 Демо: absent через 10 секунд | — |
+| `/ok ID` | Закрыть инцидент (если нет кнопки) | `/ok 1` |
+| `/kill_switch 0\|1\|2` | 🔌 Режим отправки сообщений | `/kill_switch 1` |
+
+**Inline-кнопки:** при уведомлении родителю бот прикрепляет кнопку *"✅ Всё в порядке"* — нажатие сразу закрывает инцидент.
+
+---
+
+## 🧪 Тесты
+
+```bash
+pytest tests/ -v
+# 18 passed ✅
+```
 
 ## 📁 Структура проекта
 
@@ -82,56 +116,54 @@ albion-mvp/
 ├── src/
 │   ├── main.py              # 🚀 Точка входа
 │   ├── config.py            # ⚙️ Конфиг из .env
-│   ├── bot/handlers.py      # 💬 Telegram /start /absent /ok
-│   ├── events/bus.py        # 📡 Event Bus (pub/sub)
-│   ├── events/types.py      # 📦 Типы событий
+│   ├── bot/handlers.py      # 💬 Telegram + inline кнопки + kill switch
+│   ├── events/
+│   │   ├── bus.py           # 📡 Event Bus (10s timeout, DLQ)
+│   │   └── types.py         # 📦 Event + EventTypes
 │   ├── workflows/
-│   │   ├── engine.py        # ⚙️ Workflow Engine
+│   │   ├── engine.py        # ⚙️ Workflow Engine (SQLite scheduler)
 │   │   ├── absence.py       # Сценарий #1: неявка → уведомление
 │   │   ├── lead_capture.py  # Сценарий #2: захват заявок
-│   │   └── cancellation.py  # Сценарий #3: отмена/перенос
+│   │   ├── cancellation.py  # Сценарий #3: отмена/перенос
+│   │   └── dlq_handler.py   # ⚰️ Dead Letter Queue handler
 │   ├── ai/
 │   │   ├── client.py        # 🧠 OpenRouter + mock fallback
 │   │   └── classifier.py    # 🏷 Классификация намерений
 │   ├── integrations/        # 🔌 Mock Airtable, MeritHub
-│   ├── db/                  # 🗄 SQLite + Repository Pattern
-│   └── scheduler/           # ⏰ Планировщик
-├── tests/                   # 🧪 17 тестов
-├── scripts/
-│   ├── run.sh               # 🚀 Быстрый старт (Linux/Mac)
-│   └── run.bat              # 🚀 Быстрый старт (Windows)
+│   ├── db/
+│   │   ├── models.py        # 🗄 Schema (WAL, scheduled_actions, DLQ)
+│   │   ├── repository.py    # 📦 Repository Pattern
+│   │   └── migrations.py    # 📦 Инициализация
+│   └── scheduler/           # ⏰ SQLite-based scheduler
+├── tests/                   # 🧪 18 тестов
+├── scripts/                 # 🚀 run.sh (Linux) + run.bat (Windows)
 ├── docker-compose.yml       # 🐳 Для прода
 ├── Dockerfile               # 🐳 Для прода
-└── .env.example             # 🔑 Шаблон конфига
+├── ARCHITECTURE.md          # 📖 Для LLM-разработчиков
+└── README.md                # 📖 Этот файл
 ```
 
-## 🧪 Запуск тестов
-
-```bash
-pytest tests/ -v
-```
-
-## 🐳 Для прода (когда будет готов)
+## 🐳 Для прода
 
 ```bash
 docker-compose up -d
 ```
 
-## 🛡 Безопасность (в MVP)
+## 🛡 Безопасность
 
-- ✅ Idempotency keys — защита от дублей webhook
-- ✅ Rate limiting — 1 req/sec
-- ✅ Pydantic валидация всех входов
-- ✅ Prompt injection protection
-- ✅ Mock-режим без API-ключей
-- ✅ Structured JSON-логи для анализа
+- ✅ **Scheduler в SQLite** — отложенные задачи переживают рестарт
+- ✅ **Dead Letter Queue** — ни одно событие не теряется
+- ✅ **Kill Switch (3 уровня)** — безопасный деплой новых фич
+- ✅ **Inline кнопки с nonce** — защита от повторных нажатий
+- ✅ **Idempotency TTL** — авто-чистка ключей через 24ч
+- ✅ **WAL-mode** — нет `database is locked`
+- ✅ **Mock-режим** — без API-ключей всё работает
 
-## 📊 Логирование
+## 📊 Логи
 
-- **stdout** — человекочитаемые логи
-- **albion.log** — JSON structured logs (1 MB ротация, 5 файлов)
+- **stdout** — человекочитаемые
+- **albion.log** — JSON structured (ротация 1MB × 5 файлов)
 
-Пример лога:
 ```json
-{"timestamp": "2026-07-03T12:34:56Z", "level": "INFO", "module": "workflows.absence", "message": "Absence workflow: lesson=lesson_1 inc=1 wf=1"}
+{"timestamp": "2026-07-03T12:34:56Z", "level": "INFO", "module": "workflows.absence", "message": "Absence: lesson=lesson_1 inc=1 wf=1"}
 ```
