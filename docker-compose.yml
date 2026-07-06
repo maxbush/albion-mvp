@@ -1,0 +1,9 @@
+version: "3.9"
+services:
+  albion:
+    build: .
+    env_file: .env
+    volumes:
+      - ./albion.db:/app/albion.db
+      - ./albion.log:/app/albion.log
+    restart: unless-stopped
