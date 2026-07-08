@@ -22,6 +22,8 @@ from src.scheduler.scheduler import scheduler_loop
 
 logger = logging.getLogger(__name__)
 
+MAX_RESTARTS_PER_MIN = 3
+
 
 async def register_all():
     await rdq()
@@ -43,21 +45,32 @@ async def cleanup_idempotency():
 
 
 async def scheduler_wrapper():
+    """Запускает scheduler с авто-перезапуском и rate limit."""
+    restarts = []
     while True:
         try:
             await scheduler_loop(30)
         except Exception as e:
-            logger.error("Scheduler crashed: %s, restart in 5s", e)
+            now = asyncio.get_event_loop().time()
+            restarts = [t for t in restarts if t > now - 60]
+            if len(restarts) >= MAX_RESTARTS_PER_MIN:
+                logger.critical("Scheduler crashed %d times in 60s. Giving up.", len(restarts) + 1)
+                raise
+            restarts.append(now)
+            logger.error("Scheduler crashed: %s, restart in 5s (restart #%d/min)", e, len(restarts))
             await asyncio.sleep(5)
 
 
 async def main(webhook: bool = False):
     setup_logging()
-    logger.info("Start %s (webhook=%s)", settings.app_name, webhook)
+    logger.info("Start %s (webhook=%s, demo=%s)", settings.app_name, webhook, settings.albion_demo_mode)
 
     await init_db()
     await register_all()
-    await seed_demo_data()
+    if settings.albion_demo_mode:
+        await seed_demo_data()
+    else:
+        logger.info("Demo mode off — skipping seed_demo_data")
 
     app = ApplicationBuilder().token(settings.telegram_bot_token).build()
     setup_handlers(app)

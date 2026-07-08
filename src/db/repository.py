@@ -1,5 +1,5 @@
 import json, aiosqlite, uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 class Repository:
     def __init__(self, db_path: str = "albion.db"):
@@ -24,8 +24,10 @@ class UserRepository(Repository):
     async def get_by_telegram_id(self, tg: str) -> dict | None:
         return await self._fetchone("SELECT * FROM users WHERE telegram_id = ?", (tg,))
     async def create(self, tg: str, role: str, name: str, **kw) -> int:
-        return (await self._execute("INSERT INTO users (telegram_id,role,name,username,phone,language) VALUES (?,?,?,?,?,?)",
-            (tg, role, name, kw.get("username"), kw.get("phone"), kw.get("language","ru")))).lastrowid
+        return (await self._execute(
+            "INSERT INTO users (telegram_id,role,name,username,phone,language) VALUES (?,?,?,?,?,?)",
+            (tg, role, name, kw.get("username"), kw.get("phone"), kw.get("language","ru"))
+        )).lastrowid
 
 class IncidentRepository(Repository):
     async def create(self, **kw) -> int:
@@ -42,8 +44,10 @@ class IncidentRepository(Repository):
 
 class NotificationRepository(Repository):
     async def create(self, rid: int, type_: str, content: str, channel: str = "telegram") -> int:
-        return (await self._execute("INSERT INTO notifications (recipient_id,type,channel,content,status) VALUES (?,?,?,?,'queued')",
-            (rid, type_, channel, content))).lastrowid
+        return (await self._execute(
+            "INSERT INTO notifications (recipient_id,type,channel,content,status) VALUES (?,?,?,?,'queued')",
+            (rid, type_, channel, content)
+        )).lastrowid
     async def mark_sent(self, nid: int) -> None:
         await self._execute("UPDATE notifications SET status='sent', sent_at=? WHERE id=?",
             (datetime.now(timezone.utc).isoformat(), nid))
@@ -52,21 +56,26 @@ class NotificationRepository(Repository):
 
 class WorkflowRepository(Repository):
     async def create(self, wtype: str, state: str = "pending", data: dict | None = None) -> int:
-        return (await self._execute("INSERT INTO workflow_instances (workflow_type,state,data) VALUES (?,?,?)",
-            (wtype, state, json.dumps(data or {})))).lastrowid
+        return (await self._execute(
+            "INSERT INTO workflow_instances (workflow_type,state,data) VALUES (?,?,?)",
+            (wtype, state, json.dumps(data or {}))
+        )).lastrowid
     async def update_state(self, wid: int, state: str, data: dict | None = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
         if data is not None:
             await self._execute("UPDATE workflow_instances SET state=?,data=?,updated_at=? WHERE id=?",
-                (state, json.dumps(data), datetime.now(timezone.utc).isoformat(), wid))
+                (state, json.dumps(data), now, wid))
         else:
-            await self._execute("UPDATE workflow_instances SET state=?,updated_at=? WHERE id=?", (state, datetime.now(timezone.utc).isoformat(), wid))
+            await self._execute("UPDATE workflow_instances SET state=?,updated_at=? WHERE id=?", (state, now, wid))
     async def get(self, wid: int) -> dict | None:
         return await self._fetchone("SELECT * FROM workflow_instances WHERE id = ?", (wid,))
 
 class LeadRepository(Repository):
     async def create(self, msg: str, extracted: dict | None = None, source: str = "telegram") -> int:
-        return (await self._execute("INSERT INTO leads (source,raw_message,extracted_data) VALUES (?,?,?)",
-            (source, msg, json.dumps(extracted or {})))).lastrowid
+        return (await self._execute(
+            "INSERT INTO leads (source,raw_message,extracted_data) VALUES (?,?,?)",
+            (source, msg, json.dumps(extracted or {}))
+        )).lastrowid
     async def get(self, lid: int) -> dict | None:
         row = await self._fetchone("SELECT * FROM leads WHERE id = ?", (lid,))
         if row and row.get("extracted_data"):
@@ -83,7 +92,12 @@ class ScheduledActionRepository(Repository):
         return aid
 
     async def claim_pending(self, limit: int = 20) -> list[dict]:
-        """Атомарно забирает просроченные задачи."""
+        """Атомарно забирает просроченные задачи. Подчищает зависшие running."""
+        # REAPER: возвращаем зависшие running обратно в pending (защита от падений)
+        await self._execute(
+            "UPDATE scheduled_actions SET status='pending', locked_until=NULL, attempts=attempts+1 WHERE status='running' AND locked_until < datetime('now') AND attempts < 3"
+        )
+
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             # Выбираем кандидатов
@@ -94,7 +108,6 @@ class ScheduledActionRepository(Repository):
             ids = [r["id"] for r in rows]
             if not ids:
                 return []
-            # Пытаемся заклеймить каждый conditional update
             claimed = []
             for aid in ids:
                 cursor = await db.execute(
@@ -105,7 +118,6 @@ class ScheduledActionRepository(Repository):
                     claimed.append(aid)
             if not claimed:
                 return []
-            # Возвращаем заклеймленные
             placeholders = ",".join("?" for _ in claimed)
             result = await (await db.execute(
                 f"SELECT * FROM scheduled_actions WHERE id IN ({placeholders})", tuple(claimed),
@@ -117,17 +129,10 @@ class ScheduledActionRepository(Repository):
         await self._execute("UPDATE scheduled_actions SET status='done' WHERE id=?", (aid,))
 
     async def mark_failed(self, aid: str, error: str) -> None:
-        await self._execute(
-            "UPDATE scheduled_actions SET status='failed', last_error=? WHERE id=?",
-            (error[:500], aid),
-        )
+        await self._execute("UPDATE scheduled_actions SET status='failed', last_error=? WHERE id=?", (error[:500], aid))
 
     async def requeue(self, aid: str) -> None:
-        """Вернуть в pending (после временной ошибки)."""
-        await self._execute(
-            "UPDATE scheduled_actions SET status='pending', locked_until=NULL WHERE id=?",
-            (aid,),
-        )
+        await self._execute("UPDATE scheduled_actions SET status='pending', locked_until=NULL WHERE id=?", (aid,))
 
     async def cleanup_old(self, hours: int = 24) -> None:
         await self._execute(
@@ -141,16 +146,17 @@ class DeadLetterQueueRepository(Repository):
             "INSERT INTO dead_letter_queue (source, event_type, payload, error) VALUES (?,?,?,?)",
             (source, event_type, json.dumps(payload), error[:1000]),
         )).lastrowid
-
     async def count(self) -> int:
         row = await self._fetchone("SELECT COUNT(*) as cnt FROM dead_letter_queue")
         return row["cnt"] if row else 0
 
 class IdempotencyRepository(Repository):
     async def exists(self, key: str) -> bool:
-        row = await self._fetchone("SELECT 1 FROM idempotency_keys WHERE key = ? AND created_at > datetime('now', '-1 day')", (key,))
+        row = await self._fetchone(
+            "SELECT 1 FROM idempotency_keys WHERE key = ? AND created_at > datetime('now', '-1 day')", (key,))
         return row is not None
     async def save(self, key: str, handler: str, response: str | None = None) -> None:
-        await self._execute("INSERT OR IGNORE INTO idempotency_keys (key, handler, response) VALUES (?, ?, ?)", (key, handler, response))
+        await self._execute("INSERT OR IGNORE INTO idempotency_keys (key, handler, response) VALUES (?, ?, ?)",
+            (key, handler, response))
     async def cleanup_old(self, hours: int = 24) -> None:
         await self._execute(f"DELETE FROM idempotency_keys WHERE created_at < datetime('now', '-{hours} hours')")

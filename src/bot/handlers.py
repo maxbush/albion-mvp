@@ -37,7 +37,11 @@ async def can_send_async(telegram_id: str) -> bool:
 
 
 async def seed_demo_data() -> None:
-    """Создаёт тестовых пользователей в БД, если их ещё нет."""
+    """Create demo users and demo notification (only if demo mode is on)."""
+    if not settings.albion_demo_mode:
+        logger.info("Seed skipped: ALBION_DEMO_MODE=false")
+        return
+    # Create demo users and a demo notification in 30s
     repo = UserRepository()
     demo_users = [
         ("111111", "tutor", "Анна Петрова (репетитор)"),
