@@ -74,6 +74,9 @@ class WorkflowRepository(Repository):
             await self._execute("UPDATE workflow_instances SET state=?,updated_at=? WHERE id=?", (state, now, wid))
     async def get(self, wid: int) -> dict | None:
         return await self._fetchone("SELECT * FROM workflow_instances WHERE id = ?", (wid,))
+    async def cancel(self, wid: int) -> None:
+        await self._execute("UPDATE workflow_instances SET state='cancelled', updated_at=? WHERE id=?",
+            (datetime.now(timezone.utc).isoformat(), wid))
 
 class LeadRepository(Repository):
     async def create(self, msg: str, extracted: dict | None = None, source: str = "telegram") -> int:
@@ -145,6 +148,20 @@ class ScheduledActionRepository(Repository):
 
     async def reap_stuck(self) -> int:
         """DEPRECATED: reaper встроен в claim_pending. Оставлено для совместимости."""
+        return 0
+
+    async def cancel_by_workflow(self, workflow_id: int, action: str | None = None) -> int:
+        """Отменяет pending задачи по workflow_id. Если action указан — только конкретный action."""
+        if action:
+            await self._execute(
+                "UPDATE scheduled_actions SET status='cancelled' WHERE workflow_id=? AND action=? AND status='pending'",
+                (workflow_id, action),
+            )
+        else:
+            await self._execute(
+                "UPDATE scheduled_actions SET status='cancelled' WHERE workflow_id=? AND status='pending'",
+                (workflow_id,),
+            )
         return 0
 
     async def cleanup_old(self, hours: int = 24) -> None:

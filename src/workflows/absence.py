@@ -8,7 +8,7 @@
 
 import logging, json
 
-from src.db.repository import IncidentRepository, NotificationRepository, UserRepository
+from src.db.repository import IncidentRepository, NotificationRepository, UserRepository, WorkflowRepository, ScheduledActionRepository
 from src.events.bus import bus
 from src.events.types import Event, EventTypes
 from src.integrations.airtable_mock import MockAirtableService
@@ -75,6 +75,12 @@ class AbsenceWorkflow:
         wid = event.data.get("workflow_id")
 
         if not action or not wid:
+            return
+
+        # Если workflow отменён — ничего не делаем
+        wf = await WorkflowRepository(self.incidents.db_path).get(wid)
+        if wf and wf["state"] == "cancelled":
+            logger.info("Workflow %d cancelled, skipping %s", wid, action)
             return
 
         if action == "notify_parent":
@@ -172,6 +178,16 @@ class AbsenceWorkflow:
             return
         await self.incidents.update_status(inc_id, "resolved", resolution)
         logger.info("Incident %d resolved by %s: %s", inc_id, by, resolution)
+        # Отменяем будущие эскалации, если workflow активен
+        wf_repo = WorkflowRepository(self.incidents.db_path)
+        wf = await wf_repo._fetchone(
+            "SELECT id FROM workflow_instances WHERE data LIKE ? AND state='running' ORDER BY id DESC LIMIT 1",
+            (f'%"incident_id": {inc_id}%',),
+        )
+        if wf:
+            await ScheduledActionRepository(self.incidents.db_path).cancel_by_workflow(wf["id"])
+            await wf_repo.cancel(wf["id"])
+            logger.info("Cancelled workflow %d for incident %d", wf["id"], inc_id)
 
 
 async def register_handlers() -> None:

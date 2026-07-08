@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 CREATE TABLE IF NOT EXISTS workflow_instances (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     workflow_type TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'pending',
+    state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','running','completed','failed','cancelled')),
     data TEXT NOT NULL DEFAULT '{}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS scheduled_actions (
     execute_at TIMESTAMP NOT NULL,
     action TEXT NOT NULL,
     payload TEXT NOT NULL DEFAULT '{}',
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','done','failed')),
+    status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER DEFAULT 0,
     last_error TEXT,
     locked_until TIMESTAMP,
