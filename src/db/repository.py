@@ -31,6 +31,8 @@ class UserRepository(Repository):
             "INSERT INTO users (telegram_id,role,name,username,phone,language) VALUES (?,?,?,?,?,?)",
             (tg, role, name, kw.get("username"), kw.get("phone"), kw.get("language","ru"))
         )).lastrowid
+    async def get(self, uid: int) -> dict | None:
+        return await self._fetchone("SELECT * FROM users WHERE id = ?", (uid,))
 
 class IncidentRepository(Repository):
     async def create(self, **kw) -> int:
