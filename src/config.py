@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     # Demo mode: создаёт тестовых пользователей и демо-уведомления при старте
     # В проде выключить: ALBION_DEMO_MODE=false
-    albion_demo_mode: bool = True
+    albion_demo_mode: bool = False
 
 
 settings = Settings()

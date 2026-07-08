@@ -241,22 +241,37 @@ def setup_handlers(app: Application) -> None:
         if not await can_send_async(tg):
             logger.info("Kill switch blocked msg to %s", tg)
             return
-        try:
-            if cb_data:
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Все в порядке", callback_data=cb_data)]])
-                await app.bot.send_message(chat_id=tg, text=msg, reply_markup=kb)
-            else:
-                await app.bot.send_message(chat_id=tg, text=msg)
-            nid = event.data.get("notification_id")
-            if nid:
-                await NotificationRepository().mark_sent(nid)
-            await bus.publish(Event(EventTypes.NOTIFICATION_DELIVERED, {"telegram_id": tg, "notification_id": nid}))
-        except Exception as e:
-            logger.error("Send to %s failed: %s", tg, e)
-            nid = event.data.get("notification_id")
-            if nid:
-                await NotificationRepository().mark_failed(nid, str(e))
-            await bus.publish(Event(EventTypes.NOTIFICATION_FAILED, {"telegram_id": tg, "notification_id": nid, "error": str(e)}))
+        # Mini-retry: 3 попытки с backoff 1s/3s
+        last_error = None
+        for attempt in range(3):
+            try:
+                if cb_data:
+                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Все в порядке", callback_data=cb_data)]])
+                    await app.bot.send_message(chat_id=tg, text=msg, reply_markup=kb)
+                else:
+                    await app.bot.send_message(chat_id=tg, text=msg)
+                nid = event.data.get("notification_id")
+                if nid:
+                    await NotificationRepository().mark_sent(nid)
+                await bus.publish(Event(EventTypes.NOTIFICATION_DELIVERED, {"telegram_id": tg, "notification_id": nid}))
+                return  # success
+            except Exception as e:
+                last_error = e
+                if attempt < 2:
+                    delay = [1, 3][attempt]
+                    logger.warning("Send to %s failed (attempt %d/3), retry in %ds: %s", tg, attempt + 1, delay, e)
+                    await asyncio.sleep(delay)
+        # All 3 attempts failed
+        logger.error("Send to %s failed after 3 attempts: %s", tg, last_error)
+        nid = event.data.get("notification_id")
+        if nid:
+            await NotificationRepository().mark_failed(nid, str(last_error))
+        # Mark workflow as failed if we have workflow_id
+        wf_id = event.data.get("workflow_id")
+        if wf_id:
+            from src.db.repository import WorkflowRepository
+            await WorkflowRepository().update_state(wf_id, "failed", {"error": str(last_error)})
+        await bus.publish(Event(EventTypes.NOTIFICATION_FAILED, {"telegram_id": tg, "notification_id": nid, "error": str(last_error)}))
 
     bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, notif_handler)
 

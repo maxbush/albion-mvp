@@ -1,5 +1,8 @@
 import json, aiosqlite, uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
+
+# SQLite использует datetime('now') = UTC. Это правильно.
+# execute_at хранится как ISO-текст. Для MVP норм.
 
 class Repository:
     def __init__(self, db_path: str = "albion.db"):
@@ -82,6 +85,8 @@ class LeadRepository(Repository):
             row["extracted_data"] = json.loads(row["extracted_data"])
         return row
 
+SCHEDULED_LOCK_MINUTES = 5  # сколько минут даём на выполнение action
+
 class ScheduledActionRepository(Repository):
     async def create(self, workflow_id: int, execute_at: str, action: str, payload: dict | None = None) -> str:
         aid = str(uuid.uuid4())[:8]
@@ -92,15 +97,17 @@ class ScheduledActionRepository(Repository):
         return aid
 
     async def claim_pending(self, limit: int = 20) -> list[dict]:
-        """Атомарно забирает просроченные задачи. Подчищает зависшие running."""
-        # REAPER: возвращаем зависшие running обратно в pending (защита от падений)
+        """Атомарно забирает просроченные задачи.
+
+        REAPER: возвращаем зависшие running в pending (защита от падений).
+        НЕ увеличиваем attempts — reaper не считается попыткой выполнения.
+        """
         await self._execute(
-            "UPDATE scheduled_actions SET status='pending', locked_until=NULL, attempts=attempts+1 WHERE status='running' AND locked_until < datetime('now') AND attempts < 3"
+            "UPDATE scheduled_actions SET status='pending', locked_until=NULL WHERE status='running' AND locked_until < datetime('now') AND attempts < 3"
         )
 
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            # Выбираем кандидатов
             rows = await (await db.execute(
                 "SELECT id FROM scheduled_actions WHERE status='pending' AND execute_at <= datetime('now') AND attempts < 3 LIMIT ?",
                 (limit,),
@@ -111,7 +118,7 @@ class ScheduledActionRepository(Repository):
             claimed = []
             for aid in ids:
                 cursor = await db.execute(
-                    "UPDATE scheduled_actions SET status='running', attempts=attempts+1, locked_until=datetime('now','+2 minutes') WHERE id=? AND status='pending'",
+                    f"UPDATE scheduled_actions SET status='running', attempts=attempts+1, locked_until=datetime('now','+{SCHEDULED_LOCK_MINUTES} minutes') WHERE id=? AND status='pending'",
                     (aid,),
                 )
                 if cursor.rowcount > 0:
@@ -133,6 +140,10 @@ class ScheduledActionRepository(Repository):
 
     async def requeue(self, aid: str) -> None:
         await self._execute("UPDATE scheduled_actions SET status='pending', locked_until=NULL WHERE id=?", (aid,))
+
+    async def reap_stuck(self) -> int:
+        """DEPRECATED: reaper встроен в claim_pending. Оставлено для совместимости."""
+        return 0
 
     async def cleanup_old(self, hours: int = 24) -> None:
         await self._execute(
