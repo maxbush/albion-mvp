@@ -1,6 +1,6 @@
 # ALBION MVP — Архитектура и внутреннее устройство
 
-> ⚠️ Этот файл для LLM-разработчиков и технических участников.
+> ⚠️ Этот файл для технических участников.
 > Пользовательскую документацию см. в README.md.
 
 ---
@@ -9,6 +9,7 @@
 
 | Версия | Дата | Изменения |
 |--------|------|-----------|
+| 2.1 | 2026-07-09 | Demo UX (Solo mode), cancel workflow, отмена эскалаций, отчёт сессии, 28 тестов |
 | 2.0 | 2026-07-06 | Scheduler → SQLite, Dead Letter Queue, Inline buttons, Kill Switch, WAL-mode, Idempotency TTL, NOTIFICATION_REQUESTED |
 
 ---
@@ -35,19 +36,19 @@
               ┌──────────────────┼──────────────────┐
               ▼                  ▼                  ▼
    ┌──────────────────┐  ┌──────────────┐  ┌──────────────┐
-   │  Workflow Engine  │  │   AI Layer   │  │  Scheduler   │
-   │  (state machine)  │  │ (LLM клиент) │  │ (SQLite-based)│
-   │ src/workflows/    │  │ src/ai/      │  │ src/scheduler/│
+   │  Workflow Engine │  │   AI Layer   │  │  Scheduler   │
+   │  (state machine) │  │ (LLM клиент) │  │(SQLite-based)│
+   │ src/workflows/   │  │ src/ai/      │  │src/scheduler/│
    └────────┬─────────┘  └──────┬───────┘  └──────┬───────┘
             │                   │                 │
             └───────────────────┼─────────────────┘
                                 │
                                 ▼
                   ┌───────────────────────────────────────┐
-                  │       Integration Layer (Repository)   │
-                  │  src/integrations/                     │
+                  │       Integration Layer (Repository)  │
+                  │  src/integrations/                    │
                   │                                       │
-                  │  airtable_mock.py — Mock Airtable CRM  │
+                  │  airtable_mock.py — Mock Airtable CRM │
                   │  merithub_mock.py — Mock MeritHub     │
                   │  base.py          — Датаклассы/ABC    │
                   └──────────────┬────────────────────────┘
@@ -63,8 +64,8 @@
                   │  • users, incidents, notifications    │
                   │  • workflow_instances                 │
                   │  • leads, conversations               │
-                  │  • scheduled_actions ★                │
-                  │  • dead_letter_queue ★                │
+                  │  • scheduled_actions ★               │
+                  │  • dead_letter_queue ★               │
                   │  • idempotency_keys (с TTL)           │
                   └───────────────────────────────────────┘
 ```
@@ -249,7 +250,7 @@ CREATE TABLE scheduled_actions (
     execute_at TIMESTAMP NOT NULL, -- когда выполнить
     action TEXT NOT NULL,          -- "notify_parent" / "escalate"
     payload TEXT DEFAULT '{}',    -- JSON
-    status TEXT DEFAULT 'pending' CHECK(status IN ('pending','running','done','failed')),
+    status TEXT DEFAULT 'pending', -- CHECK убран — 'cancelled' допускается кодом
     attempts INTEGER DEFAULT 0,   -- ≤ 3 попытки
     last_error TEXT,
     locked_until TIMESTAMP,       -- для claim-механизма
@@ -287,6 +288,7 @@ class ScheduledActionRepository(Repository):
     async def mark_done(aid)
     async def mark_failed(aid, error)
     async def requeue(aid)              # после временной ошибки
+    async def cancel_by_workflow(wid, action=None)  # ★ отмена pending задач
     async def cleanup_old(hours=24)      # удаление выполненных
 
 class DeadLetterQueueRepository(Repository):
@@ -345,7 +347,7 @@ In-memory с seed-данными (3 tutor, 2 student, 2 lesson). Методы: `
 
 | Команда | Описание |
 |---------|----------|
-| `/start` | Приветствие + справка |
+| `/start` | Приветствие + справка (в демо-режиме — выбор роли) |
 | `/status` | Состояние: AI, БД, Kill Switch |
 | `/absent <ID>` | Отметить отсутствие ученика |
 | `/mock_absent` | ★ Демо: absent через 10 секунд |
@@ -479,15 +481,16 @@ async def scheduler_loop(interval=30):
 
 ## 🧪 Тестирование
 
-**18 тестов** — все проходят.
+**28 тестов** — все проходят.
 
 | Файл | Тестов | Что проверяет |
 |------|--------|---------------|
 | test_event_bus.py | 4 | pub/sub, wildcard, исключения не ломают шину |
-| test_absence_workflow.py | 5 | создание инцидента, mark absent, resolve, check_incident_active |
+| test_absence_workflow.py | 11 | создание инцидента, mark absent, resolve, check_incident_active, cancel_by_workflow, cancelled tick, resolve отменяет эскалацию |
 | test_lead_capture.py | 2 | создание лида, пустое сообщение |
 | test_cancellation.py | 2 | отмена урока, несуществующий урок |
 | test_mocks.py | 5 | Airtable/MeritHub корректность |
+| test_integration.py | 4 | event bus + scheduler + DLQ + idempotency |
 
 ### Паттерн тестирования
 
@@ -528,7 +531,7 @@ docker-compose up -d
 
 ---
 
-## 🔧 Быстрый старт для LLM-разработчика
+## 🔧 Быстрый старт
 
 ```bash
 git clone <repo> && cd albion-mvp

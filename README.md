@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-MVP-yellow" alt="Status">
   <img src="https://img.shields.io/badge/python-3.13-blue" alt="Python">
-  <img src="https://img.shields.io/badge/tests-18/18-green" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-28/28-green" alt="Tests">
   <img src="https://img.shields.io/badge/LLM-Claude%20%7C%20GPT%20%7C%20any-orange" alt="LLM">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
@@ -21,17 +21,18 @@ ALBION автоматизирует **повторяющиеся задачи к
 | 📥 **Захват заявок** (leads) с AI-извлечением | №2 | ~15 мин на заявку |
 | 🔄 **Отмена/перенос** занятий | №3 | ~10 мин на обращение |
 
-## ✨ Ключевые фичи v2.0
+## ✨ Ключевые фичи v2.1
 
 | Фича | Описание |
 |------|----------|
+| 🎬 **Интерактивное демо** | Кнопочный интерфейс с выбором роли, живым сценарием и отчётом |
 | 🛡 **Scheduler в SQLite** | Никаких in-memory списков. Перезапуск бота не теряет отложенные уведомления |
 | ⚰️ **Dead Letter Queue** | Упавшие события не теряются — пишутся в БД, координатор получает алерт |
 | 🔘 **Inline кнопки** | Вместо `/ok 1` — кнопка *"✅ Всё в порядке"* под сообщением |
 | 🔌 **Kill Switch** | 3 уровня: 0=всё выкл, 1=только координаторам, 2=полностью. Безопасный деплой |
 | 📨 **Честные статусы уведомлений** | `requested → delivered / failed` |
 | 🗄 **WAL-mode SQLite** | Нет ошибок `database is locked` при конкурентном доступе |
-| 🎬 **Демо-режим** | `/mock_absent` — absent через 10 секунд вместо 5 минут |
+| ❌ **Отмена эскалаций** | При закрытии ситуации будущие уведомления отменяются |
 
 ---
 
@@ -91,7 +92,7 @@ python -m src.main
 
 | Команда | Описание | Пример |
 |---------|----------|--------|
-| `/start` | Приветствие и справка | — |
+| `/start` | Приветствие (в демо-режиме — выбор роли) | — |
 | `/status` | Состояние системы (AI, БД, Kill Switch) | — |
 | `/absent ID` | Отметить отсутствие ученика | `/absent lesson_1` |
 | `/mock_absent` | 🎬 Демо: absent через 10 секунд | — |
@@ -106,7 +107,7 @@ python -m src.main
 
 ```bash
 pytest tests/ -v
-# 18 passed ✅
+# 28 passed ✅
 ```
 
 ## 📁 Структура проекта
