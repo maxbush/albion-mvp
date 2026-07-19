@@ -21,8 +21,8 @@ class Settings(BaseSettings):
     app_name: str = "ALBION MVP"
     log_level: str = "INFO"
 
-    llm_model: str = "deepseek/deepseek-v4-flash"
-    llm_cheap_model: str = "deepseek/deepseek-v4-flash"
+    llm_model: str = "anthropic/claude-3-haiku"
+    llm_cheap_model: str = "openai/gpt-4o-mini"
 
     # Demo mode: создаёт тестовых пользователей и демо-уведомления при старте
     # В проде выключить: ALBION_DEMO_MODE=false
