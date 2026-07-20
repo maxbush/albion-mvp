@@ -261,11 +261,112 @@ async def cmd_mh_students(upd: Update, _ctx) -> None:
     await upd.message.reply_text("\n".join(lines))
 
 
+async def cmd_mh_tutor(upd: Update, ctx) -> None:
+    """Создаёт репетитора в MeritHub (role C) и сохраняет маппинг: /mh_tutor <cuid> <имя>."""
+    if not is_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только владелец/админ.")
+        return
+    args = ctx.args or []
+    if len(args) < 2:
+        await upd.message.reply_text("Использование: `/mh_tutor <clientUserId> <имя>`", parse_mode="Markdown")
+        return
+    cuid, name = args[0], " ".join(args[1:])
+    mh_id, api_note = None, ""
+    if settings.merithub_use_real:
+        try:
+            from src.integrations.factory import get_merithub_service
+            from src.integrations.merithub_client import MeritHubClient
+            resp = await get_merithub_service().add_user(client_user_id=cuid, name=name, role="C")
+            mh_id = MeritHubClient._extract_id(resp, "userId", "id", "UserId", "userID")
+            api_note = f" MeritHub userId=`{mh_id}`." if mh_id else " (userId не распознан)"
+        except Exception as e:
+            api_note = f" ⚠️ MeritHub API: {str(e)[:120]}"
+    await MeritHubStudentRepository().upsert(
+        cuid, merithub_user_id=mh_id, name=name, parent_telegram_id=None, role="tutor")
+    await upd.message.reply_text(f"✅ Репетитор привязан: `{cuid}` ({name}).{api_note}", parse_mode="Markdown")
+
+
+async def cmd_mh_schedule(upd: Update, ctx) -> None:
+    """Создаёт класс в MeritHub и зачисляет репетитора+учеников одной командой:
+    /mh_schedule <tutorCuid> <startRFC3339> <durationMin> <studentCuid> [...]"""
+    if not is_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только владелец/админ.")
+        return
+    if not settings.merithub_use_real:
+        await upd.message.reply_text(
+            "❌ Для /mh_schedule нужны `MERITHUB_CLIENT_ID` + `MERITHUB_CLIENT_SECRET` в .env.",
+            parse_mode="Markdown")
+        return
+    args = ctx.args or []
+    if len(args) < 4:
+        await upd.message.reply_text(
+            "Использование: `/mh_schedule <tutorCuid> <startRFC3339> <durationMin> <studentCuid> [...]`\n"
+            "Создаёт класс, зачисляет участников и сохраняет зачисление для авто-неявок.",
+            parse_mode="Markdown")
+        return
+    tutor_cuid, start, duration, student_cuids = args[0], args[1], args[2], args[3:]
+    srepo, erepo = MeritHubStudentRepository(), MeritHubEnrollmentRepository()
+    tutor = await srepo.get_by_client_id(tutor_cuid)
+    if not tutor or not tutor.get("merithub_user_id"):
+        await upd.message.reply_text(
+            f"❌ Репетитор `{tutor_cuid}` не найден в MeritHub. Сначала `/mh_tutor {tutor_cuid} <имя>`.",
+            parse_mode="Markdown")
+        return
+
+    from src.integrations.factory import get_merithub_service
+    from src.integrations.merithub_client import MeritHubClient
+    client = get_merithub_service()
+    try:
+        sched = await client.schedule_class(
+            tutor["merithub_user_id"], title=f"Занятие {start}",
+            start_time=start, duration=int(duration))
+        info = MeritHubClient.parse_schedule(sched)
+        class_id = info["class_id"]
+        if not class_id:
+            await upd.message.reply_text(
+                f"❌ Не получен classId. Ответ MeritHub: `{str(sched)[:300]}`", parse_mode="Markdown")
+            return
+
+        users = []
+        if info["host_link"]:
+            users.append({"userId": tutor["merithub_user_id"], "userLink": info["host_link"], "userType": "su"})
+        student_rows, missing = [], []
+        for cuid in student_cuids:
+            s = await srepo.get_by_client_id(cuid)
+            if not s or not s.get("merithub_user_id"):
+                missing.append(cuid)
+                continue
+            student_rows.append(s)
+            if info["participant_link"]:
+                users.append({"userId": s["merithub_user_id"], "userLink": info["participant_link"], "userType": "su"})
+        if users:
+            await client.add_users_to_class(class_id, users)
+
+        # Сохраняем зачисление — по нему webhook attendance посчитает неявки.
+        await erepo.add(class_id, tutor["merithub_user_id"], client_user_id=tutor_cuid,
+                        parent_telegram_id=None, student_name=tutor.get("name"), role="tutor")
+        for s in student_rows:
+            await erepo.add(class_id, s["merithub_user_id"], client_user_id=s["client_user_id"],
+                            parent_telegram_id=s.get("parent_telegram_id"),
+                            student_name=s.get("name"), role="student")
+    except Exception as e:
+        await upd.message.reply_text(f"❌ Ошибка MeritHub API: {str(e)[:200]}", parse_mode="Markdown")
+        return
+
+    host_url = client.room_url(info["host_link"]) if info["host_link"] else "—"
+    msg = (f"✅ Класс создан: `{class_id}`\n🔗 Комната репетитора: {host_url}\n"
+           f"👥 Зачислено учеников: {len(student_rows)}"
+           + (f"\n⚠️ Пропущено (нет привязки): {', '.join(missing)}" if missing else ""))
+    await upd.message.reply_text(msg, parse_mode="Markdown")
+
+
 def register_pilot_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("pilot_seed", cmd_pilot_seed))
     app.add_handler(CommandHandler("pilot_absent", cmd_pilot_absent))
     app.add_handler(CommandHandler("mh_events", cmd_mh_events))
     app.add_handler(CommandHandler("mh_user", cmd_mh_user))
+    app.add_handler(CommandHandler("mh_tutor", cmd_mh_tutor))
     app.add_handler(CommandHandler("mh_enroll", cmd_mh_enroll))
+    app.add_handler(CommandHandler("mh_schedule", cmd_mh_schedule))
     app.add_handler(CommandHandler("mh_students", cmd_mh_students))
-    logger.info("Pilot handlers registered (/pilot_seed /pilot_absent /mh_events /mh_user /mh_enroll /mh_students)")
+    logger.info("Pilot handlers registered (/pilot_* /mh_*)")

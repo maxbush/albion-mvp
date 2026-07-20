@@ -179,6 +179,22 @@ def test_room_url():
     assert c.room_url("LINK", device_test=True).endswith("?devicetest=true")
 
 
+def test_parse_schedule():
+    from src.integrations.merithub_client import MeritHubClient
+    info = MeritHubClient.parse_schedule({
+        "classId": "C9", "hostLink": "HL",
+        "commonLinks": {"commonHostLink": "HL", "commonParticipantLink": "PL"},
+    })
+    assert info == {"class_id": "C9", "host_link": "HL", "participant_link": "PL"}
+
+
+def test_parse_user_links():
+    from src.integrations.merithub_client import MeritHubClient
+    assert MeritHubClient.parse_user_links({
+        "users": [{"userId": "a", "userLink": "la"}, {"userId": "b", "userLink": "lb"}]
+    }) == {"a": "la", "b": "lb"}
+
+
 # =====================================================================
 # Маппинги
 # =====================================================================

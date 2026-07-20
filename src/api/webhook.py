@@ -133,14 +133,6 @@ async def _receive(request: Request):
     secret = settings.merithub_webhook_secret
     repo = WebhookEventRepository()
 
-    if not secret:
-        await repo.save(None, 0, headers, body, note="webhook secret not configured")
-        logger.warning("MeritHub webhook rejected: secret not configured")
-        return JSONResponse(
-            {"status": "error", "detail": "webhook secret not configured"}, status_code=503)
-
-    ok = verify_signature(body, headers, secret)
-
     etype = None
     payload: dict = {}
     if body:
@@ -152,11 +144,20 @@ async def _receive(request: Request):
         except Exception:
             etype = None
 
-    # Сохраняем ВСЕГДА (даже при bad signature) — это помогает отладить секрет/схему.
-    await repo.save(etype, int(ok), headers, body)
-    logger.info("MeritHub webhook captured: type=%s signature_ok=%s bytes=%d", etype, ok, len(body))
+    # MeritHub в доке НЕ описывает подпись вебхуков → пинги без подписи принимаем.
+    # Секрет — опциональное усиление: проверяем ТОЛЬКО когда он задан И в запросе
+    # есть распознанный заголовок подписи/токена. Отклоняем лишь явный mismatch.
+    sig_present = any(headers.get(h) for h in (SIGNATURE_HEADERS + TOKEN_HEADERS))
+    if secret and sig_present:
+        accepted = verify_signature(body, headers, secret)
+    else:
+        accepted = True  # без секрета или MeritHub шлёт без подписи — принимаем
 
-    if not ok:
+    await repo.save(etype, int(accepted), headers, body)
+    logger.info("MeritHub webhook captured: type=%s accepted=%s sig_present=%s bytes=%d",
+                etype, accepted, sig_present, len(body))
+
+    if not accepted:
         return JSONResponse({"status": "unauthorized"}, status_code=401)
 
     # Реальные авто-обработчики по requestType (схема из док MeritHub).
@@ -165,7 +166,7 @@ async def _receive(request: Request):
             await _dispatch_attendance(payload)
         except Exception as e:
             logger.error("attendance dispatch failed: %s", e, exc_info=True)
-    return {"status": "ok", "captured": etype}
+    return {"status": "ok", "captured": etype, "accepted": accepted}
 
 
 def create_app() -> FastAPI:

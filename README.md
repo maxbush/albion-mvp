@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-MVP-yellow" alt="Status">
   <img src="https://img.shields.io/badge/python-3.13-blue" alt="Python">
-  <img src="https://img.shields.io/badge/tests-48/48-green" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-69/69-green" alt="Tests">
   <img src="https://img.shields.io/badge/LLM-Claude%20%7C%20GPT%20%7C%20any-orange" alt="LLM">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
@@ -102,7 +102,9 @@ python -m src.main
 | `/pilot_seed` | 🧪 Проверка готовности пилота (владельцы) | — |
 | `/pilot_absent` | 🚀 Прогон сценария неявки на живых аккаунтах (владельцы) | — |
 | `/mh_user <cuid> <TG> <имя>` | 🔗 Создать ученика в MeritHub + связать с родителем (владельцы) | `/mh_user s1 333333333 Миша` |
-| `/mh_enroll <classId> <cuid…>` | 📋 Зачислить учеников в класс (владельцы) | `/mh_enroll C1 s1 s2` |
+| `/mh_tutor <cuid> <имя>` | 🧑‍ Создать репетитора в MeritHub, role C (владельцы) | `/mh_tutor t1 Анна` |
+| `/mh_enroll <classId> <cuid…>` | 📋 Зачислить в существующий класс (владельцы) | `/mh_enroll C1 s1 s2` |
+| `/mh_schedule <tutor> <start> <min> <cuid…>` | 🗓 Создать класс + зачислить одной командой (владельцы) | `/mh_schedule t1 2026-07-20T15:00:00+03:00 60 s1` |
 | `/mh_students` | 🔗 Список привязок MeritHub ↔ родитель (владельцы) | — |
 | `/mh_events` | 🛰 Последние вебхуки MeritHub (владельцы) | — |
 | `/status` | Состояние системы (AI, БД, Kill Switch) | — |
@@ -142,7 +144,7 @@ python -m src.main
 
 ```bash
 pytest tests/ -v
-# 48 passed ✅
+# 69 passed ✅
 ```
 
 ## 📁 Структура проекта
@@ -171,7 +173,7 @@ albion-mvp/
 │   │   ├── repository.py    # 📦 Repository Pattern
 │   │   └── migrations.py    # 📦 Инициализация
 │   └── scheduler/           # ⏰ SQLite-based scheduler
-├── tests/                   # 🧪 48 тестов
+├── tests/                   # 🧪 69 тестов
 ├── scripts/                 # 🚀 run.sh (Linux) + run.bat (Windows)
 ├── docker-compose.yml       # 🐳 Для прода
 ├── Dockerfile               # 🐳 Для прода

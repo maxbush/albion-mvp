@@ -480,10 +480,13 @@ bus.subscribe(SYSTEM_DLQ_ALERT, dlq_alert_handler)
 - **Маппинги** (`merithub_students`, `merithub_enrollments`): MeritHub не отдаёт
   юзеров/классы обратно — храним `clientUserId ↔ merithubUserId ↔ TG родителя`
   и зачисления (команды `/mh_user`, `/mh_enroll`).
-- **Приёмник вебхуков** `src/api/webhook.py` (FastAPI): проверяет секрет, сохраняет
-  сырой payload (`/mh_events`) и по `requestType=attendance` считает
-  «зачисленные − присутствовавшие = отсутствующие» → `trigger_absence` →
-  уведомление родителя автоматически. Дискриминатор событий — `requestType`.
+- **Приёмник вебхуков** `src/api/webhook.py` (FastAPI): MeritHub не подписывает пинги
+  по доке → принимаем их и так; секрет — опциональная проверка (только при наличии
+  заголовка подписи). Сохраняет сырой payload (`/mh_events`) и по
+  `requestType=attendance` считает «зачисленные − присутствовавшие = отсутствующие»
+  → `trigger_absence` → уведомление родителя автоматически. Дискриминатор — `requestType`.
+- **Замыкание цикла из бота**: `/mh_tutor` (role C), `/mh_user` (role M + TG родителя),
+  `/mh_schedule` (создать класс + зачислить через API и сохранить зачисление).
 
 ## ⏰ Scheduler (SQLite-based)
 
@@ -540,7 +543,7 @@ async def scheduler_loop(interval=30):
 
 ## 🧪 Тестирование
 
-**64 теста** — все проходят.
+**69 тестов** — все проходят.
 
 | Файл | Тестов | Что проверяет |
 |------|--------|---------------|
@@ -551,9 +554,9 @@ async def scheduler_loop(interval=30):
 | test_mocks.py | 5 | Airtable/MeritHub корректность |
 | test_integration.py | 6 | event bus + scheduler + DLQ + idempotency |
 | test_roles.py | 8 | parse_admin_ids, is_admin, upsert ролей, get_by_username, list_by_role, /role /whoami /roles (gating + назначение) |
-| test_pilot.py | 4 | /pilot_seed preflight, /pilot_absent (инцидент+workflow+уведомление с реальным TG), gating, _notify_parent берёт родителя из workflow |
-| test_webhook.py | 10 | verify_signature (HMAC/токен/невалид), /health, 503 без секрета, 401 + захват, 200 + requestType, /mh_events |
-| test_integrations_factory.py | 14 | фабрика (mock vs real), JWT-подпись, OAuth-токен + кеш, add_user/schedule (форма/URL/Bearer), attended_user_ids, маппинги, авто-неявка по attendance |
+| test_pilot.py | 6 | /pilot_seed, /pilot_absent, gating, _notify_parent из workflow, /mh_tutor + /mh_schedule (создание класса и зачисление) |
+| test_webhook.py | 11 | verify_signature (HMAC/токен/невалид), /health, accept unsigned (с/без секрета), 401 на mismatch, 200 + requestType, /mh_events |
+| test_integrations_factory.py | 16 | фабрика (mock vs real), JWT-подпись, OAuth-токен + кеш, add_user/schedule, parse_schedule/parse_user_links, attended_user_ids, маппинги, авто-неявка по attendance |
 
 ### Паттерн тестирования
 

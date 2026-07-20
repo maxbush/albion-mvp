@@ -90,10 +90,18 @@ def test_health(wh_client):
     assert r.status_code == 200 and r.json()["status"] == "ok"
 
 
-def test_no_secret_returns_503(wh_client, monkeypatch):
+def test_no_secret_accepts_unsigned(wh_client, monkeypatch):
+    """Без секрета пинги без подписи принимаем (MeritHub не подписывает по доке)."""
     monkeypatch.setattr(settings, "merithub_webhook_secret", None)
-    r = wh_client.post("/merithub/webhook", content=b'{"event":"Attendance"}')
-    assert r.status_code == 503
+    r = wh_client.post("/merithub/webhook", content=b'{"requestType":"classStatus","classId":"C1"}')
+    assert r.status_code == 200
+
+
+def test_secret_set_but_unsigned_still_accepted(wh_client, monkeypatch):
+    """Секрет задан, но MeritHub прислал пинг без подписи → всё равно принимаем."""
+    monkeypatch.setattr(settings, "merithub_webhook_secret", "real")
+    r = wh_client.post("/merithub/webhook", content=b'{"requestType":"classStatus","classId":"C1"}')
+    assert r.status_code == 200
 
 
 def test_invalid_signature_returns_401_and_stores(wh_client, monkeypatch, tmp_path):

@@ -209,6 +209,35 @@ class MeritHubClient:
         url = f"{self.live_host}/info/room/{self.client_id}/{link}"
         return url + "?devicetest=true" if device_test else url
 
+    # ── парсинг ответов (формы не показаны в доке явно → защитный разбор) ──
+    @staticmethod
+    def parse_schedule(resp: dict) -> dict:
+        common = resp.get("commonLinks") or resp.get("common_links") or {}
+        if not isinstance(common, dict):
+            common = {}
+        return {
+            "class_id": str(resp.get("classId") or resp.get("class_id") or resp.get("id") or ""),
+            "host_link": common.get("commonHostLink") or resp.get("hostLink") or resp.get("host_link") or "",
+            "participant_link": (
+                common.get("commonParticipantLink") or resp.get("commonParticipantLink")
+                or common.get("commonParticipantlink") or ""
+            ),
+        }
+
+    @staticmethod
+    def parse_user_links(resp: dict) -> dict:
+        """add_users_to_class → {merithub_user_id: unique_userLink}."""
+        out: dict = {}
+        users = resp.get("users") if isinstance(resp, dict) else None
+        if isinstance(resp, dict) and isinstance(resp.get("data"), dict):
+            users = users or resp["data"].get("users")
+        for u in (users or []):
+            uid = u.get("userId") or u.get("user_id")
+            link = u.get("userLink") or u.get("user_link")
+            if uid and link:
+                out[str(uid)] = link
+        return out
+
     # ── маппинг webhook-поля attendee → «присутствовал ли» ────────────
     @staticmethod
     def attended_user_ids(attendance_payload: dict) -> set[str]:
