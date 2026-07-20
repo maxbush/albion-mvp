@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-MVP-yellow" alt="Status">
   <img src="https://img.shields.io/badge/python-3.13-blue" alt="Python">
-  <img src="https://img.shields.io/badge/tests-28/28-green" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-48/48-green" alt="Tests">
   <img src="https://img.shields.io/badge/LLM-Claude%20%7C%20GPT%20%7C%20any-orange" alt="LLM">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
@@ -21,10 +21,13 @@ ALBION автоматизирует **повторяющиеся задачи к
 | 📥 **Захват заявок** (leads) с AI-извлечением | №2 | ~15 мин на заявку |
 | 🔄 **Отмена/перенос** занятий | №3 | ~10 мин на обращение |
 
-## ✨ Ключевые фичи v2.1
+## ✨ Ключевые фичи v2.2
 
 | Фича | Описание |
 |------|----------|
+| 🚀 **Демо-пилот** | `/pilot_seed` + `/pilot_absent` — прогон сценария неявки на **реальных TG-аккаунтах** владельцев |
+| 👥 **Роли владельцев** | `/role` `/roles` `/whoami` — раздача ролей по TG-аккаунтам (координатор/репетитор/родитель) |
+| 🔌 **Vendor Agnostic** | Реальный MeritHub подключается парой env-переменных (`src/integrations/factory.py`), без правки логики |
 | 🎬 **Интерактивное демо** | Кнопочный интерфейс с выбором роли, живым сценарием и отчётом |
 | 🛡 **Scheduler в SQLite** | Никаких in-memory списков. Перезапуск бота не теряет отложенные уведомления |
 | ⚰️ **Dead Letter Queue** | Упавшие события не теряются — пишутся в БД, координатор получает алерт |
@@ -93,6 +96,15 @@ python -m src.main
 | Команда | Описание | Пример |
 |---------|----------|--------|
 | `/start` | Приветствие (в демо-режиме — выбор роли) | — |
+| `/whoami` | 🪪 Мой TG ID, username и роль | — |
+| `/role <ID> <роль>` | 👑 Назначить роль (только владельцы) | `/role 123456789 tutor` |
+| `/roles` | 👥 Список участников и ролей (только владельцы) | — |
+| `/pilot_seed` | 🧪 Проверка готовности пилота (владельцы) | — |
+| `/pilot_absent` | 🚀 Прогон сценария неявки на живых аккаунтах (владельцы) | — |
+| `/mh_user <cuid> <TG> <имя>` | 🔗 Создать ученика в MeritHub + связать с родителем (владельцы) | `/mh_user s1 333333333 Миша` |
+| `/mh_enroll <classId> <cuid…>` | 📋 Зачислить учеников в класс (владельцы) | `/mh_enroll C1 s1 s2` |
+| `/mh_students` | 🔗 Список привязок MeritHub ↔ родитель (владельцы) | — |
+| `/mh_events` | 🛰 Последние вебхуки MeritHub (владельцы) | — |
 | `/status` | Состояние системы (AI, БД, Kill Switch) | — |
 | `/absent ID` | Отметить отсутствие ученика | `/absent lesson_1` |
 | `/mock_absent` | 🎬 Демо: absent через 10 секунд | — |
@@ -103,11 +115,34 @@ python -m src.main
 
 ---
 
+## 🚀 Демо-пилот (реальные TG-аккаунты)
+
+Пилот прогоняет MVP-сценарий **неявки ученика** на живых TG-аккаунтах владельцев:
+репетитор отмечает неявку → родитель получает уведомление с кнопкой
+«✅ Всё в порядке» → при молчании эскалация координатору (management by exception).
+
+Пошаговый гайд — в **[PILOT.md](PILOT.md)**. Коротко:
+
+```bash
+# 1. .env: TELEGRAM_BOT_TOKEN, ALBION_ADMIN_TELEGRAM_IDS (TG ID владельцев)
+# 2. Запуск (локально, polling):
+python -m src.main
+# 3. Каждый владелец: /start → /whoami (узнать свой TG ID)
+# 4. Админ раздаёт роли:  /role <TG_ID> coordinator|tutor|parent
+# 5. Проверка:            /pilot_seed
+# 6. Прогон сценария:     /pilot_absent
+```
+
+Принцип **Vendor Agnostic**: реальный MeritHub подключается парой переменных
+(`MERITHUB_CLIENT_ID`/`MERITHUB_CLIENT_SECRET`) — без правки бизнес-логики
+(`src/integrations/factory.py`). Вебхук `requestType=attendance` автоматически
+превращает неявку в MeritHub в уведомление родителя (`src/api/webhook.py`).
+
 ## 🧪 Тесты
 
 ```bash
 pytest tests/ -v
-# 28 passed ✅
+# 48 passed ✅
 ```
 
 ## 📁 Структура проекта
@@ -136,7 +171,7 @@ albion-mvp/
 │   │   ├── repository.py    # 📦 Repository Pattern
 │   │   └── migrations.py    # 📦 Инициализация
 │   └── scheduler/           # ⏰ SQLite-based scheduler
-├── tests/                   # 🧪 18 тестов
+├── tests/                   # 🧪 48 тестов
 ├── scripts/                 # 🚀 run.sh (Linux) + run.bat (Windows)
 ├── docker-compose.yml       # 🐳 Для прода
 ├── Dockerfile               # 🐳 Для прода

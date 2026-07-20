@@ -8,11 +8,11 @@
 
 import logging, json
 
+from src.config import settings
 from src.db.repository import IncidentRepository, NotificationRepository, UserRepository, WorkflowRepository, ScheduledActionRepository
 from src.events.bus import bus
 from src.events.types import Event, EventTypes
-from src.integrations.airtable_mock import MockAirtableService
-from src.integrations.merithub_mock import MockMeritHubService
+from src.integrations.factory import get_airtable_service, get_merithub_service
 from src.workflows.engine import engine
 
 logger = logging.getLogger(__name__)
@@ -23,8 +23,9 @@ class AbsenceWorkflow:
         self.incidents = IncidentRepository(db_path)
         self.notifications = NotificationRepository(db_path)
         self.users = UserRepository(db_path)
-        self.airtable = MockAirtableService()
-        self.merithub = MockMeritHubService()
+        # Vendor Agnostic: реальные MeritHub/Airtable при наличии credentials, иначе mock.
+        self.airtable = get_airtable_service()
+        self.merithub = get_merithub_service()
 
     async def handle_lesson_absent(self, event: Event) -> None:
         lid = event.data.get("lesson_id")
@@ -63,8 +64,8 @@ class AbsenceWorkflow:
             "lesson_ref": lid,
         })
 
-        # Планируем: через 5 мин — уведомить родителя
-        await engine.schedule_action(wid, 5, "notify_parent", {"incident_id": inc_id})
+        # Планируем: уведомить родителя (задержка настраивается, по умолчанию 5 мин)
+        await engine.schedule_action(wid, settings.albion_notify_parent_delay_min, "notify_parent", {"incident_id": inc_id})
         logger.info("Absence: lesson=%s inc=%d wf=%d", lid, inc_id, wid)
 
     async def handle_scheduler_tick(self, event: Event) -> None:
@@ -107,8 +108,20 @@ class AbsenceWorkflow:
             return
 
         inc = await self.incidents.get(inc_id)
-        student = await self.airtable.get_student(inc.get("student_id"))
-        ptg = student.parent_telegram_id if student else None
+
+        # Родитель/имя ученика: сначала из данных workflow (пилот / реальные данные
+        # MeritHub), затем фолбэк на Airtable/MeritHub по student_id.
+        wf = await WorkflowRepository(self.incidents.db_path).get(wid)
+        wf_data = json.loads(wf["data"]) if wf and wf.get("data") else {}
+        ptg = wf_data.get("parent_telegram_id")
+        student_name = wf_data.get("student_name")
+
+        student = await self.airtable.get_student(inc.get("student_id")) if inc.get("student_id") else None
+        if not ptg and student:
+            ptg = student.parent_telegram_id
+        if not student_name and student:
+            student_name = student.name
+
         if not ptg:
             return await self._escalate(wid, inc_id, reason="no parent telegram")
 
@@ -122,7 +135,7 @@ class AbsenceWorkflow:
 
         msg = (
             f"👋 Здравствуйте!\n\n"
-            f"{student.name} отсутствовал(а) на занятии (ID: {inc['lesson_ref']}).\n"
+            f"{student_name or 'Ученик'} отсутствовал(а) на занятии (ID: {inc['lesson_ref']}).\n"
             f"Всё ли в порядке?"
         )
         nid = await self.notifications.create(user["id"], "absence_warning", msg)
@@ -138,9 +151,9 @@ class AbsenceWorkflow:
             "callback_data": f"resolve:{inc_id}:{nonce}",
         }))
 
-        # Планируем эскалацию через 15 минут
-        await engine.schedule_action(wid, 15, "escalate", {"incident_id": inc_id})
-        logger.info("Parent notified for incident %d", inc_id)
+        # Планируем эскалацию (задержка настраивается, по умолчанию 15 мин)
+        await engine.schedule_action(wid, settings.albion_escalate_delay_min, "escalate", {"incident_id": inc_id})
+        logger.info("Parent notified for incident %d (parent=%s)", inc_id, ptg)
 
     async def _escalate(self, wid: int, inc_id: int | None, reason: str = "no response") -> None:
         """Эскалация координатору. С проверкой статуса."""
@@ -151,8 +164,13 @@ class AbsenceWorkflow:
 
         await self.incidents.update_status(inc_id, "escalated", reason)
 
-        coord = await self.users.get_by_telegram_id("coordinator_1")
-        if coord:
+        # Уведомляем ВСЕХ координаторов (реальные TG-аккаунты, назначенные /role).
+        # Фолбэк на coordinator_1 — для совместимости со старым демо-сидом.
+        coords = await self.users.list_by_role("coordinator")
+        if not coords:
+            fallback = await self.users.get_by_telegram_id("coordinator_1")
+            coords = [fallback] if fallback else []
+        for coord in coords:
             msg = f"🚨 Эскалация: инцидент #{inc_id} (причина: {reason})"
             nid = await self.notifications.create(coord["id"], "absence_escalation", msg)
             await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {

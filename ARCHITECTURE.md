@@ -9,6 +9,7 @@
 
 | Версия | Дата | Изменения |
 |--------|------|-----------|
+| 2.2 | 2026-07-19 | Демо-пилот + реальная интеграция MeritHub: роли владельцев (/role /roles /whoami), /pilot_*, реальный OAuth2+JWT клиент MeritHub, приёмник вебхуков + авто-неявки по requestType=attendance, маппинги merithub_students/enrollments (/mh_user /mh_enroll /mh_students /mh_events), эскалации/DLQ по роли coordinator, 64 теста |
 | 2.1 | 2026-07-09 | Demo UX (Solo mode), cancel workflow, отмена эскалаций, отчёт сессии, 28 тестов |
 | 2.0 | 2026-07-06 | Scheduler → SQLite, Dead Letter Queue, Inline buttons, Kill Switch, WAL-mode, Idempotency TTL, NOTIFICATION_REQUESTED |
 
@@ -330,10 +331,24 @@ WHERE id=? AND status='pending';
 
 In-memory с seed-данными (3 tutor, 2 student, 2 lesson). Методы: `get_*`, `mark_absent`, `cancel_lesson`, `check_low_balance`.
 
-**Замена на реальные сервисы:**
-1. Создать `src/integrations/airtable_real.py`
-2. Реализовать те же методы через REST API
-3. Заменить импорт в workflows
+**Замена на реальные сервисы — Vendor Agnostic factory (принцип из Видения):**
+
+Точка переключения — `src/integrations/factory.py`:
+```python
+get_merithub_service()   # MeritHubClient (реальный) ИЛИ MockMeritHubService
+get_airtable_service()   # mock сейчас; реальный Airtable — следующий этап
+```
+
+- Реальный клиент MeritHub — `src/integrations/merithub_client.py`:
+  httpx, Bearer-auth (схема меняется в одном месте `_auth_headers`), ретраи,
+  обработка ошибок. Карта эндпоинтов `ENDPOINTS` и маппинг полей
+  (`_map_student`/`_map_lesson`) **сверяются по документации MeritHub**.
+- Включение: задать в `.env` `MERITHUB_CLIENT_ID` + `MERITHUB_CLIENT_SECRET`
+  (+ `MERITHUB_WEBHOOK_SECRET` для приёмника вебхуков).
+  Без них фабрика возвращает mock — поведение идентично, тесты зелёные.
+- Workflow пользуют фабрику (`AbsenceWorkflow` → `get_*_service()`) и не знают,
+  реальная интеграция или mock. Любую интеграцию/модель можно заменить,
+  не переписывая бизнес-логику.
 
 ---
 
@@ -426,6 +441,50 @@ bus.subscribe(SYSTEM_DLQ_ALERT, dlq_alert_handler)
 
 ---
 
+## 👥 Роли и владельцы (демо-пилот)
+
+**Файл:** `src/bot/roles.py`
+
+Роли: `coordinator | tutor | parent | student` (хранятся в `users.role`).
+
+| Команда | Доступ | Действие |
+|---------|--------|----------|
+| `/whoami` | все | свой TG ID, username, роль, флаг админа |
+| `/role <TG_ID\|@user> <роль>` | админы | назначить/сменить роль (upsert по TG ID) |
+| `/roles` | админы | список всех участников и ролей |
+
+Админы (владельцы) задаются в `.env`: `ALBION_ADMIN_TELEGRAM_IDS=111,222`.
+Эскалации и DLQ-алерты маршрутизируются **всем** пользователям с ролью
+`coordinator` (`UserRepository.list_by_role`), а не захардкоженному аккаунту
+(фолбэк на `coordinator_1` для старого демо-сида).
+
+## 🚀 Демо-пилот (сценарий неявки на живых аккаунтах)
+
+**Файл:** `src/bot/pilot.py`  ·  **Гайд:** `PILOT.md`
+
+| Команда | Доступ | Действие |
+|---------|--------|----------|
+| `/pilot_seed` | админы | предполётная проверка: кто какую роль играет, готов ли пилот |
+| `/pilot_absent` | админы | запускает сценарий неявки на реальных TG-аккаунтах |
+
+`/pilot_absent` создаёт инцидент + workflow, передавая **реальный TG родителя**
+(из назначенной роли `parent`) и имя ученика в данных workflow. `_notify_parent`
+берёт родителя из данных workflow (а не из mock). Уведомление уходит через ~10 сек;
+эскалация координатору — через `ALBION_ESCALATE_DELAY_MIN`.
+
+### MeritHub: реальный API + вебхуки (авто-неявки)
+- **Клиент** `src/integrations/merithub_client.py`: OAuth2 + JWT (HS256,
+  секрет = `CLIENT_SECRET`), access token с кешем 55 мин и авто-обновлением по 401.
+  Эндпоинты по док: users (`serviceaccount1.meritgraph.com`), классы
+  (`class1.meritgraph.com`), ссылки на комнату (`live.merithub.com`).
+- **Маппинги** (`merithub_students`, `merithub_enrollments`): MeritHub не отдаёт
+  юзеров/классы обратно — храним `clientUserId ↔ merithubUserId ↔ TG родителя`
+  и зачисления (команды `/mh_user`, `/mh_enroll`).
+- **Приёмник вебхуков** `src/api/webhook.py` (FastAPI): проверяет секрет, сохраняет
+  сырой payload (`/mh_events`) и по `requestType=attendance` считает
+  «зачисленные − присутствовавшие = отсутствующие» → `trigger_absence` →
+  уведомление родителя автоматически. Дискриминатор событий — `requestType`.
+
 ## ⏰ Scheduler (SQLite-based)
 
 **Файл:** `src/scheduler/scheduler.py`
@@ -481,16 +540,20 @@ async def scheduler_loop(interval=30):
 
 ## 🧪 Тестирование
 
-**28 тестов** — все проходят.
+**64 теста** — все проходят.
 
 | Файл | Тестов | Что проверяет |
 |------|--------|---------------|
 | test_event_bus.py | 4 | pub/sub, wildcard, исключения не ломают шину |
-| test_absence_workflow.py | 11 | создание инцидента, mark absent, resolve, check_incident_active, cancel_by_workflow, cancelled tick, resolve отменяет эскалацию |
+| test_absence_workflow.py | 9 | создание инцидента, mark absent, resolve, check_incident_active, cancel_by_workflow, cancelled tick, resolve отменяет эскалацию |
 | test_lead_capture.py | 2 | создание лида, пустое сообщение |
 | test_cancellation.py | 2 | отмена урока, несуществующий урок |
 | test_mocks.py | 5 | Airtable/MeritHub корректность |
-| test_integration.py | 4 | event bus + scheduler + DLQ + idempotency |
+| test_integration.py | 6 | event bus + scheduler + DLQ + idempotency |
+| test_roles.py | 8 | parse_admin_ids, is_admin, upsert ролей, get_by_username, list_by_role, /role /whoami /roles (gating + назначение) |
+| test_pilot.py | 4 | /pilot_seed preflight, /pilot_absent (инцидент+workflow+уведомление с реальным TG), gating, _notify_parent берёт родителя из workflow |
+| test_webhook.py | 10 | verify_signature (HMAC/токен/невалид), /health, 503 без секрета, 401 + захват, 200 + requestType, /mh_events |
+| test_integrations_factory.py | 14 | фабрика (mock vs real), JWT-подпись, OAuth-токен + кеш, add_user/schedule (форма/URL/Bearer), attended_user_ids, маппинги, авто-неявка по attendance |
 
 ### Паттерн тестирования
 
