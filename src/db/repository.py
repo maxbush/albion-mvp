@@ -34,6 +34,39 @@ class UserRepository(Repository):
     async def get(self, uid: int) -> dict | None:
         return await self._fetchone("SELECT * FROM users WHERE id = ?", (uid,))
 
+    # ── Расширения для пилота: раздача ролей по TG-аккаунтам ──────────
+    async def get_by_username(self, username: str) -> dict | None:
+        return await self._fetchone(
+            "SELECT * FROM users WHERE lower(username) = lower(?)", (username.lstrip("@"),))
+
+    async def list_all(self) -> list[dict]:
+        return await self._fetchall(
+            "SELECT id, telegram_id, role, name, username, created_at FROM users ORDER BY role, name")
+
+    async def list_by_role(self, role: str) -> list[dict]:
+        return await self._fetchall("SELECT * FROM users WHERE role = ? ORDER BY name", (role,))
+
+    async def update_role(self, uid: int, role: str) -> None:
+        await self._execute(
+            "UPDATE users SET role=?, updated_at=? WHERE id=?",
+            (role, datetime.now(timezone.utc).isoformat(), uid))
+
+    async def set_role_by_telegram(self, tg: str, role: str, name: str | None = None,
+                                   username: str | None = None) -> tuple[int, bool]:
+        """Upsert: назначает роль по telegram_id, создаёт пользователя если его нет.
+
+        Возвращает (user_id, created)."""
+        existing = await self.get_by_telegram_id(tg)
+        if existing:
+            await self.update_role(existing["id"], role)
+            if name or username:
+                await self._execute(
+                    "UPDATE users SET name=COALESCE(?,name), username=COALESCE(?,username) WHERE id=?",
+                    (name, username, existing["id"]))
+            return existing["id"], False
+        uid = await self.create(tg, role, name or f"Owner {tg}", username=username)
+        return uid, True
+
 class IncidentRepository(Repository):
     async def create(self, **kw) -> int:
         cols = ", ".join(kw.keys()); ph = ", ".join("?" for _ in kw)
@@ -179,6 +212,72 @@ class DeadLetterQueueRepository(Repository):
     async def count(self) -> int:
         row = await self._fetchone("SELECT COUNT(*) as cnt FROM dead_letter_queue")
         return row["cnt"] if row else 0
+
+class WebhookEventRepository(Repository):
+    """Хранилище захваченных вебхуков MeritHub (сырой payload + заголовки)."""
+    async def save(self, event_type, signature_ok: int, headers: dict, raw, note: str | None = None) -> int:
+        raw_s = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        raw_s = raw_s[:8000]
+        if note:
+            raw_s = raw_s + f"\n[note] {note}"
+        return (await self._execute(
+            "INSERT INTO webhook_events (event_type, signature_ok, headers, raw) VALUES (?,?,?,?)",
+            (event_type, int(signature_ok), json.dumps(headers or {}, ensure_ascii=False), raw_s),
+        )).lastrowid
+
+    async def list_recent(self, limit: int = 10) -> list[dict]:
+        return await self._fetchall(
+            "SELECT * FROM webhook_events ORDER BY id DESC LIMIT ?", (limit,))
+
+    async def count(self) -> int:
+        r = await self._fetchone("SELECT COUNT(*) as cnt FROM webhook_events")
+        return r["cnt"] if r else 0
+
+
+class MeritHubStudentRepository(Repository):
+    """Маппинг clientUserId ↔ merithubUserId ↔ родитель (TG)."""
+    async def upsert(self, client_user_id: str, *, merithub_user_id: str | None = None,
+                     name: str | None = None, parent_telegram_id: str | None = None,
+                     role: str = "student") -> None:
+        existing = await self._fetchone(
+            "SELECT 1 FROM merithub_students WHERE client_user_id=?", (client_user_id,))
+        if existing:
+            await self._execute(
+                "UPDATE merithub_students SET merithub_user_id=COALESCE(?,merithub_user_id), "
+                "name=COALESCE(?,name), parent_telegram_id=COALESCE(?,parent_telegram_id), "
+                "role=COALESCE(?,role) WHERE client_user_id=?",
+                (merithub_user_id, name, parent_telegram_id, role, client_user_id))
+        else:
+            await self._execute(
+                "INSERT INTO merithub_students (client_user_id, merithub_user_id, name, parent_telegram_id, role) "
+                "VALUES (?,?,?,?,?)",
+                (client_user_id, merithub_user_id, name or client_user_id, parent_telegram_id, role))
+
+    async def get_by_client_id(self, cuid: str) -> dict | None:
+        return await self._fetchone("SELECT * FROM merithub_students WHERE client_user_id=?", (cuid,))
+
+    async def get_by_merithub_id(self, mh_id: str) -> dict | None:
+        return await self._fetchone("SELECT * FROM merithub_students WHERE merithub_user_id=?", (mh_id,))
+
+    async def list_all(self) -> list[dict]:
+        return await self._fetchall("SELECT * FROM merithub_students ORDER BY name")
+
+
+class MeritHubEnrollmentRepository(Repository):
+    """Зачисление в класс (для вычисления неявок по webhook attendance)."""
+    async def add(self, class_id: str, merithub_user_id: str, *, client_user_id: str | None = None,
+                  parent_telegram_id: str | None = None, student_name: str | None = None,
+                  role: str = "student") -> None:
+        await self._execute(
+            "INSERT OR REPLACE INTO merithub_enrollments "
+            "(class_id, merithub_user_id, client_user_id, parent_telegram_id, student_name, role) "
+            "VALUES (?,?,?,?,?,?)",
+            (class_id, merithub_user_id, client_user_id, parent_telegram_id, student_name, role))
+
+    async def list_by_class(self, class_id: str) -> list[dict]:
+        return await self._fetchall(
+            "SELECT * FROM merithub_enrollments WHERE class_id=?", (class_id,))
+
 
 class IdempotencyRepository(Repository):
     async def exists(self, key: str) -> bool:

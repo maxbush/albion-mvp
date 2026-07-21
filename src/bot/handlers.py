@@ -19,6 +19,8 @@ from src.events.types import Event, EventTypes
 from src.integrations.airtable_mock import MockAirtableService
 from src.workflows.engine import engine
 from src.workflows.absence import AbsenceWorkflow
+from src.bot.roles import register_role_handlers, get_coordinator_ids
+from src.bot.pilot import register_pilot_handlers
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +194,11 @@ async def cmd_start(upd: Update, _ctx) -> None:
     await upd.message.reply_text(
         "👋 *Добро пожаловать в ALBION!*\n\n"
         "Команды:\n"
+        "`/whoami` — мой TG ID и роль\n"
+        "`/role <ID> <роль>` — назначить роль (владельцы)\n"
+        "`/roles` — участники и роли (владельцы)\n"
+        "`/pilot_seed` — проверка готовности пилота (владельцы)\n"
+        "`/pilot_absent` — 🚀 прогон сценария неявки (владельцы)\n"
         "`/absent <ID>` — ученик отсутствует\n"
         "`/mock_absent` — демо: absent через 10 сек\n"
         "`/mock_demo` — демо: уведомление через 30 сек\n"
@@ -523,6 +530,8 @@ def setup_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("mock_demo", cmd_mock_demo))
     app.add_handler(CommandHandler("kill_switch", cmd_kill_switch))
     app.add_handler(CommandHandler("ok", cmd_ok))
+    register_role_handlers(app)  # /whoami /role /roles — раздача ролей владельцами
+    register_pilot_handlers(app)  # /pilot_seed /pilot_absent — прогон сценария на живых аккаунтах
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
@@ -566,13 +575,16 @@ def setup_handlers(app: Application) -> None:
     bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, notif_handler)
 
     async def dlq_handler(event: Event):
-        if not await can_send_async("coordinator_1"):
-            return
         d = event.data
-        try:
-            await app.bot.send_message(chat_id="coordinator_1", text=f"ALERT: {d.get('event_type')} handler={d.get('handler')} error={d.get('error', '?')[:200]}")
-        except Exception as e:
-            logger.error("DLQ alert send failed: %s", e)
+        text = f"ALERT: {d.get('event_type')} handler={d.get('handler')} error={d.get('error', '?')[:200]}"
+        coord_ids = await get_coordinator_ids() or ["coordinator_1"]
+        for tg in coord_ids:
+            if not await can_send_async(tg):
+                continue
+            try:
+                await app.bot.send_message(chat_id=tg, text=text)
+            except Exception as e:
+                logger.error("DLQ alert send failed to %s: %s", tg, e)
 
     bus.subscribe(EventTypes.SYSTEM_DLQ_ALERT, dlq_handler)
     bus.subscribe(EventTypes.SCHEDULER_TICK, _demo_tick_handler)

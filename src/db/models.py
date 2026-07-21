@@ -101,4 +101,41 @@ CREATE TABLE IF NOT EXISTS dead_letter_queue (
     attempts INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Захваченные вебхуки MeritHub (для отладки и настройки авто-обработчиков)
+CREATE TABLE IF NOT EXISTS webhook_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT,
+    signature_ok INTEGER NOT NULL DEFAULT 0,
+    headers TEXT NOT NULL DEFAULT '{}',
+    raw TEXT NOT NULL,
+    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_received ON webhook_events(received_at);
+
+-- Маппинг учеников/репетиторов MeritHub ↔ наш родитель (TG).
+-- MeritHub НЕ отдаёт юзеров обратно через API, поэтому храним сами.
+CREATE TABLE IF NOT EXISTS merithub_students (
+    client_user_id TEXT PRIMARY KEY,
+    merithub_user_id TEXT,
+    name TEXT NOT NULL,
+    parent_telegram_id TEXT,
+    role TEXT NOT NULL DEFAULT 'student',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_mh_students_mh ON merithub_students(merithub_user_id);
+
+-- Зачисление в класс: нужно, чтобы по webhook attendance вычислить неявки
+-- (зачисленные минус присутствовавшие).
+CREATE TABLE IF NOT EXISTS merithub_enrollments (
+    class_id TEXT NOT NULL,
+    merithub_user_id TEXT NOT NULL,
+    client_user_id TEXT,
+    parent_telegram_id TEXT,
+    student_name TEXT,
+    role TEXT NOT NULL DEFAULT 'student',
+    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (class_id, merithub_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mh_enroll_class ON merithub_enrollments(class_id);
 """
