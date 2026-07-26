@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-MVP-yellow" alt="Status">
-  <img src="https://img.shields.io/badge/python-3.13-blue" alt="Python">
-  <img src="https://img.shields.io/badge/tests-69/69-green" alt="Tests">
+  <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python">
+  <img src="https://img.shields.io/badge/tests-75/75-green" alt="Tests">
   <img src="https://img.shields.io/badge/LLM-Claude%20%7C%20GPT%20%7C%20any-orange" alt="LLM">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
@@ -82,8 +82,14 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # 3. Создать бота у @BotFather, получить токен
-# 4. Записать токен в .env
-echo "TELEGRAM_BOT_TOKEN=ваш_токен" >> .env
+# 4. Записать токен и admin TG ID в .env
+cat >> .env <<'ENV'
+TELEGRAM_BOT_TOKEN=ваш_токен
+ALBION_ADMIN_TELEGRAM_IDS=ваш_TG_ID
+ALBION_NOTIFY_PARENT_DELAY_MIN=1
+ALBION_ESCALATE_DELAY_MIN=1
+ALBION_SCHEDULER_INTERVAL_SEC=5
+ENV
 
 # 5. Запустить
 python -m src.main
@@ -103,15 +109,15 @@ python -m src.main
 | `/pilot_absent` | 🚀 Прогон сценария неявки на живых аккаунтах (владельцы) | — |
 | `/mh_user <cuid> <TG> <имя>` | 🔗 Создать ученика в MeritHub + связать с родителем (владельцы) | `/mh_user s1 333333333 Миша` |
 | `/mh_tutor <cuid> <имя>` | 🧑‍ Создать репетитора в MeritHub, role C (владельцы) | `/mh_tutor t1 Анна` |
-| `/mh_enroll <classId> <cuid…>` | 📋 Зачислить в существующий класс (владельцы) | `/mh_enroll C1 s1 s2` |
+| `/mh_enroll <classId> <cuid…>` | 📋 Зачислить в класс: реально через API, если класс создан через `/mh_schedule`; иначе локально для webhook-логики (владельцы) | `/mh_enroll C1 s1 s2` |
 | `/mh_schedule <tutor> <start> <min> <cuid…>` | 🗓 Создать класс + зачислить одной командой (владельцы) | `/mh_schedule t1 2026-07-20T15:00:00+03:00 60 s1` |
 | `/mh_students` | 🔗 Список привязок MeritHub ↔ родитель (владельцы) | — |
 | `/mh_events` | 🛰 Последние вебхуки MeritHub (владельцы) | — |
 | `/status` | Состояние системы (AI, БД, Kill Switch) | — |
 | `/absent ID` | Отметить отсутствие ученика | `/absent lesson_1` |
 | `/mock_absent` | 🎬 Демо: absent через 10 секунд | — |
-| `/ok ID` | Закрыть инцидент (если нет кнопки) | `/ok 1` |
-| `/kill_switch 0\|1\|2` | 🔌 Режим отправки сообщений | `/kill_switch 1` |
+| `/ok ID` | Закрыть инцидент и отменить будущие эскалации (если нет кнопки) | `/ok 1` |
+| `/kill_switch 0\|1\|2` | 🔌 Режим отправки сообщений (только admin/owner) | `/kill_switch 1` |
 
 **Inline-кнопки:** при уведомлении родителю бот прикрепляет кнопку *"✅ Всё в порядке"* — нажатие сразу закрывает инцидент.
 
@@ -127,13 +133,25 @@ python -m src.main
 
 ```bash
 # 1. .env: TELEGRAM_BOT_TOKEN, ALBION_ADMIN_TELEGRAM_IDS (TG ID владельцев)
-# 2. Запуск (локально, polling):
+# 2. Для живого демо: ALBION_NOTIFY_PARENT_DELAY_MIN=1,
+#    ALBION_ESCALATE_DELAY_MIN=1, ALBION_SCHEDULER_INTERVAL_SEC=5
+# 3. Запуск (локально, polling):
 python -m src.main
-# 3. Каждый владелец: /start → /whoami (узнать свой TG ID)
-# 4. Админ раздаёт роли:  /role <TG_ID> coordinator|tutor|parent
-# 5. Проверка:            /pilot_seed
-# 6. Прогон сценария:     /pilot_absent
+# 4. Каждый участник: /start → /whoami (узнать свой TG ID)
+# 5. Админ раздаёт роли:  /role <TG_ID> coordinator|tutor|parent
+# 6. Проверка:            /pilot_seed
+# 7. Прогон сценария:     /pilot_absent
 ```
+
+**Рекомендуемая схема для демо с двумя владельцами:**
+- вы = `admin` + `tutor`;
+- owner #1 = `coordinator`;
+- owner #2 = `parent`.
+
+После первого прогона можно **поменять роли местами** через `/role`, чтобы второй
+владелец тоже почувствовал сценарий координатора/родителя. TG-роль `student`
+для пилота не нужна: тестовые ученики живут в MeritHub (`/mh_user`) и маппятся
+на TG родителя.
 
 Принцип **Vendor Agnostic**: реальный MeritHub подключается парой переменных
 (`MERITHUB_CLIENT_ID`/`MERITHUB_CLIENT_SECRET`) — без правки бизнес-логики
@@ -144,7 +162,7 @@ python -m src.main
 
 ```bash
 pytest tests/ -v
-# 69 passed ✅
+# 75 passed ✅
 ```
 
 ## 📁 Структура проекта
@@ -173,7 +191,7 @@ albion-mvp/
 │   │   ├── repository.py    # 📦 Repository Pattern
 │   │   └── migrations.py    # 📦 Инициализация
 │   └── scheduler/           # ⏰ SQLite-based scheduler
-├── tests/                   # 🧪 69 тестов
+├── tests/                   # 🧪 75 тестов
 ├── scripts/                 # 🚀 run.sh (Linux) + run.bat (Windows)
 ├── docker-compose.yml       # 🐳 Для прода
 ├── Dockerfile               # 🐳 Для прода

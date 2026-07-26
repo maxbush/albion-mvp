@@ -13,13 +13,14 @@ from src.db.repository import (
     ScheduledActionRepository,
     NotificationRepository,
     WorkflowRepository,
+    IdempotencyRepository,
 )
 from src.events.bus import bus
 from src.events.types import Event, EventTypes
 from src.integrations.airtable_mock import MockAirtableService
 from src.workflows.engine import engine
 from src.workflows.absence import AbsenceWorkflow
-from src.bot.roles import register_role_handlers, get_coordinator_ids
+from src.bot.roles import register_role_handlers, get_coordinator_ids, is_admin
 from src.bot.pilot import register_pilot_handlers
 
 logger = logging.getLogger(__name__)
@@ -260,6 +261,9 @@ async def cmd_mock_demo(upd: Update, _ctx) -> None:
 
 async def cmd_kill_switch(upd: Update, _ctx) -> None:
     global _kill_switch_level
+    if not is_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только владелец/админ может менять kill switch.")
+        return
     if not _ctx.args:
         await upd.message.reply_text("/kill_switch 0|1|2")
         return
@@ -292,7 +296,8 @@ async def cmd_ok(upd: Update, _ctx) -> None:
     if inc["status"] == "resolved":
         await upd.message.reply_text("Уже закрыта.")
         return
-    await repo.update_status(iid, "resolved", "parent_confirmed")
+    wf = AbsenceWorkflow()
+    await wf.resolve_absence(iid, str(upd.effective_user.id))
     await upd.message.reply_text(f"Спасибо! Ситуация #{iid} закрыта!")
 
 
@@ -431,11 +436,38 @@ async def handle_callback(upd: Update, _ctx) -> None:
         parts = data.split(":")
         try:
             inc_id = int(parts[1])
+            nonce = parts[2]
         except (IndexError, ValueError):
             await query.edit_message_text("Ошибка: некорректные данные.")
             return
+
+        idem_key = f"tg_callback:{data}"
+        idem = IdempotencyRepository()
+        if await idem.exists(idem_key):
+            await query.answer("✅ Уже обработано", show_alert=False)
+            return
+
+        wf_repo = WorkflowRepository()
+        wf_row = await wf_repo._fetchone(
+            "SELECT * FROM workflow_instances WHERE data LIKE ? ORDER BY id DESC LIMIT 1",
+            (f'%\"incident_id\": {inc_id}%',),
+        )
+        if not wf_row:
+            await query.edit_message_text("Ситуация уже закрыта или workflow не найден.")
+            return
+        try:
+            import json as _json
+            wf_data = _json.loads(wf_row.get("data") or "{}")
+        except Exception:
+            wf_data = {}
+        expected_nonce = wf_data.get("parent_callback_nonce")
+        if expected_nonce and expected_nonce != nonce:
+            await query.answer("⛔ Кнопка устарела", show_alert=True)
+            return
+
         wf = AbsenceWorkflow()
         await wf.resolve_absence(inc_id, str(query.from_user.id))
+        await idem.save(idem_key, "telegram_callback", response="resolved")
         await query.edit_message_text(f"✅ Всё в порядке! Ситуация #{inc_id} закрыта. (подтверждено в {datetime.now():%H:%M})")
         logger.info("Incident %d resolved via button", inc_id)
         return
