@@ -19,7 +19,7 @@ from telegram.ext import Application, CommandHandler
 from src.config import settings
 from src.db.repository import (
     UserRepository, IncidentRepository, ScheduledActionRepository, WebhookEventRepository,
-    MeritHubStudentRepository, MeritHubEnrollmentRepository,
+    MeritHubStudentRepository, MeritHubClassRepository, MeritHubEnrollmentRepository,
 )
 from src.workflows.engine import engine
 from src.bot.roles import is_admin, ROLE_EMOJI
@@ -164,7 +164,7 @@ async def cmd_mh_events(upd: Update, ctx) -> None:
             "1) запущен ли `uvicorn src.api.webhook:app --port 8000`;\n"
             "2) поднят ли туннель (ngrok/cloudflared) на :8000;\n"
             "3) в MeritHub → Webhook Url вставлен ли публичный URL + /merithub/webhook;\n"
-            "4) задан ли MERITHUB_WEBHOOK_SECRET в .env;\n"
+            "4) если MeritHub шлёт подпись — задан ли MERITHUB_WEBHOOK_SECRET в .env;\n"
             "5) включены ли чекбоксы (Attendance и др.) и дёрнуто ли событие в MeritHub.")
         return
     blocks = ["🛰 Последние события MeritHub (захват для авто-обработчиков):\n"]
@@ -216,7 +216,12 @@ async def cmd_mh_user(upd: Update, ctx) -> None:
 
 
 async def cmd_mh_enroll(upd: Update, ctx) -> None:
-    """Зачисляет учеников в класс: /mh_enroll <classId> <cuid1> [cuid2 ...]."""
+    """Зачисляет учеников в класс: /mh_enroll <classId> <cuid1> [cuid2 ...].
+
+    Если класс был создан через /mh_schedule и у нас есть commonParticipantLink,
+    то при включённом real MeritHub сделаем и РЕАЛЬНЫЙ add_users_to_class.
+    Иначе команда честно выполнит локальную синхронизацию зачисления для webhook attendance.
+    """
     if not is_admin(upd.effective_user.id):
         await upd.message.reply_text("⛔ Только владелец/админ.")
         return
@@ -226,20 +231,67 @@ async def cmd_mh_enroll(upd: Update, ctx) -> None:
             "Использование: `/mh_enroll <classId> <clientUserId> [...]`", parse_mode="Markdown")
         return
     class_id, cuids = args[0], args[1:]
-    srepo, erepo = MeritHubStudentRepository(), MeritHubEnrollmentRepository()
-    added, missing = 0, []
+    srepo = MeritHubStudentRepository()
+    crepo = MeritHubClassRepository()
+    erepo = MeritHubEnrollmentRepository()
+
+    students, missing = [], []
     for cuid in cuids:
         s = await srepo.get_by_client_id(cuid)
         if not s or not s.get("merithub_user_id"):
             missing.append(cuid)
             continue
+        students.append(s)
+
+    remote_added = 0
+    remote_note = ""
+    class_meta = await crepo.get(class_id)
+    if settings.merithub_use_real and students and class_meta and class_meta.get("participant_link"):
+        try:
+            from src.integrations.factory import get_merithub_service
+            client = get_merithub_service()
+            users = [{
+                "userId": s["merithub_user_id"],
+                "userLink": class_meta["participant_link"],
+                "userType": "su",
+            } for s in students]
+            resp = await client.add_users_to_class(class_id, users)
+            remote_added = len(users)
+            try:
+                unique_links = client.parse_user_links(resp)
+                if unique_links:
+                    remote_note = f"\n🌐 В MeritHub реально добавлено: {remote_added} (уникальных ссылок: {len(unique_links)})"
+                else:
+                    remote_note = f"\n🌐 В MeritHub реально добавлено: {remote_added}"
+            except Exception:
+                remote_note = f"\n🌐 В MeritHub реально добавлено: {remote_added}"
+        except Exception as e:
+            await upd.message.reply_text(
+                f"❌ Ошибка MeritHub API при зачислении в класс `{class_id}`: {str(e)[:200]}",
+                parse_mode="Markdown",
+            )
+            return
+    elif settings.merithub_use_real and students:
+        remote_note = (
+            "\nℹ️ Реальный API add_users_to_class не вызывался: у класса нет сохранённого "
+            "commonParticipantLink. Если класс создан вне `/mh_schedule`, эта команда работает как локальная синхронизация."
+        )
+
+    added = 0
+    for s in students:
         await erepo.add(
-            class_id, s["merithub_user_id"], client_user_id=cuid,
+            class_id,
+            s["merithub_user_id"],
+            client_user_id=s["client_user_id"],
             parent_telegram_id=s.get("parent_telegram_id"),
-            student_name=s.get("name"), role=s.get("role") or "student",
+            student_name=s.get("name"),
+            role=s.get("role") or "student",
         )
         added += 1
-    msg = f"✅ В класс `{class_id}` зачислено: {added}."
+
+    msg = f"✅ В класс `{class_id}` зачислено локально: {added}."
+    if remote_note:
+        msg += remote_note
     if missing:
         msg += f"\n⚠️ Пропущены (нет привязки/MeritHub id): {', '.join(missing)} — сначала `/mh_user ...`"
     await upd.message.reply_text(msg, parse_mode="Markdown")
@@ -326,6 +378,16 @@ async def cmd_mh_schedule(upd: Update, ctx) -> None:
             await upd.message.reply_text(
                 f"❌ Не получен classId. Ответ MeritHub: `{str(sched)[:300]}`", parse_mode="Markdown")
             return
+
+        await MeritHubClassRepository().upsert(
+            class_id,
+            host_link=info.get("host_link"),
+            participant_link=info.get("participant_link"),
+            title=f"Занятие {start}",
+            start_time=start,
+            tutor_client_user_id=tutor_cuid,
+            tutor_merithub_user_id=tutor["merithub_user_id"],
+        )
 
         users = []
         if info["host_link"]:

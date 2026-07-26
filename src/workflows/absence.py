@@ -32,12 +32,25 @@ class AbsenceWorkflow:
         if not lid:
             return
 
-        lesson = await self.merithub.get_lesson(lid) or await self.airtable.get_lesson(lid)
+        lesson = None
+        merithub_get_lesson = getattr(self.merithub, "get_lesson", None)
+        if callable(merithub_get_lesson):
+            try:
+                lesson = await merithub_get_lesson(lid)
+            except Exception as e:
+                logger.warning("MeritHub get_lesson failed for %s: %s", lid, e)
+        if not lesson:
+            lesson = await self.airtable.get_lesson(lid)
         if not lesson:
             logger.warning("Lesson %s not found", lid)
             return
 
-        await self.merithub.mark_absent(lid)
+        merithub_mark_absent = getattr(self.merithub, "mark_absent", None)
+        if callable(merithub_mark_absent):
+            try:
+                await merithub_mark_absent(lid)
+            except Exception as e:
+                logger.warning("MeritHub mark_absent failed for %s: %s", lid, e)
         await self.airtable.mark_absent(lid, event.data.get("reported_by", ""))
 
         student = await self.airtable.get_student(lesson.student_id)
@@ -129,9 +142,12 @@ class AbsenceWorkflow:
         if not user:
             return await self._escalate(wid, inc_id, reason="parent not registered")
 
-        # Сохраняем nonce для идемпотентности кнопки
+        # Сохраняем nonce в workflow: им валидируем callback и защищаемся от
+        # повторных/устаревших нажатий на inline-кнопку.
         import secrets
         nonce = secrets.token_hex(4)
+        wf_data["parent_callback_nonce"] = nonce
+        await WorkflowRepository(self.incidents.db_path).update_data(wid, wf_data)
 
         msg = (
             f"👋 Здравствуйте!\n\n"

@@ -6,7 +6,7 @@ import pytest
 from src.config import settings
 from src.db.repository import (
     UserRepository, IncidentRepository, ScheduledActionRepository, WorkflowRepository,
-    MeritHubStudentRepository, MeritHubEnrollmentRepository,
+    MeritHubStudentRepository, MeritHubClassRepository, MeritHubEnrollmentRepository,
 )
 from src.workflows.engine import engine
 from src.integrations.merithub_client import MeritHubClient
@@ -224,6 +224,35 @@ async def test_cmd_mh_schedule_creates_class_and_enrolls(tmp_path, monkeypatch):
     enr = await MeritHubEnrollmentRepository("albion.db").list_by_class("C9")
     roles = {r["merithub_user_id"]: r["role"] for r in enr}
     assert roles.get("mh_t1") == "tutor" and roles.get("mh_s1") == "student"
+    meta = await MeritHubClassRepository("albion.db").get("C9")
+    assert meta and meta["participant_link"] == "PL" and meta["host_link"] == "HL"
     assert stub.last_add[0] == "C9"
     assert {"mh_t1", "mh_s1"} <= {u["userId"] for u in stub.last_add[1]}
     assert any("C9" in r for r in upd.message.replies)
+
+
+@pytest.mark.asyncio
+async def test_cmd_mh_enroll_uses_real_api_when_class_meta_exists(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    monkeypatch.setattr(settings, "merithub_client_id", "cid")
+    monkeypatch.setattr(settings, "merithub_client_secret", "csec")
+    stub = StubMeritHub()
+    monkeypatch.setattr("src.integrations.factory.get_merithub_service", lambda: stub)
+    await UserRepository("albion.db").create("100", "coordinator", "Админ")
+    await MeritHubStudentRepository("albion.db").upsert(
+        "s1", merithub_user_id="mh_s1", name="Миша", parent_telegram_id="777", role="student")
+    await MeritHubClassRepository("albion.db").upsert(
+        "C9", host_link="HL", participant_link="PL", title="Math", start_time="2026-07-20T15:00:00+03:00")
+
+    from src.bot.pilot import cmd_mh_enroll
+    upd = FakeUpdate(FakeUser(100, "admin"))
+    await cmd_mh_enroll(upd, FakeContext(["C9", "s1"]))
+
+    assert stub.last_add[0] == "C9"
+    assert stub.last_add[1] == [{"userId": "mh_s1", "userLink": "PL", "userType": "su"}]
+    enr = await MeritHubEnrollmentRepository("albion.db").list_by_class("C9")
+    assert len(enr) == 1 and enr[0]["client_user_id"] == "s1"
+    assert any("реально добавлено" in r for r in upd.message.replies)

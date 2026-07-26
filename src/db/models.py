@@ -125,6 +125,21 @@ CREATE TABLE IF NOT EXISTS merithub_students (
 );
 CREATE INDEX IF NOT EXISTS idx_mh_students_mh ON merithub_students(merithub_user_id);
 
+-- Метаданные классов MeritHub, созданных через ALBION.
+-- Нужны, чтобы потом реально добавлять пользователей в класс: MeritHub
+-- возвращает commonHostLink/commonParticipantLink только на этапе schedule_class.
+CREATE TABLE IF NOT EXISTS merithub_classes (
+    class_id TEXT PRIMARY KEY,
+    host_link TEXT,
+    participant_link TEXT,
+    title TEXT,
+    start_time TEXT,
+    tutor_client_user_id TEXT,
+    tutor_merithub_user_id TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_mh_classes_start ON merithub_classes(start_time);
+
 -- Зачисление в класс: нужно, чтобы по webhook attendance вычислить неявки
 -- (зачисленные минус присутствовавшие).
 CREATE TABLE IF NOT EXISTS merithub_enrollments (

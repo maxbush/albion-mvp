@@ -49,7 +49,7 @@ async def scheduler_wrapper():
     restarts = []
     while True:
         try:
-            await scheduler_loop(30)
+            await scheduler_loop(settings.albion_scheduler_interval_sec)
         except Exception as e:
             now = asyncio.get_event_loop().time()
             restarts = [t for t in restarts if t > now - 60]

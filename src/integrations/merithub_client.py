@@ -174,14 +174,18 @@ class MeritHubClient:
         total_classes: int | None = None,
         end_date: str | None = None,
         recording: bool = True,
+        recording_download: bool = False,
+        av_mode: str = "",
     ) -> dict:
         body = {
             "title": title, "startTime": start_time, "duration": duration, "lang": "en",
             "timeZoneId": timezone, "description": description, "type": type,
             "access": "private", "login": False, "layout": layout, "status": status,
+            "recordingDownload": recording_download,
             "recording": {"record": recording, "autoRecord": False, "recordingControl": True},
             "participantControl": {"write": False, "audio": False, "video": False},
             "whiteboard": {"asyncMode": False},
+            "avMode": av_mode,
         }
         if end_date:
             body["endDate"] = end_date
@@ -190,6 +194,41 @@ class MeritHubClient:
         if total_classes is not None:
             body["totalClasses"] = total_classes
         return await self._request("POST", f"{self.class_host}/v1/{self.client_id}/{instructor_merithub_id}", body)
+
+    async def edit_class(
+        self,
+        class_id: str,
+        *,
+        title: str,
+        start_time: str,
+        duration: int,
+        timezone: str = "Asia/Kolkata",
+        description: str = "",
+        layout: str = "CR",
+        login: bool = False,
+        schedule: list[int] | None = None,
+        end_date: str | None = None,
+        recording: bool = True,
+        recording_download: bool = False,
+    ) -> dict:
+        body = {
+            "title": title,
+            "startTime": start_time,
+            "duration": duration,
+            "lang": "en",
+            "timeZoneId": timezone,
+            "description": description,
+            "login": login,
+            "layout": layout,
+            "recordingDownload": recording_download,
+            "recording": {"record": recording, "autoRecord": False, "recordingControl": True},
+            "participantControl": {"write": False, "audio": False, "video": False},
+        }
+        if end_date:
+            body["endDate"] = end_date
+        if schedule is not None:
+            body["schedule"] = schedule
+        return await self._request("PUT", f"{self.class_host}/v1/{self.client_id}/{class_id}", body)
 
     async def add_users_to_class(self, class_id: str, users: list[dict]) -> dict:
         """users: [{"userId","userLink","userType":"su"}]. userLink = commonParticipantLink
