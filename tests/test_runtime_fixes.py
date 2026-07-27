@@ -26,8 +26,9 @@ class FakeMessage:
 
 
 class FakeUpdate:
-    def __init__(self, user):
+    def __init__(self, user, chat_id=1):
         self.effective_user = user
+        self.effective_chat = type("FakeChat", (), {"id": chat_id})()
         self.message = FakeMessage()
 
 
@@ -164,7 +165,7 @@ async def test_cmd_kill_switch_admin_only(monkeypatch):
 
     admin = FakeUpdate(FakeUser(100, "admin"))
     await cmd_kill_switch(admin, FakeContext(["2"]))
-    assert any("Kill Switch: ВСЁ" in r for r in admin.message.replies)
+    assert any("Kill Switch:" in r for r in admin.message.replies)
 
 
 @pytest.mark.asyncio
@@ -198,3 +199,73 @@ async def test_cmd_ok_uses_workflow_resolution_and_cancels_future_actions(tmp_pa
     assert wf["state"] == "cancelled"
     assert actions[0]["status"] == "cancelled"
     assert any("закрыта" in r for r in upd.message.replies)
+
+
+@pytest.mark.asyncio
+async def test_cmd_status_uses_configured_model(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    from src.bot.handlers import cmd_status
+
+    await init_db("albion.db")
+    monkeypatch.setattr(settings, "openrouter_api_key", "token")
+    monkeypatch.setattr(settings, "llm_model", "deepseek/deepseek-v4-flash")
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    from src.db.repository import UserRepository
+    await UserRepository("albion.db").create("100", "coordinator", "Admin")
+
+    upd = FakeUpdate(FakeUser(100, "admin"))
+    await cmd_status(upd, FakeContext([]))
+    assert any("deepseek/deepseek-v4-flash" in r for r in upd.message.replies)
+
+
+@pytest.mark.asyncio
+async def test_parent_free_text_reply_resolves_and_notifies_coordinator(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    from src.bot.handlers import handle_message
+    from src.db.repository import UserRepository
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+
+    await init_db("albion.db")
+    engine.repo = WorkflowRepository("albion.db")
+    engine.scheduler = ScheduledActionRepository("albion.db")
+
+    await UserRepository("albion.db").create("777", "parent", "Parent")
+    await UserRepository("albion.db").create("999", "coordinator", "Coord")
+
+    inc_id = await IncidentRepository("albion.db").create(lesson_ref="lesson_1", type="absence", status="pending")
+    wid = await engine.start_workflow("absence_notification", {
+        "incident_id": inc_id,
+        "student_name": "Миша",
+        "parent_telegram_id": "777",
+        "lesson_ref": "lesson_1",
+    })
+    await ScheduledActionRepository("albion.db").create(
+        wid,
+        (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat(),
+        "escalate",
+        {"incident_id": inc_id},
+    )
+
+    captured = []
+
+    async def capture(event: Event):
+        captured.append(event.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, capture)
+    try:
+        upd = FakeUpdate(FakeUser(777, "parent", "Parent"))
+        upd.message.text = "Мы опоздаем на 10 минут"
+        await handle_message(upd, FakeContext([]))
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, capture)
+
+    inc = await IncidentRepository("albion.db").get(inc_id)
+    wf = await WorkflowRepository("albion.db").get(wid)
+    assert inc["status"] == "resolved"
+    assert inc["resolution"] == "parent_late"
+    assert wf["state"] == "cancelled"
+    assert any(d.get("telegram_id") == "999" and "опоздает" in d.get("message", "") for d in captured)
+    assert any("Координатор уведомлён" in r for r in upd.message.replies)

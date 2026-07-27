@@ -76,6 +76,17 @@ def _extract_type(payload: dict) -> str | None:
     return str(t).lower() or None
 
 
+async def _dispatch_class_status(payload: dict) -> None:
+    """requestType=classStatus → обновляем последний статус класса для live-check."""
+    from src.db.repository import MeritHubClassStatusRepository
+    class_id = str(payload.get("classId") or "")
+    status = str(payload.get("status") or "")
+    if not class_id or not status:
+        return
+    event_time = str(payload.get("startTime") or payload.get("eventTime") or "") or None
+    await MeritHubClassStatusRepository().upsert(class_id, status, payload=payload, event_time=event_time)
+
+
 async def _dispatch_attendance(payload: dict) -> None:
     """requestType=attendance → автоматически помечаем неявки.
 
@@ -161,7 +172,12 @@ async def _receive(request: Request):
         return JSONResponse({"status": "unauthorized"}, status_code=401)
 
     # Реальные авто-обработчики по requestType (схема из док MeritHub).
-    if etype == "attendance":
+    if etype == "classstatus":
+        try:
+            await _dispatch_class_status(payload)
+        except Exception as e:
+            logger.error("classStatus dispatch failed: %s", e, exc_info=True)
+    elif etype == "attendance":
         try:
             await _dispatch_attendance(payload)
         except Exception as e:

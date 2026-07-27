@@ -140,6 +140,28 @@ CREATE TABLE IF NOT EXISTS merithub_classes (
 );
 CREATE INDEX IF NOT EXISTS idx_mh_classes_start ON merithub_classes(start_time);
 
+-- Контакты участников MeritHub в Telegram. Нужны для напоминаний tutor/parent.
+CREATE TABLE IF NOT EXISTS merithub_contacts (
+    client_user_id TEXT PRIMARY KEY,
+    telegram_id TEXT,
+    phone TEXT,
+    email TEXT,
+    role TEXT NOT NULL,
+    name TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_mh_contacts_tg ON merithub_contacts(telegram_id);
+CREATE INDEX IF NOT EXISTS idx_mh_contacts_phone ON merithub_contacts(phone);
+
+-- Последний статус класса по webhook classStatus.
+CREATE TABLE IF NOT EXISTS merithub_class_status (
+    class_id TEXT PRIMARY KEY,
+    last_status TEXT,
+    last_event_at TEXT,
+    payload TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Зачисление в класс: нужно, чтобы по webhook attendance вычислить неявки
 -- (зачисленные минус присутствовавшие).
 CREATE TABLE IF NOT EXISTS merithub_enrollments (

@@ -4,14 +4,16 @@ from datetime import datetime, timezone
 
 import aiosqlite
 
+from src.config import settings
+
 # SQLite использует datetime('now') = UTC. Это правильно.
 # execute_at/locked_until храним как RFC3339 ISO-текст с timezone.
 # Для сравнения используем julianday(...), а не лексикографическое сравнение строк.
 
 
 class Repository:
-    def __init__(self, db_path: str = "albion.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str | None = None):
+        self.db_path = db_path or settings.database_path
 
     async def _execute(self, sql: str, params: tuple = ()):
         async with aiosqlite.connect(self.db_path) as db:
@@ -247,10 +249,6 @@ class ScheduledActionRepository(Repository):
             ((error or "")[:500] or None, aid),
         )
 
-    async def reap_stuck(self) -> int:
-        """DEPRECATED: reaper встроен в claim_pending. Оставлено для совместимости."""
-        return 0
-
     async def cancel_by_workflow(self, workflow_id: int, action: str | None = None) -> int:
         """Отменяет pending задачи по workflow_id. Если action указан — только конкретный action."""
         if action:
@@ -407,6 +405,71 @@ class MeritHubClassRepository(Repository):
 
     async def list_all(self) -> list[dict]:
         return await self._fetchall("SELECT * FROM merithub_classes ORDER BY created_at DESC")
+
+
+class MeritHubContactRepository(Repository):
+    """Связка client_user_id ↔ telegram_id / phone / email для tutor/parent-side напоминаний."""
+
+    async def upsert(
+        self,
+        client_user_id: str,
+        telegram_id: str | None = None,
+        role: str = "student",
+        name: str | None = None,
+        phone: str | None = None,
+        email: str | None = None,
+    ) -> None:
+        existing = await self._fetchone("SELECT 1 FROM merithub_contacts WHERE client_user_id=?", (client_user_id,))
+        if existing:
+            await self._execute(
+                "UPDATE merithub_contacts SET "
+                "telegram_id=COALESCE(?,telegram_id), "
+                "phone=COALESCE(?,phone), "
+                "email=COALESCE(?,email), "
+                "role=COALESCE(?,role), "
+                "name=COALESCE(?,name) "
+                "WHERE client_user_id=?",
+                (telegram_id, phone, email, role, name, client_user_id),
+            )
+        else:
+            await self._execute(
+                "INSERT INTO merithub_contacts (client_user_id, telegram_id, phone, email, role, name) "
+                "VALUES (?,?,?,?,?,?)",
+                (client_user_id, telegram_id, phone, email, role, name),
+            )
+
+    async def get(self, client_user_id: str) -> dict | None:
+        return await self._fetchone("SELECT * FROM merithub_contacts WHERE client_user_id=?", (client_user_id,))
+
+    async def list_all(self) -> list[dict]:
+        return await self._fetchall("SELECT * FROM merithub_contacts ORDER BY role, name")
+
+
+class MeritHubClassStatusRepository(Repository):
+    """Последний webhook-статус класса MeritHub (например lv/cp)."""
+
+    async def upsert(self, class_id: str, last_status: str, payload: dict | None = None, event_time: str | None = None) -> None:
+        payload_json = json.dumps(payload or {}, ensure_ascii=False)
+        existing = await self._fetchone("SELECT 1 FROM merithub_class_status WHERE class_id=?", (class_id,))
+        if existing:
+            await self._execute(
+                "UPDATE merithub_class_status SET last_status=?, last_event_at=?, payload=?, updated_at=? WHERE class_id=?",
+                (last_status, event_time, payload_json, datetime.now(timezone.utc).isoformat(), class_id),
+            )
+        else:
+            await self._execute(
+                "INSERT INTO merithub_class_status (class_id, last_status, last_event_at, payload, updated_at) VALUES (?,?,?,?,?)",
+                (class_id, last_status, event_time, payload_json, datetime.now(timezone.utc).isoformat()),
+            )
+
+    async def get(self, class_id: str) -> dict | None:
+        row = await self._fetchone("SELECT * FROM merithub_class_status WHERE class_id=?", (class_id,))
+        if row and row.get("payload"):
+            try:
+                row["payload"] = json.loads(row["payload"])
+            except Exception:
+                pass
+        return row
 
 
 class MeritHubEnrollmentRepository(Repository):

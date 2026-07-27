@@ -47,7 +47,7 @@ def is_admin(telegram_id: str | int) -> bool:
     return str(telegram_id) in parse_admin_ids()
 
 
-async def get_coordinator_ids(db_path: str = "albion.db") -> list[str]:
+async def get_coordinator_ids(db_path: str | None = None) -> list[str]:
     """TG ID всех пользователей с ролью coordinator.
 
     Фолбэк на 'coordinator_1' (демо-сид), чтобы не ломать старый демо-режим."""
@@ -58,6 +58,35 @@ async def get_coordinator_ids(db_path: str = "albion.db") -> list[str]:
         if fallback:
             ids = ["coordinator_1"]
     return ids
+
+
+async def notify_all_coordinators(
+    message: str,
+    *,
+    notification_type: str = "ops_alert",
+    db_path: str | None = None,
+) -> None:
+    """Отправляет уведомление всем координаторам через event bus.
+
+    Единый helper для всех workflow'ов, которым нужно уведомить координаторов.
+    Убирает дублирование логики list_by_role → fallback → loop create+publish."""
+    from src.db.repository import NotificationRepository
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+
+    coord_ids = await get_coordinator_ids(db_path)
+    repo = UserRepository(db_path)
+    notif_repo = NotificationRepository(db_path)
+    for tg in coord_ids:
+        user = await repo.get_by_telegram_id(tg)
+        if not user:
+            continue
+        nid = await notif_repo.create(user["id"], notification_type, message)
+        await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+            "notification_id": nid,
+            "telegram_id": tg,
+            "message": message,
+        }))
 
 
 # =====================================================================
@@ -74,14 +103,13 @@ async def cmd_whoami(upd: Update, _ctx) -> None:
     admin = "✅ да" if is_admin(user.id) else "нет"
     uname = f"@{user.username}" if user.username else "—"
     await upd.message.reply_text(
-        "🪪 *Ваш профиль*\n\n"
-        f"TG ID: `{user.id}`\n"
+        f"🪪 Ваш профиль\n\n"
+        f"TG ID: {user.id}\n"
         f"Username: {uname}\n"
         f"Имя: {user.full_name or '—'}\n"
         f"Роль: {emoji} {role}\n"
         f"Админ: {admin}\n\n"
-        "_Сообщите свой TG ID владельцу — он назначит роль командой /role._",
-        parse_mode="Markdown",
+        "Сообщите свой TG ID владельцу — он назначит роль командой /role."
     )
 
 
@@ -141,8 +169,7 @@ async def cmd_role(upd: Update, ctx) -> None:
 
     verb = "назначена" if not created else "создан пользователь и назначена"
     await upd.message.reply_text(
-        f"✅ Роль {ROLE_EMOJI.get(role, '')} *{role}* {verb} для {name} (`{target_clean}`).",
-        parse_mode="Markdown",
+        f"✅ Роль {ROLE_EMOJI.get(role, '')} {role} {verb} для {name} ({target_clean})."
     )
     logger.info("Role set: %s -> %s by admin %s", target_clean, role, actor.id)
 
@@ -156,15 +183,15 @@ async def cmd_roles(upd: Update, _ctx) -> None:
         await upd.message.reply_text(
             "Пока никто не зарегистрирован. Пусть участники напишут /start, затем /whoami.")
         return
-    lines = ["👥 *Участники и роли*\n"]
+    lines = ["👥 Участники и роли\n"]
     for u in users:
         uname = f" @{u['username']}" if u.get("username") else ""
         star = " ★" if is_admin(u["telegram_id"]) else ""
         lines.append(
-            f"{ROLE_EMOJI.get(u['role'], '•')} `{u['telegram_id']}`{uname} — "
-            f"*{u['role']}*{star} — {u['name']}"
+            f"{ROLE_EMOJI.get(u['role'], '•')} {u['telegram_id']}{uname} — "
+            f"{u['role']}{star} — {u['name']}"
         )
-    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await upd.message.reply_text("\n".join(lines))
 
 
 # =====================================================================

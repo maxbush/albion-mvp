@@ -6,10 +6,18 @@
 - Inline-кнопки (генерация payload для кнопок через callback_data)
 """
 
-import logging, json
+import json
+import logging
+import secrets
 
 from src.config import settings
-from src.db.repository import IncidentRepository, NotificationRepository, UserRepository, WorkflowRepository, ScheduledActionRepository
+from src.db.repository import (
+    IncidentRepository,
+    NotificationRepository,
+    ScheduledActionRepository,
+    UserRepository,
+    WorkflowRepository,
+)
 from src.events.bus import bus
 from src.events.types import Event, EventTypes
 from src.integrations.factory import get_airtable_service, get_merithub_service
@@ -19,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class AbsenceWorkflow:
-    def __init__(self, db_path: str = "albion.db"):
+    def __init__(self, db_path: str | None = None):
         self.incidents = IncidentRepository(db_path)
         self.notifications = NotificationRepository(db_path)
         self.users = UserRepository(db_path)
@@ -113,6 +121,102 @@ class AbsenceWorkflow:
             return False
         return True
 
+    async def _workflow_data(self, wid: int) -> dict:
+        wf = await WorkflowRepository(self.incidents.db_path).get(wid)
+        return json.loads(wf["data"]) if wf and wf.get("data") else {}
+
+    async def find_active_incident_for_parent(self, parent_tg: str) -> tuple[int, dict] | None:
+        """Находит активный incident для родителя по данным workflow."""
+        wf = await WorkflowRepository(self.incidents.db_path)._fetchone(
+            "SELECT * FROM workflow_instances WHERE state='running' AND data LIKE ? ORDER BY id DESC LIMIT 1",
+            (f'%"parent_telegram_id": "{parent_tg}"%',),
+        )
+        if not wf:
+            return None
+        try:
+            data = json.loads(wf.get("data") or "{}")
+        except Exception:
+            data = {}
+        inc_id = data.get("incident_id")
+        if not inc_id:
+            return None
+        inc = await self.incidents.get(int(inc_id))
+        if not inc or inc["status"] in ("resolved", "escalated"):
+            return None
+        return int(inc_id), data
+
+    async def find_escalated_incident_for_parent(self, parent_tg: str) -> tuple[int, dict] | None:
+        """Находит недавно эскалированный инцидент (для позднего ответа родителя)."""
+        wf = await WorkflowRepository(self.incidents.db_path)._fetchone(
+            "SELECT * FROM workflow_instances WHERE data LIKE ? ORDER BY id DESC LIMIT 1",
+            (f'%"parent_telegram_id": "{parent_tg}"%',),
+        )
+        if not wf:
+            return None
+        try:
+            data = json.loads(wf.get("data") or "{}")
+        except Exception:
+            data = {}
+        inc_id = data.get("incident_id")
+        if not inc_id:
+            return None
+        inc = await self.incidents.get(int(inc_id))
+        if not inc or inc["status"] != "escalated":
+            return None
+        # Не старше 2 часов
+        try:
+            from datetime import datetime as _dt
+            resolved_at = _dt.fromisoformat(inc.get("resolved_at") or "")
+            age_minutes = (_dt.now() - resolved_at).total_seconds() / 60
+            if age_minutes > 120:
+                return None
+        except Exception:
+            pass
+        return int(inc_id), data
+
+    async def notify_coordinators_parent_reply(
+        self,
+        inc_id: int,
+        outcome: str,
+        *,
+        parent_text: str | None = None,
+        parent_telegram_id: str | None = None,
+    ) -> None:
+        labels = {
+            "ok": "✅ Родитель подтвердил: всё в порядке",
+            "no_show": "❌ Родитель подтвердил: сегодня занятия не будет",
+            "late": "⏰ Родитель сообщил: ученик опоздает",
+            "free_text": "💬 Родитель ответил свободным текстом",
+        }
+        inc = await self.incidents.get(inc_id)
+        wf = await WorkflowRepository(self.incidents.db_path)._fetchone(
+            "SELECT * FROM workflow_instances WHERE data LIKE ? ORDER BY id DESC LIMIT 1",
+            (f'%"incident_id": {inc_id}%',),
+        )
+        wf_data = json.loads(wf["data"]) if wf and wf.get("data") else {}
+        student_name = wf_data.get("student_name") or "Ученик"
+        lesson_ref = (inc or {}).get("lesson_ref") or wf_data.get("lesson_ref") or "—"
+        # Пробуем показать человекочитаемое название занятия
+        class_label = lesson_ref
+        try:
+            from src.db.repository import MeritHubClassRepository
+            cls = await MeritHubClassRepository(self.incidents.db_path).get(lesson_ref)
+            if cls and cls.get("start_time"):
+                from src.workflows.lesson_ops import _parse_dt
+                dt = _parse_dt(cls["start_time"])
+                class_label = f"{lesson_ref} ({dt.strftime('%d.%m, %H:%M')})"
+        except Exception:
+            pass
+        base = labels.get(outcome, "ℹ️ Родитель обновил статус")
+        msg = f"{base}\nИнцидент #{inc_id}\nУченик: {student_name}\nЗанятие: {class_label}"
+        if parent_telegram_id:
+            msg += f"\nParent TG: {parent_telegram_id}"
+        if parent_text:
+            msg += f"\nОтвет: {parent_text[:300]}"
+        from src.bot.roles import notify_all_coordinators
+        await notify_all_coordinators(
+            msg, notification_type="parent_reply", db_path=self.incidents.db_path)
+
     async def _notify_parent(self, wid: int, inc_id: int | None) -> None:
         """Уведомить родителя. С проверкой статуса инцидента."""
         if not await self._check_incident_active(inc_id):
@@ -124,8 +228,7 @@ class AbsenceWorkflow:
 
         # Родитель/имя ученика: сначала из данных workflow (пилот / реальные данные
         # MeritHub), затем фолбэк на Airtable/MeritHub по student_id.
-        wf = await WorkflowRepository(self.incidents.db_path).get(wid)
-        wf_data = json.loads(wf["data"]) if wf and wf.get("data") else {}
+        wf_data = await self._workflow_data(wid)
         ptg = wf_data.get("parent_telegram_id")
         student_name = wf_data.get("student_name")
 
@@ -144,19 +247,42 @@ class AbsenceWorkflow:
 
         # Сохраняем nonce в workflow: им валидируем callback и защищаемся от
         # повторных/устаревших нажатий на inline-кнопку.
-        import secrets
         nonce = secrets.token_hex(4)
         wf_data["parent_callback_nonce"] = nonce
         await WorkflowRepository(self.incidents.db_path).update_data(wid, wf_data)
 
+        # Человекочитаемое название занятия
+        lesson_label = inc.get("lesson_ref") or "—"
+        try:
+            from src.db.repository import MeritHubClassRepository
+            cls = await MeritHubClassRepository(self.incidents.db_path).get(inc.get("lesson_ref", ""))
+            if cls and cls.get("start_time"):
+                from src.workflows.lesson_ops import _parse_dt
+                dt = _parse_dt(cls["start_time"])
+                lesson_label = f"{inc['lesson_ref']} ({dt.strftime('%d.%m, %H:%M')})"
+        except Exception:
+            pass
+
         msg = (
             f"👋 Здравствуйте!\n\n"
-            f"{student_name or 'Ученик'} отсутствовал(а) на занятии (ID: {inc['lesson_ref']}).\n"
-            f"Всё ли в порядке?"
+            f"{student_name or 'Ученик'} отсутствовал(а) на занятии ({lesson_label}).\n"
+            f"Подскажите, пожалуйста, что верно:\n"
+            f"• всё в порядке;\n"
+            f"• сегодня занятия не будет;\n"
+            f"• ученик опоздает.\n\n"
+            f"Можно нажать кнопку ниже или просто ответить текстом."
         )
         nid = await self.notifications.create(user["id"], "absence_warning", msg)
 
-        # Публикуем запрос на отправку с callback_data для кнопки
+        buttons = [
+            {"text": "✅ Всё в порядке", "callback_data": f"resolve:{inc_id}:{nonce}:ok"},
+            {"text": "❌ Сегодня не будет", "callback_data": f"resolve:{inc_id}:{nonce}:no"},
+            {"text": "⏰ Опоздаем", "callback_data": f"resolve:{inc_id}:{nonce}:late"},
+        ]
+
+        # Публикуем запрос на отправку с несколькими кнопками и возможностью
+        # свободного текстового ответа. callback_data НЕ дублируем —
+        # buttons уже содержат все нужные callback_data.
         await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
             "notification_id": nid,
             "telegram_id": ptg,
@@ -164,7 +290,7 @@ class AbsenceWorkflow:
             "incident_id": inc_id,
             "workflow_id": wid,
             "nonce": nonce,
-            "callback_data": f"resolve:{inc_id}:{nonce}",
+            "buttons": buttons,
         }))
 
         # Планируем эскалацию (задержка настраивается, по умолчанию 15 мин)
@@ -181,29 +307,27 @@ class AbsenceWorkflow:
         await self.incidents.update_status(inc_id, "escalated", reason)
 
         # Уведомляем ВСЕХ координаторов (реальные TG-аккаунты, назначенные /role).
-        # Фолбэк на coordinator_1 — для совместимости со старым демо-сидом.
-        coords = await self.users.list_by_role("coordinator")
-        if not coords:
-            fallback = await self.users.get_by_telegram_id("coordinator_1")
-            coords = [fallback] if fallback else []
-        for coord in coords:
-            msg = f"🚨 Эскалация: инцидент #{inc_id} (причина: {reason})"
-            nid = await self.notifications.create(coord["id"], "absence_escalation", msg)
-            await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
-                "notification_id": nid,
-                "telegram_id": coord["telegram_id"],
-                "message": msg,
-                "incident_id": inc_id,
-            }))
+        from src.bot.roles import notify_all_coordinators
+        esc_msg = f"🚨 Эскалация: инцидент #{inc_id} (причина: {reason})"
+        await notify_all_coordinators(
+            esc_msg, notification_type="absence_escalation", db_path=self.incidents.db_path)
 
+        # Сохраняем ключевые поля в result, чтобы find_* методы могли
+        # найти workflow по LIKE-запросу даже после эскалации.
+        wf_data = await self._workflow_data(wid)
         await engine.complete_workflow(wid, {
+            **wf_data,
             "incident_id": inc_id,
             "resolution": f"escalated: {reason}",
         })
         logger.info("Incident %d escalated (%s)", inc_id, reason)
 
     async def resolve_absence(self, inc_id: int, by: str, resolution: str = "parent_confirmed") -> None:
-        """Закрыть инцидент (через кнопку или /ok)."""
+        """Закрыть инцидент (через кнопку или /ok).
+
+        Работает и для pending, и для escalated инцидентов.
+        Для escalated: закрывает инцидент + уведомляет координатора о позднем ответе.
+        """
         inc = await self.incidents.get(inc_id)
         if not inc:
             return
@@ -211,17 +335,20 @@ class AbsenceWorkflow:
             logger.info("Incident %d already resolved", inc_id)
             return
         await self.incidents.update_status(inc_id, "resolved", resolution)
-        logger.info("Incident %d resolved by %s: %s", inc_id, by, resolution)
+        logger.info("Incident %d resolved by %s: %s (was: %s)", inc_id, by, resolution, inc["status"])
         # Отменяем будущие эскалации, если workflow активен
         wf_repo = WorkflowRepository(self.incidents.db_path)
         wf = await wf_repo._fetchone(
-            "SELECT id FROM workflow_instances WHERE data LIKE ? AND state='running' ORDER BY id DESC LIMIT 1",
+            "SELECT id, state FROM workflow_instances WHERE data LIKE ? ORDER BY id DESC LIMIT 1",
             (f'%"incident_id": {inc_id}%',),
         )
         if wf:
-            await ScheduledActionRepository(self.incidents.db_path).cancel_by_workflow(wf["id"])
-            await wf_repo.cancel(wf["id"])
-            logger.info("Cancelled workflow %d for incident %d", wf["id"], inc_id)
+            if wf["state"] == "running":
+                await ScheduledActionRepository(self.incidents.db_path).cancel_by_workflow(wf["id"])
+                await wf_repo.cancel(wf["id"])
+                logger.info("Cancelled running workflow %d for incident %d", wf["id"], inc_id)
+            # Если workflow уже completed (после эскалации) — ничего не отменяем,
+            # инцидент просто переходит в resolved.
 
 
 async def register_handlers() -> None:

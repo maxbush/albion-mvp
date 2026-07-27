@@ -6,7 +6,7 @@ import pytest
 from src.config import settings
 from src.db.repository import (
     UserRepository, IncidentRepository, ScheduledActionRepository, WorkflowRepository,
-    MeritHubStudentRepository, MeritHubClassRepository, MeritHubEnrollmentRepository,
+    MeritHubStudentRepository, MeritHubClassRepository, MeritHubContactRepository, MeritHubEnrollmentRepository,
 )
 from src.workflows.engine import engine
 from src.integrations.merithub_client import MeritHubClient
@@ -176,6 +176,11 @@ async def test_notify_parent_uses_workflow_parent_not_mock(tmp_path, monkeypatch
 
     # Уведомление ушло на реальный TG родителя из данных workflow
     assert any(d.get("telegram_id") == "777" for d in captured)
+    parent_req = next(d for d in captured if d.get("telegram_id") == "777")
+    assert len(parent_req.get("buttons") or []) == 3
+    assert {b["text"] for b in parent_req["buttons"]} == {
+        "✅ Всё в порядке", "❌ Сегодня не будет", "⏰ Опоздаем"
+    }
     # И scheduled-эскалация создана
     esc = await ScheduledActionRepository("albion.db")._fetchall(
         "SELECT * FROM scheduled_actions WHERE action='escalate'")
@@ -196,9 +201,11 @@ async def test_cmd_mh_tutor_creates_and_maps(tmp_path, monkeypatch):
 
     from src.bot.pilot import cmd_mh_tutor
     upd = FakeUpdate(FakeUser(100, "admin"))
-    await cmd_mh_tutor(upd, FakeContext(["t1", "Anna"]))
+    await cmd_mh_tutor(upd, FakeContext(["t1", "555", "Anna"]))
     s = await MeritHubStudentRepository("albion.db").get_by_client_id("t1")
+    c = await MeritHubContactRepository("albion.db").get("t1")
     assert s and s["role"] == "tutor" and s["merithub_user_id"] == "mh_t1"
+    assert c and c["telegram_id"] == "555"
     assert any("mh_t1" in r for r in upd.message.replies)
 
 
@@ -215,6 +222,7 @@ async def test_cmd_mh_schedule_creates_class_and_enrolls(tmp_path, monkeypatch):
     await UserRepository("albion.db").create("100", "coordinator", "Админ")
     srepo = MeritHubStudentRepository("albion.db")
     await srepo.upsert("t1", merithub_user_id="mh_t1", name="Anna", role="tutor")
+    await MeritHubContactRepository("albion.db").upsert("t1", "555", "tutor", name="Anna")
     await srepo.upsert("s1", merithub_user_id="mh_s1", name="Миша", parent_telegram_id="777", role="student")
 
     from src.bot.pilot import cmd_mh_schedule
@@ -226,6 +234,11 @@ async def test_cmd_mh_schedule_creates_class_and_enrolls(tmp_path, monkeypatch):
     assert roles.get("mh_t1") == "tutor" and roles.get("mh_s1") == "student"
     meta = await MeritHubClassRepository("albion.db").get("C9")
     assert meta and meta["participant_link"] == "PL" and meta["host_link"] == "HL"
+    actions = await ScheduledActionRepository("albion.db")._fetchall(
+        "SELECT action FROM scheduled_actions ORDER BY action"
+    )
+    action_names = {a["action"] for a in actions}
+    assert {"parent_prelesson_reminder", "parent_prelesson_no_reply", "tutor_prelesson_reminder", "tutor_prelesson_no_reply", "tutor_start_check", "class_live_check"} <= action_names
     assert stub.last_add[0] == "C9"
     assert {"mh_t1", "mh_s1"} <= {u["userId"] for u in stub.last_add[1]}
     assert any("C9" in r for r in upd.message.replies)
