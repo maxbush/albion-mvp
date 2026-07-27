@@ -317,7 +317,10 @@ class MeritHubStudentRepository(Repository):
         *,
         merithub_user_id: str | None = None,
         name: str | None = None,
+        email: str | None = None,
         parent_telegram_id: str | None = None,
+        timezone: str | None = None,
+        country: str | None = None,
         role: str = "student",
     ) -> None:
         existing = await self._fetchone(
@@ -326,16 +329,24 @@ class MeritHubStudentRepository(Repository):
         )
         if existing:
             await self._execute(
-                "UPDATE merithub_students SET merithub_user_id=COALESCE(?,merithub_user_id), "
-                "name=COALESCE(?,name), parent_telegram_id=COALESCE(?,parent_telegram_id), "
-                "role=COALESCE(?,role) WHERE client_user_id=?",
-                (merithub_user_id, name, parent_telegram_id, role, client_user_id),
+                "UPDATE merithub_students SET "
+                "merithub_user_id=COALESCE(?,merithub_user_id), "
+                "name=COALESCE(?,name), "
+                "email=COALESCE(?,email), "
+                "parent_telegram_id=COALESCE(?,parent_telegram_id), "
+                "timezone=COALESCE(?,timezone), "
+                "country=COALESCE(?,country), "
+                "role=COALESCE(?,role) "
+                "WHERE client_user_id=?",
+                (merithub_user_id, name, email, parent_telegram_id, timezone, country, role, client_user_id),
             )
         else:
             await self._execute(
-                "INSERT INTO merithub_students (client_user_id, merithub_user_id, name, parent_telegram_id, role) "
-                "VALUES (?,?,?,?,?)",
-                (client_user_id, merithub_user_id, name or client_user_id, parent_telegram_id, role),
+                "INSERT INTO merithub_students "
+                "(client_user_id, merithub_user_id, name, email, parent_telegram_id, timezone, country, role) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (client_user_id, merithub_user_id, name or client_user_id, email, parent_telegram_id,
+                 timezone or "Europe/London", country, role),
             )
 
     async def get_by_client_id(self, cuid: str) -> dict | None:
@@ -408,7 +419,7 @@ class MeritHubClassRepository(Repository):
 
 
 class MeritHubContactRepository(Repository):
-    """Связка client_user_id ↔ telegram_id / phone / email для tutor/parent-side напоминаний."""
+    """Связка client_user_id ↔ telegram_id / phone / email / country / city."""
 
     async def upsert(
         self,
@@ -418,6 +429,8 @@ class MeritHubContactRepository(Repository):
         name: str | None = None,
         phone: str | None = None,
         email: str | None = None,
+        country: str | None = None,
+        city: str | None = None,
     ) -> None:
         existing = await self._fetchone("SELECT 1 FROM merithub_contacts WHERE client_user_id=?", (client_user_id,))
         if existing:
@@ -426,16 +439,19 @@ class MeritHubContactRepository(Repository):
                 "telegram_id=COALESCE(?,telegram_id), "
                 "phone=COALESCE(?,phone), "
                 "email=COALESCE(?,email), "
-                "role=COALESCE(?,role), "
-                "name=COALESCE(?,name) "
+                "name=COALESCE(?,name), "
+                "country=COALESCE(?,country), "
+                "city=COALESCE(?,city), "
+                "role=COALESCE(?,role) "
                 "WHERE client_user_id=?",
-                (telegram_id, phone, email, role, name, client_user_id),
+                (telegram_id, phone, email, name, country, city, role, client_user_id),
             )
         else:
             await self._execute(
-                "INSERT INTO merithub_contacts (client_user_id, telegram_id, phone, email, role, name) "
-                "VALUES (?,?,?,?,?,?)",
-                (client_user_id, telegram_id, phone, email, role, name),
+                "INSERT INTO merithub_contacts "
+                "(client_user_id, telegram_id, phone, email, name, country, city, role) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (client_user_id, telegram_id, phone, email, name, country, city, role),
             )
 
     async def get(self, client_user_id: str) -> dict | None:

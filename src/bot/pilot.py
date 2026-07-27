@@ -493,12 +493,19 @@ async def cmd_mh_students(upd: Update, _ctx) -> None:
         return
 
     contact_repo = MeritHubContactRepository()
-    lines = ["🔗 Ученики MeritHub:\n"]
+    lines = [f"🔗 Ученики MeritHub ({len(rows)}):\n"]
     for r in rows:
+        tz = r.get("timezone") or "—"
+        country = r.get("country") or ""
+        tz_info = f"🕐 {tz}" + (f" ({country})" if country else "")
         base = (
-            f"• `{r['client_user_id']}` → MH: `{r.get('merithub_user_id') or '—'}` "
-            f"| parent TG: `{r.get('parent_telegram_id') or '—'}` | {r['name']} ({r['role']})"
+            f"• *{r['name']}* `{r['client_user_id'][:12]}...` ({r['role']})\n"
+            f"  {tz_info}"
         )
+        if r.get("parent_telegram_id"):
+            base += f" | parent TG: `{r['parent_telegram_id']}`"
+        if r.get("email"):
+            base += f" | 📧 {r['email']}"
         # Добавляем контакты родителя если есть
         contact = await contact_repo.get(r["client_user_id"])
         if contact:
@@ -507,10 +514,12 @@ async def cmd_mh_students(upd: Update, _ctx) -> None:
                 extras.append(f"📱 {contact['phone']}")
             if contact.get("email"):
                 extras.append(f"📧 {contact['email']}")
+            if contact.get("name"):
+                extras.append(f"👤 {contact['name']}")
             if extras:
-                base += f"\n  {' | '.join(extras)}"
+                base += f"\n  Parent: {' | '.join(extras)}"
         lines.append(base)
-    await upd.message.reply_text("\n".join(lines))
+    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 # =====================================================================
@@ -1000,6 +1009,158 @@ async def cmd_mh_contacts(upd: Update, _ctx) -> None:
     await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+async def cmd_import_learners(upd: Update, ctx) -> None:
+    """Импорт учеников из текстового дампа MeritHub Learners export.
+
+    Формат (TSV — tab-separated, как при копировании из таблицы):
+    UserId\\tName\\tRole\\tEmail\\tJoining Time\\tCountry\\tTimezone\\tTags
+
+    Пример использования:
+    1. Скопируйте таблицу Learners из MeritHub
+    2. Сохраните в файл learners.txt
+    3. Отправьте боту: /import_learners (и приложите файл, или вставьте текст)
+
+    Или через reply на сообщение с данными.
+    """
+    if not is_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только владелец/админ.")
+        return
+
+    # Получаем текст из reply или из аргументов
+    text = ""
+    if upd.message.reply_to_message and upd.message.reply_to_message.text:
+        text = upd.message.reply_to_message.text
+    elif ctx.args:
+        text = " ".join(ctx.args)
+
+    if not text or len(text) < 20:
+        await upd.message.reply_text(
+            "📋 *Импорт учеников из MeritHub*\n\n"
+            "1. Скопируйте таблицу Learners из MeritHub (выделите → Ctrl+C)\n"
+            "2. Отправьте данные как сообщение боту\n"
+            "3. Ответьте на это сообщение командой `/import_learners`\n\n"
+            "Формат: UserId, Name, Role, Email, Joining Time, Country, Timezone, Tags",
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = text.strip().split("\n")
+    srepo = MeritHubStudentRepository()
+    imported = 0
+    skipped = 0
+
+    for line in lines[1:]:  # пропускаем header
+        parts = line.split("\t")
+        if len(parts) < 3:
+            skipped += 1
+            continue
+
+        mh_user_id = parts[0].strip() if len(parts) > 0 else ""
+        name = parts[1].strip() if len(parts) > 1 else ""
+        # role = parts[2]  # всегда "Learner"
+        email = parts[3].strip() if len(parts) > 3 else None
+        # joining_time = parts[4]  # не сохраняем
+        country = parts[5].strip() if len(parts) > 5 else None
+        timezone = parts[6].strip() if len(parts) > 6 else "Europe/London"
+        # tags = parts[7] if len(parts) > 7 else None
+
+        if not mh_user_id or not name:
+            skipped += 1
+            continue
+
+        # Используем merithub_user_id как client_user_id если нет отдельного
+        await srepo.upsert(
+            mh_user_id,
+            merithub_user_id=mh_user_id,
+            name=name,
+            email=email,
+            timezone=timezone,
+            country=country,
+            role="student",
+        )
+        imported += 1
+
+    await upd.message.reply_text(
+        f"✅ Импорт завершён\n\n"
+        f"Импортировано: {imported} учеников\n"
+        f"Пропущено: {skipped} строк\n\n"
+        f"Проверить: `/mh_students`\n"
+        f"Привязать родителей: `/mh_user <id> <parentTG> <имя>`",
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_import_customers(upd: Update, ctx) -> None:
+    """Импорт привязок ученик→родитель из MeritHub 'Learner's customers' export.
+
+    Формат (TSV):
+    LearnerName\\tLearnerEmail\\tLearnerId\\tCustomerName\\tCustomerEmail\\tCustomerId\\tCustomerPhoneNumber\\t...
+    """
+    if not is_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только владелец/админ.")
+        return
+
+    text = ""
+    if upd.message.reply_to_message and upd.message.reply_to_message.text:
+        text = upd.message.reply_to_message.text
+    elif ctx.args:
+        text = " ".join(ctx.args)
+
+    if not text or len(text) < 20:
+        await upd.message.reply_text(
+            "📋 *Импорт привязок ученик→родитель*\n\n"
+            "1. Скопируйте таблицу «Learner's customers» из MeritHub\n"
+            "2. Отправьте данные как сообщение боту\n"
+            "3. Ответьте на сообщение командой `/import_customers`",
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = text.strip().split("\n")
+    contact_repo = MeritHubContactRepository()
+    imported = 0
+    skipped = 0
+
+    for line in lines[1:]:
+        parts = line.split("\t")
+        if len(parts) < 5:
+            skipped += 1
+            continue
+
+        learner_name = parts[0].strip()
+        # learner_email = parts[1]
+        learner_id = parts[2].strip()
+        customer_name = parts[3].strip() if len(parts) > 3 else ""
+        customer_email = parts[4].strip() if len(parts) > 4 else None
+        # customer_id = parts[5]
+        customer_phone = parts[6].strip() if len(parts) > 6 else None
+        customer_country = parts[8].strip() if len(parts) > 8 else None
+        customer_city = parts[9].strip() if len(parts) > 9 else None
+
+        if not learner_id or not customer_name:
+            skipped += 1
+            continue
+
+        await contact_repo.upsert(
+            learner_id,
+            name=customer_name,
+            email=customer_email,
+            phone=customer_phone,
+            country=customer_country,
+            city=customer_city,
+            role="parent",
+        )
+        imported += 1
+
+    await upd.message.reply_text(
+        f"✅ Импорт привязок завершён\n\n"
+        f"Импортировано: {imported} родительских контактов\n"
+        f"Пропущено: {skipped} строк\n\n"
+        f"Проверить: `/mh_contacts`",
+        parse_mode="Markdown",
+    )
+
+
 def register_pilot_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("pilot_seed", cmd_pilot_seed))
     app.add_handler(CommandHandler("pilot_absent", cmd_pilot_absent))
@@ -1011,6 +1172,8 @@ def register_pilot_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("mh_students", cmd_mh_students))
     app.add_handler(CommandHandler("mh_contact", cmd_mh_contact))
     app.add_handler(CommandHandler("mh_contacts", cmd_mh_contacts))
+    app.add_handler(CommandHandler("import_learners", cmd_import_learners))
+    app.add_handler(CommandHandler("import_customers", cmd_import_customers))
     # Demo tools
     app.add_handler(CommandHandler("seed10", cmd_seed10))
     app.add_handler(CommandHandler("demo_reset", cmd_demo_reset))

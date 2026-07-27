@@ -119,11 +119,15 @@ CREATE TABLE IF NOT EXISTS merithub_students (
     client_user_id TEXT PRIMARY KEY,
     merithub_user_id TEXT,
     name TEXT NOT NULL,
+    email TEXT,
     parent_telegram_id TEXT,
+    timezone TEXT DEFAULT 'Europe/London',
+    country TEXT,
     role TEXT NOT NULL DEFAULT 'student',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_mh_students_mh ON merithub_students(merithub_user_id);
+CREATE INDEX IF NOT EXISTS idx_mh_students_tz ON merithub_students(timezone);
 
 -- Метаданные классов MeritHub, созданных через ALBION.
 -- Нужны, чтобы потом реально добавлять пользователей в класс: MeritHub
@@ -146,8 +150,10 @@ CREATE TABLE IF NOT EXISTS merithub_contacts (
     telegram_id TEXT,
     phone TEXT,
     email TEXT,
-    role TEXT NOT NULL,
     name TEXT,
+    country TEXT,
+    city TEXT,
+    role TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_mh_contacts_tg ON merithub_contacts(telegram_id);
