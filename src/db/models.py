@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS incidents (
     tutor_id INTEGER,
     coordinator_id INTEGER,
     type TEXT NOT NULL CHECK(type IN ('absence','late','cancellation','other')),
-    status TEXT NOT NULL DEFAULT 'open',
+    status TEXT NOT NULL DEFAULT 'pending',
     resolved_at TIMESTAMP,
     resolution TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

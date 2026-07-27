@@ -163,11 +163,15 @@ class AbsenceWorkflow:
         inc = await self.incidents.get(int(inc_id))
         if not inc or inc["status"] != "escalated":
             return None
-        # Не старше 2 часов
+        # Не старше 2 часов (используем timezone-aware now для корректного сравнения)
         try:
-            from datetime import datetime as _dt
+            from datetime import datetime as _dt, timezone as _tz
             resolved_at = _dt.fromisoformat(inc.get("resolved_at") or "")
-            age_minutes = (_dt.now() - resolved_at).total_seconds() / 60
+            now = _dt.now(_tz.utc)
+            # Если resolved_at naive — считаем UTC
+            if resolved_at.tzinfo is None:
+                resolved_at = resolved_at.replace(tzinfo=_tz.utc)
+            age_minutes = (now - resolved_at).total_seconds() / 60
             if age_minutes > 120:
                 return None
         except Exception:

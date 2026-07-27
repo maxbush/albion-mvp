@@ -136,7 +136,7 @@ class MeritHubClient:
         title: str = "",
         img: str = DEFAULT_IMG,
         lang: str = "en",
-        timezone: str = "Asia/Kolkata",
+        timezone: str = "Europe/London",
         desc: str = "",
     ) -> dict:
         """role: 'C' = репетитор/creator, 'M' = ученик. Возвращает ответ MeritHub
@@ -166,7 +166,7 @@ class MeritHubClient:
         start_time: str,
         duration: int,
         type: str = "oneTime",
-        timezone: str = "Asia/Kolkata",
+        timezone: str = "Europe/London",
         layout: str = "CR",
         status: str = "up",
         description: str = "",
@@ -202,7 +202,7 @@ class MeritHubClient:
         title: str,
         start_time: str,
         duration: int,
-        timezone: str = "Asia/Kolkata",
+        timezone: str = "Europe/London",
         description: str = "",
         layout: str = "CR",
         login: bool = False,

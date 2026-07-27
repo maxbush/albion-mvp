@@ -347,3 +347,96 @@ async def test_cmd_mh_contact_unknown_student(tmp_path, monkeypatch):
     upd = FakeUpdate(FakeUser(100, "admin"))
     await cmd_mh_contact(upd, FakeContext(["nonexistent", "phone", "+123"]))
     assert any("не найден" in r for r in upd.message.replies)
+
+
+# ── P1.3: cmd_mh_user with email= and phone= ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_cmd_mh_user_with_email_and_phone(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    await UserRepository("albion.db").create("100", "coordinator", "Admin")
+
+    from src.bot.pilot import cmd_mh_user
+    upd = FakeUpdate(FakeUser(100, "admin"))
+    await cmd_mh_user(upd, FakeContext(["s01", "333", "Алиса", "email=p@ex.com", "phone=+44123"]))
+
+    # Student created
+    srepo = MeritHubStudentRepository("albion.db")
+    s = await srepo.get_by_client_id("s01")
+    assert s and s["parent_telegram_id"] == "333"
+
+    # Contact stored with email and phone
+    contact = await MeritHubContactRepository("albion.db").get("s01")
+    assert contact and contact["email"] == "p@ex.com"
+    assert contact["phone"] == "+44123"
+
+    assert any("Контакты родителя" in r for r in upd.message.replies)
+
+
+# ── P1.4: find_escalated with timezone-aware resolved_at ─────────────
+
+@pytest.mark.asyncio
+async def test_find_escalated_respects_2h_window(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    engine.repo = WorkflowRepository("albion.db")
+    engine.scheduler = ScheduledActionRepository("albion.db")
+
+    inc_id = await IncidentRepository("albion.db").create(
+        lesson_ref="l1", type="absence", status="pending")
+    wid = await engine.start_workflow("absence_notification", {
+        "incident_id": inc_id, "parent_telegram_id": "777",
+        "student_name": "Test", "lesson_ref": "l1"})
+
+    wf = AbsenceWorkflow("albion.db")
+    await wf._escalate(wid, inc_id)
+
+    # Just escalated → should find
+    result = await wf.find_escalated_incident_for_parent("777")
+    assert result is not None
+
+    # Manually set resolved_at to 3 hours ago → should NOT find
+    from datetime import datetime as _dt, timezone as _tz
+    old_time = (_dt.now(_tz.utc) - timedelta(hours=3)).isoformat()
+    await IncidentRepository("albion.db")._execute(
+        "UPDATE incidents SET resolved_at=? WHERE id=?", (old_time, inc_id))
+
+    result = await wf.find_escalated_incident_for_parent("777")
+    assert result is None
+
+
+# ── P1.5: timezone in student model ──────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_student_timezone_stored_and_retrieved(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+
+    srepo = MeritHubStudentRepository("albion.db")
+    await srepo.upsert("s01", name="Алиса", timezone="Asia/Almaty", country="Kazakhstan", role="student")
+
+    s = await srepo.get_by_client_id("s01")
+    assert s["timezone"] == "Asia/Almaty"
+    assert s["country"] == "Kazakhstan"
+
+
+# ── P1.1: format_dual_time helper ───────────────────────────────────
+
+def test_format_dual_time_london_only():
+    from src.workflows.lesson_ops import _format_dual_time
+    result = _format_dual_time("2026-07-28T15:00:00+01:00", None)
+    assert "15:00" in result
+    assert "London" in result
+
+
+def test_format_dual_time_with_user_tz():
+    from src.workflows.lesson_ops import _format_dual_time
+    result = _format_dual_time("2026-07-28T15:00:00+01:00", "Asia/Almaty")
+    assert "London" in result
+    assert "ваше время" in result
+    assert "Asia/Almaty" in result

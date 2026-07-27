@@ -44,6 +44,36 @@ def _format_class_label(class_id: str, start_time: str | None = None) -> str:
     return f"{class_id}{time_part}"
 
 
+def _format_dual_time(start_time: str, user_tz: str | None = None) -> str:
+    """Форматирует время в dual-timezone формате.
+
+    ALBION хранит/создаёт занятия в Europe/London.
+    Показываем: '15:00 (London)' или '15:00 (London) / 20:00 (ваше время, Asia/Almaty)'.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        dt = _parse_dt(start_time)
+        london_tz = ZoneInfo("Europe/London")
+        london_time = dt.astimezone(london_tz)
+        result = london_time.strftime("%H:%M") + " (London)"
+
+        if user_tz and user_tz != "Europe/London":
+            try:
+                user_zone = ZoneInfo(user_tz)
+                user_time = dt.astimezone(user_zone)
+                result += f" / {user_time.strftime('%H:%M')} (ваше время, {user_tz})"
+                # Добавляем "через N часов" если есть разница
+                diff_hours = int((user_time - london_time).total_seconds() / 3600)
+                if abs(diff_hours) > 0:
+                    sign = "+" if diff_hours > 0 else ""
+                    result += f" [{sign}{diff_hours}ч к London]"
+            except Exception:
+                pass
+        return result
+    except Exception:
+        return start_time[:16] if start_time else "—"
+
+
 class LessonOpsWorkflow:
     def __init__(self, db_path: str | None = None):
         self.repo = WorkflowRepository(db_path)
@@ -59,6 +89,7 @@ class LessonOpsWorkflow:
         start_time: str,
         tutor_name: str,
         tutor_telegram_id: str | None,
+        tutor_timezone: str | None = None,
         student_rows: list[dict],
     ) -> None:
         start_dt = _parse_dt(start_time)
@@ -78,6 +109,8 @@ class LessonOpsWorkflow:
                 "student_client_user_id": student.get("client_user_id"),
                 "tutor_name": tutor_name,
                 "start_time": start_time,
+                # Timezone ученика — для dual-time display в напоминаниях
+                "actor_timezone": student.get("timezone") or "Europe/London",
             }
             wid = await self.repo.create("prelesson_parent", "running", data)
             await self.scheduler.create(wid, _schedule_at(reminder_dt), "parent_prelesson_reminder", {"workflow_id": wid})
@@ -86,6 +119,7 @@ class LessonOpsWorkflow:
         # Tutor-side prelesson reminder.
         if tutor_telegram_id:
             student_names = [s.get("name") or s.get("student_name") or s.get("client_user_id") or "Ученик" for s in student_rows]
+            tutor_tz = tutor_timezone or "Europe/London"
             tutor_data = {
                 "class_id": class_id,
                 "actor_type": "tutor",
@@ -94,6 +128,7 @@ class LessonOpsWorkflow:
                 "student_names": student_names,
                 "student_count": len(student_names),
                 "start_time": start_time,
+                "actor_timezone": tutor_tz,
             }
             wid = await self.repo.create("prelesson_tutor", "running", tutor_data)
             await self.scheduler.create(wid, _schedule_at(reminder_dt), "tutor_prelesson_reminder", {"workflow_id": wid})
@@ -107,6 +142,7 @@ class LessonOpsWorkflow:
                 "student_names": student_names,
                 "student_count": len(student_names),
                 "start_time": start_time,
+                "actor_timezone": tutor_tz,
                 "student_client_user_id": student_rows[0].get("client_user_id") if len(student_rows) == 1 else None,
                 "parent_telegram_id": student_rows[0].get("parent_telegram_id") if len(student_rows) == 1 else None,
             }
@@ -243,8 +279,13 @@ class LessonOpsWorkflow:
         nonce = data.get("nonce") or secrets.token_hex(4)
         data["nonce"] = nonce
         await self.repo.update_data(wid, data)
+        # Dual timezone display: London + пользовательский
+        start_time = data.get("start_time", "")
+        user_tz = data.get("actor_timezone")
+        time_display = _format_dual_time(start_time, user_tz) if start_time else ""
+        time_line = f"\n🕐 Время: {time_display}" if time_display else ""
         msg = (
-            f"⏰ Напоминание: через {settings.albion_prelesson_reminder_min} мин занятие.\n"
+            f"⏰ Напоминание: через {settings.albion_prelesson_reminder_min} мин занятие.{time_line}\n"
             f"Ученик: {data.get('student_name', 'Ученик')}\n"
             f"Репетитор: {data.get('tutor_name', 'Репетитор')}\n\n"
             f"Подтвердите, пожалуйста, статус или ответьте текстом."
@@ -274,8 +315,13 @@ class LessonOpsWorkflow:
         data["nonce"] = nonce
         await self.repo.update_data(wid, data)
         students = ", ".join(data.get("student_names") or []) or "учеником"
+        # Dual timezone display
+        start_time = data.get("start_time", "")
+        user_tz = data.get("actor_timezone")
+        time_display = _format_dual_time(start_time, user_tz) if start_time else ""
+        time_line = f"\n🕐 Время: {time_display}" if time_display else ""
         msg = (
-            f"🧑‍🏫 Через {settings.albion_prelesson_reminder_min} мин урок.\n"
+            f"🧑‍🏫 Через {settings.albion_prelesson_reminder_min} мин урок.{time_line}\n"
             f"Репетитор: {data.get('tutor_name', 'Репетитор')}\n"
             f"Ученики: {students}\n\n"
             f"Подтвердите готовность."
