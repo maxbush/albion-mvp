@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class WorkflowEngine:
-    def __init__(self, db_path: str = "albion.db"):
+    def __init__(self, db_path: str | None = None):
         self.repo = WorkflowRepository(db_path)
         self.scheduler = ScheduledActionRepository(db_path)
 
@@ -43,7 +43,4 @@ class WorkflowEngine:
 
 # Global singleton
 from src.config import settings
-import re
-_match = re.match(r'sqlite\+aiosqlite:///(.+)', settings.database_url)
-_db_path = _match.group(1) if _match else "albion.db"
-engine = WorkflowEngine(_db_path)
+engine = WorkflowEngine(settings.database_path)

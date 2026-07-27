@@ -138,6 +138,28 @@ def test_valid_signature_acks_and_captures_type(wh_client, monkeypatch, tmp_path
     assert rows and rows[0][0] == "attendance" and rows[0][1] == 1
 
 
+def test_classstatus_webhook_updates_merithub_class_state(wh_client, monkeypatch):
+    sec = "real"
+    monkeypatch.setattr(settings, "merithub_webhook_secret", sec)
+    body = json.dumps({
+        "requestType": "classStatus",
+        "classId": "C1",
+        "status": "lv",
+        "startTime": "2026-07-27T15:00:00+03:00",
+    }).encode()
+    r = wh_client.post(
+        "/merithub/webhook",
+        content=body,
+        headers={"x-merithub-signature": _hmac_hex(sec, body), "content-type": "application/json"},
+    )
+    assert r.status_code == 200
+    import sqlite3
+    con = sqlite3.connect("albion.db")
+    rows = con.execute("SELECT class_id, last_status FROM merithub_class_status WHERE class_id='C1'").fetchall()
+    con.close()
+    assert rows == [("C1", "lv")]
+
+
 # =====================================================================
 # Команда /mh_events
 # =====================================================================

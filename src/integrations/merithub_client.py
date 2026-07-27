@@ -136,7 +136,7 @@ class MeritHubClient:
         title: str = "",
         img: str = DEFAULT_IMG,
         lang: str = "en",
-        timezone: str = "Asia/Kolkata",
+        timezone: str = "Europe/London",
         desc: str = "",
     ) -> dict:
         """role: 'C' = репетитор/creator, 'M' = ученик. Возвращает ответ MeritHub
@@ -166,7 +166,7 @@ class MeritHubClient:
         start_time: str,
         duration: int,
         type: str = "oneTime",
-        timezone: str = "Asia/Kolkata",
+        timezone: str = "Europe/London",
         layout: str = "CR",
         status: str = "up",
         description: str = "",
@@ -202,7 +202,7 @@ class MeritHubClient:
         title: str,
         start_time: str,
         duration: int,
-        timezone: str = "Asia/Kolkata",
+        timezone: str = "Europe/London",
         description: str = "",
         layout: str = "CR",
         login: bool = False,
@@ -296,20 +296,4 @@ class MeritHubClient:
                 ids.add(str(uid))
         return ids
 
-    @staticmethod
-    def map_lesson(d: dict):  # совместимость со старым интерфейсом (не используется в авто-флоу)
-        from src.integrations.base import Lesson
-        def _dt(v):
-            try:
-                return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-            except Exception:
-                return datetime(1970, 1, 1)
-        return Lesson(
-            id=str(d.get("classId") or d.get("id")),
-            student_id=str(d.get("student_id", "")),
-            tutor_id=str(d.get("tutor_id", "")),
-            subject=d.get("subject", ""),
-            start_time=_dt(d.get("startTime") or d.get("start_time")),
-            end_time=_dt(d.get("endTime") or d.get("end_time")),
-            status=d.get("status", "scheduled"),
-        )
+

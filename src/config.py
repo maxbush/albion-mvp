@@ -1,5 +1,7 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
+from urllib.parse import urlparse
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -21,8 +23,8 @@ class Settings(BaseSettings):
     app_name: str = "ALBION MVP"
     log_level: str = "INFO"
 
-    llm_model: str = "anthropic/claude-3-haiku"
-    llm_cheap_model: str = "openai/gpt-4o-mini"
+    llm_model: str = "deepseek/deepseek-v4-flash"
+    llm_cheap_model: str = "deepseek/deepseek-v4-flash"
 
     # MeritHub API (OAuth2 + JWT). Без client_id+secret фабрика возвращает mock.
     merithub_client_id: str | None = None
@@ -47,8 +49,12 @@ class Settings(BaseSettings):
     albion_notify_parent_delay_min: int = 5
     albion_escalate_delay_min: int = 15
 
-    # Частота тика планировщика. Для пилота важна малая задержка, поэтому дефолт 5с.
-    albion_scheduler_interval_sec: int = 5
+    # Напоминания/контроль перед уроком.
+    albion_prelesson_reminder_min: int = 15
+    albion_class_live_grace_min: int = 5
+
+    # Частота тика планировщика. Для пилота удобно 5с, для обычного режима 30с.
+    albion_scheduler_interval_sec: int = 30
 
     # Пилот: имя тестового ученика для сценария /pilot_absent.
     albion_pilot_student_name: str = "Пилотный ученик"
@@ -61,6 +67,15 @@ class Settings(BaseSettings):
     def merithub_use_real(self) -> bool:
         """True, если заданы MeritHub CLIENT_ID + CLIENT_SECRET (Vendor Agnostic switch)."""
         return bool(self.merithub_client_id and self.merithub_client_secret)
+
+    @property
+    def database_path(self) -> str:
+        """Локальный путь к sqlite-файлу из DATABASE_URL."""
+        parsed = urlparse(self.database_url)
+        if parsed.scheme == "sqlite+aiosqlite":
+            path = parsed.path.lstrip("/")
+            return path or "albion.db"
+        return "albion.db"
 
 
 settings = Settings()

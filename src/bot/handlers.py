@@ -1,15 +1,18 @@
 """Telegram bot — команды, inline кнопки, kill switch, demo-data seed."""
 
-import asyncio, logging, secrets, aiosqlite
-from datetime import datetime, timezone, timedelta
+import asyncio
+import json
+import logging
+from datetime import datetime, timedelta, timezone
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
+from src.ai.client import llm_client
 from src.config import settings
 from src.db.repository import (
-    UserRepository,
     IncidentRepository,
+    UserRepository,
     ScheduledActionRepository,
     NotificationRepository,
     WorkflowRepository,
@@ -20,6 +23,7 @@ from src.events.types import Event, EventTypes
 from src.integrations.airtable_mock import MockAirtableService
 from src.workflows.engine import engine
 from src.workflows.absence import AbsenceWorkflow
+from src.workflows.lesson_ops import LessonOpsWorkflow
 from src.bot.roles import register_role_handlers, get_coordinator_ids, is_admin
 from src.bot.pilot import register_pilot_handlers
 
@@ -44,6 +48,20 @@ async def can_send_async(telegram_id: str) -> bool:
     repo = UserRepository()
     user = await repo.get_by_telegram_id(telegram_id)
     return user is not None and user.get("role") == "coordinator"
+
+
+def get_kill_switch_level() -> int:
+    """Возвращает текущий уровень kill switch (для внешних модулей)."""
+    return _kill_switch_level
+
+
+def set_kill_switch_level(level: int) -> None:
+    """Устанавливает уровень kill switch (0=off, 1=coordinators only, 2=full).
+
+    NOTE: значение хранится только в памяти. После рестарта возвращается к дефолту (2).
+    Для продакшена нужно персистить в БД или env."""
+    global _kill_switch_level
+    _kill_switch_level = level
 
 
 async def seed_demo_data() -> None:
@@ -89,23 +107,20 @@ async def _ensure_user(upd: Update, default_role: str = "parent") -> dict:
     return existing
 
 
-# =====================================================================
-# DEMO: сброс данных
-# =====================================================================
-
-async def _reset_demo(db_path: str = "albion.db") -> None:
-    """Очищает таблицы в безопасном порядке."""
-    tables = ["scheduled_actions", "notifications", "incidents", "workflow_instances"]
-    async with aiosqlite.connect(db_path) as db:
-        db.row_factory = aiosqlite.Row
-        for t in tables:
-            await db.execute(f"DELETE FROM {t}")
-        await db.commit()
-    logger.info("Demo data reset: all tables cleared")
+async def _ensure_role(upd: Update, role: str) -> dict:
+    user = upd.effective_user
+    repo = UserRepository()
+    uid, _ = await repo.set_role_by_telegram(
+        str(user.id),
+        role,
+        name=user.full_name or str(user.id),
+        username=user.username,
+    )
+    return await repo.get(uid)
 
 
 # =====================================================================
-# DEMO: solo-сценарий "отсутствие"
+# DEMO: solo-сценарий "отсутствие" (только при ALBION_DEMO_MODE=true)
 # =====================================================================
 
 async def _demo_solo_absence(upd: Update, _ctx) -> None:
@@ -151,11 +166,10 @@ async def _demo_solo_absence(upd: Update, _ctx) -> None:
     await asyncio.sleep(1.5)
 
     # Шаг 3 — макет сообщения с кнопками
-    cb_data = f"demo_resolve:{inc_id}:{wid}"
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Всё хорошо", callback_data=cb_data),
-        InlineKeyboardButton("❌ Не придём", callback_data=cb_data),
-        InlineKeyboardButton("⏰ Опоздаем", callback_data=cb_data),
+        InlineKeyboardButton("✅ Всё хорошо", callback_data=f"demo_resolve:{inc_id}:{wid}:ok"),
+        InlineKeyboardButton("❌ Не придём", callback_data=f"demo_resolve:{inc_id}:{wid}:no"),
+        InlineKeyboardButton("⏰ Опоздаем", callback_data=f"demo_resolve:{inc_id}:{wid}:late"),
     ]])
     await chat.send_message(
         "📤 Сообщение родителю\n"
@@ -178,35 +192,44 @@ async def _demo_solo_absence(upd: Update, _ctx) -> None:
 # =====================================================================
 
 async def cmd_start(upd: Update, _ctx) -> None:
-    user_data = await _ensure_user(upd, "parent")
+    user = upd.effective_user
+    tg_id = str(user.id)
+    repo = UserRepository()
+    existing = await repo.get_by_telegram_id(tg_id)
 
-    if settings.albion_demo_mode:
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👨‍💼 Координатор", callback_data="role_coordinator"),
-            InlineKeyboardButton("👨‍👩‍👦 Родитель", callback_data="role_parent"),
-        ]])
+    if existing:
+        # Уже зарегистрирован — показываем профиль
+        role = existing["role"]
+        emoji = {"parent": "👨‍👩‍👦", "tutor": "🧑‍🏫", "coordinator": "👨‍💼", "student": "🎓"}.get(role, "")
+        admin_mark = " ★" if is_admin(tg_id) else ""
         await upd.message.reply_text(
-            "👋 *Добро пожаловать в ALBION!*\n\nВыберите роль:",
+            f"👋 С возвращением, {user.full_name or '—'}!\n\n"
+            f"Ваша роль: {emoji} {role}{admin_mark}\n"
+            f"TG ID: `{tg_id}`\n\n"
+            f"Хотите сменить роль? Нажмите кнопку ниже.",
             parse_mode="Markdown",
-            reply_markup=kb,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔄 Сменить роль", callback_data="change_role"),
+            ]]),
         )
         return
 
+    # Новый пользователь — показываем выбор роли
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("👨‍👩‍👦 Я родитель", callback_data="register_parent"),
+            InlineKeyboardButton("🧑‍🏫 Я репетитор", callback_data="register_tutor"),
+        ],
+        [
+            InlineKeyboardButton("👨‍💼 Я координатор", callback_data="register_coordinator"),
+        ],
+    ])
     await upd.message.reply_text(
-        "👋 *Добро пожаловать в ALBION!*\n\n"
-        "Команды:\n"
-        "`/whoami` — мой TG ID и роль\n"
-        "`/role <ID> <роль>` — назначить роль (владельцы)\n"
-        "`/roles` — участники и роли (владельцы)\n"
-        "`/pilot_seed` — проверка готовности пилота (владельцы)\n"
-        "`/pilot_absent` — 🚀 прогон сценария неявки (владельцы)\n"
-        "`/absent <ID>` — ученик отсутствует\n"
-        "`/mock_absent` — демо: absent через 10 сек\n"
-        "`/mock_demo` — демо: уведомление через 30 сек\n"
-        "`/status` — состояние системы\n"
-        "`/kill_switch <0|1|2>` — режим отправки\n\n"
-        "Или просто напишите — разберусь.",
+        f"👋 *Добро пожаловать в ALBION!*\n\n"
+        f"Меня зовут ALBION AI — я помогаю координировать занятия.\n\n"
+        f"Пожалуйста, выберите вашу роль:",
         parse_mode="Markdown",
+        reply_markup=kb,
     )
 
 
@@ -219,9 +242,15 @@ async def cmd_status(upd: Update, _ctx) -> None:
     role = "неизвестно"
     u = await UserRepository().get_by_telegram_id(str(upd.effective_user.id))
     if u: role = u["role"]
-    ai = "Mock" if not settings.openrouter_api_key else "Claude"
+    # AI-инфу показываем только админам (не сливаем модель обычным пользователям)
+    if is_admin(upd.effective_user.id):
+        ai = f"Mock ({settings.llm_cheap_model})" if not settings.openrouter_api_key else settings.llm_model
+        ks_info = f"\nKill Switch: {labels.get(_kill_switch_level, '?')}"
+    else:
+        ai = "работает" if settings.openrouter_api_key else "демо-режим"
+        ks_info = ""
     await upd.message.reply_text(
-        f"✅ *ALBION MVP*\nВремя: {datetime.now():%H:%M:%S}\nРоль: {role}\nAI: {ai}\nОжидает: {cnt} задач\nKill Switch: {labels.get(_kill_switch_level, '?')}",
+        f"✅ *ALBION*\nВремя: {datetime.now():%H:%M:%S}\nРоль: {role}\nAI: {ai}\nОжидает: {cnt} задач{ks_info}",
         parse_mode="Markdown",
     )
 
@@ -237,6 +266,9 @@ async def cmd_absent(upd: Update, _ctx) -> None:
 
 
 async def cmd_mock_absent(upd: Update, _ctx) -> None:
+    if not settings.albion_demo_mode:
+        await upd.message.reply_text("Демо-режим выключен. Установите ALBION_DEMO_MODE=true.")
+        return
     await _ensure_user(upd, "coordinator")
     at = MockAirtableService()
     lesson = await at.get_lesson("lesson_1")
@@ -253,10 +285,10 @@ async def cmd_mock_absent(upd: Update, _ctx) -> None:
 
 
 async def cmd_mock_demo(upd: Update, _ctx) -> None:
-    await _ensure_user(upd, "coordinator")
-    sched = ScheduledActionRepository()
-    await sched.create(0, (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(), "demo_notify", {"message": "Привет! Демо-уведомление."})
-    await upd.message.reply_text("Через 30 сек придёт демо-уведомление.", parse_mode="Markdown")
+    if not settings.albion_demo_mode:
+        await upd.message.reply_text("Демо-режим выключен. Установите ALBION_DEMO_MODE=true.")
+        return
+    await _demo_solo_absence(upd, _ctx)
 
 
 async def cmd_kill_switch(upd: Update, _ctx) -> None:
@@ -268,30 +300,32 @@ async def cmd_kill_switch(upd: Update, _ctx) -> None:
         await upd.message.reply_text("/kill_switch 0|1|2")
         return
     try:
-        level = int(_ctx.args[0])
-        if level not in (0, 1, 2): raise ValueError
+        lvl = int(_ctx.args[0])
+        if lvl not in (0, 1, 2):
+            raise ValueError
     except ValueError:
-        await upd.message.reply_text("Уровни: 0 выкл, 1 координаторы, 2 всё")
+        await upd.message.reply_text("Уровень: 0, 1 или 2")
         return
-    _kill_switch_level = level
-    labels = {0: "ВЫКЛ", 1: "Координаторы", 2: "ВСЁ"}
-    await upd.message.reply_text(f"Kill Switch: {labels[level]}")
-    logger.warning("kill_switch=%d by %s", level, upd.effective_user.id)
+    set_kill_switch_level(lvl)
+    labels = {0: "ВСЁ ВЫКЛ", 1: "Только координаторам", 2: "Полностью"}
+    await upd.message.reply_text(f"🔌 Kill Switch: {labels[lvl]}")
+    logger.info("Kill switch set to %d", lvl)
+    await bus.publish(Event(EventTypes.SYSTEM_KILL_SWITCH, {"level": lvl}))
 
 
 async def cmd_ok(upd: Update, _ctx) -> None:
     if not _ctx.args:
-        await upd.message.reply_text("/ok <ID>")
+        await upd.message.reply_text("Используйте: /ok <ID ситуации>")
         return
     try:
         iid = int(_ctx.args[0])
     except ValueError:
-        await upd.message.reply_text("ID должен быть числом")
+        await upd.message.reply_text("ID должен быть числом.")
         return
     repo = IncidentRepository()
     inc = await repo.get(iid)
     if not inc:
-        await upd.message.reply_text(f"Ситуация #{iid} не найдена.")
+        await upd.message.reply_text("Ситуация не найдена.")
         return
     if inc["status"] == "resolved":
         await upd.message.reply_text("Уже закрыта.")
@@ -302,7 +336,7 @@ async def cmd_ok(upd: Update, _ctx) -> None:
 
 
 # =====================================================================
-# CALLBACK HANDLER
+# CALLBACK QUERY HANDLER
 # =====================================================================
 
 async def handle_callback(upd: Update, _ctx) -> None:
@@ -311,123 +345,125 @@ async def handle_callback(upd: Update, _ctx) -> None:
     data = query.data
     chat_id = upd.effective_chat.id
 
+    # --- Регистрация: выбор роли новым пользователем ---
+    if data.startswith("register_"):
+        role = data.replace("register_", "")
+        if role not in ("parent", "tutor", "coordinator"):
+            await query.edit_message_text("Неизвестная роль.")
+            return
+        user = upd.effective_user
+        repo = UserRepository()
+        existing = await repo.get_by_telegram_id(str(user.id))
+        if existing:
+            # Уже зарегистрирован — меняем роль
+            await repo.update_role(existing["id"], role)
+        else:
+            await repo.create(str(user.id), role, user.full_name or str(user.id), username=user.username)
+        emoji = {"parent": "👨‍👩‍👦", "tutor": "🧑‍🏫", "coordinator": "👨‍💼"}.get(role, "")
+        admin_mark = " ★" if is_admin(str(user.id)) else ""
+        await query.edit_message_text(
+            f"✅ Отлично! Вы зарегистрированы как {emoji} *{role}*{admin_mark}.\n\n"
+            f"TG ID: `{user.id}`\n"
+            f"Имя: {user.full_name or '—'}\n\n"
+            f"Напишите что-нибудь — я разберусь!",
+            parse_mode="Markdown",
+        )
+        logger.info("User %s registered as %s", user.id, role)
+        return
+
+    if data == "change_role":
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("👨‍👩‍👦 Родитель", callback_data="register_parent"),
+                InlineKeyboardButton("🧑‍🏫 Репетитор", callback_data="register_tutor"),
+            ],
+            [
+                InlineKeyboardButton("👨‍💼 Координатор", callback_data="register_coordinator"),
+            ],
+        ])
+        await query.edit_message_text("Выберите новую роль:", reply_markup=kb)
+        return
+
     # --- Выбор роли в демо-режиме ---
     if data == "role_coordinator":
-        user_data = await _ensure_user(upd, "coordinator")
+        await _ensure_role(upd, "coordinator")
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("🚨 Ученик отсутствует", callback_data="demo_absent"),
             InlineKeyboardButton("📊 Отчёт о сессии", callback_data="demo_report"),
-            InlineKeyboardButton("🔄 Сбросить демо", callback_data="demo_reset"),
         ]])
         await query.edit_message_text(
-            "👨‍💼 *Меню координатора*\n\nВыберите действие:",
+            "👨‍💼 *Вы в роли координатора.*\n\n"
+            "Нажмите кнопку, чтобы запустить демо-сценарий.",
             parse_mode="Markdown",
             reply_markup=kb,
         )
         return
 
     if data == "role_parent":
-        await _ensure_user(upd, "parent")
+        await _ensure_role(upd, "parent")
         await query.edit_message_text(
             "👨‍👩‍👦 *Вы в роли родителя.*\n\n"
             "В демо-режиме родительские уведомления симулируются.\n"
-            "Нажмите /start чтобы вернуться к выбору роли.",
+            "Попросите координатора запустить сценарий.",
             parse_mode="Markdown",
         )
         return
 
-    # --- Демо: запуск сценария ---
     if data == "demo_absent":
         await _demo_solo_absence(upd, _ctx)
         return
 
-    # --- Демо: отчёт ---
     if data == "demo_report":
-        await _show_demo_report(upd, _ctx)
-        return
-
-    # --- Демо: сброс ---
-    if data == "demo_reset":
-        user = await UserRepository().get_by_telegram_id(str(upd.effective_user.id))
-        if not user or user["role"] != "coordinator":
-            await query.edit_message_text("❌ Только координатор может сбросить демо.")
-            return
         if not settings.albion_demo_mode:
-            await query.edit_message_text("❌ Сброс доступен только в демо-режиме.")
+            await query.edit_message_text("Демо-режим выключен.")
             return
-        await _reset_demo()
-        await query.edit_message_text("🔄 Демо-данные сброшены. Нажмите /start чтобы начать заново.")
+        await _show_demo_report(upd, _ctx)
         return
 
     # --- Демо: ответ родителя на кнопки ---
     if data.startswith("demo_resolve:"):
         parts = data.split(":")
-        if len(parts) < 3:
+        if len(parts) < 4:
             await query.edit_message_text("Ошибка: некорректные данные.")
             return
         try:
             inc_id = int(parts[1])
             wid = int(parts[2])
         except (IndexError, ValueError):
+            await query.edit_message_text("Ошибка: некорректные данные.")
             return
-
-        # Идемпотентность: проверяем, не закрыта ли уже ситуация
-        inc_repo = IncidentRepository()
-        inc = await inc_repo.get(inc_id)
-        if not inc or inc["status"] == "resolved":
-            await query.answer("✅ Уже закрыто", show_alert=False)
-            return
+        action = parts[3]
+        demo_labels = {
+            "ok": ("parent_ok", "Всё хорошо"),
+            "no": ("parent_not_coming", "Не придём"),
+            "late": ("parent_late", "Опоздаем"),
+        }
+        resolution, parent_answer = demo_labels.get(action, ("parent_confirmed", "Ответ получен"))
 
         # Убираем кнопки с сообщения
         await query.edit_message_reply_markup(None)
 
-        # Закрываем ситуацию и отменяем workflow
-        await inc_repo.update_status(inc_id, "resolved", "parent_confirmed")
-        sched_repo = ScheduledActionRepository()
-        await sched_repo.cancel_by_workflow(wid)
-        wf_repo = WorkflowRepository()
-        await wf_repo.cancel(wid)
-        logger.info("Demo resolved: inc=%d wf=%d", inc_id, wid)
+        # Используем основную логику workflow, чтобы не дублировать отмену задач.
+        wf = AbsenceWorkflow()
+        await wf.resolve_absence(inc_id, str(query.from_user.id), resolution=resolution)
+        logger.info("Demo resolved: inc=%d wf=%d action=%s", inc_id, wid, action)
 
         # Редактируем "Ждём ответ..." на ответ родителя
         waiting_msg_id = _demo_waiting_messages.get(chat_id)
-        button_texts = {
-            "✅ Всё хорошо": "Всё хорошо",
-            "❌ Не придём": "Не придём",
-            "⏰ Опоздаем": "Опоздаем",
-        }
-        # Определяем, какая кнопка была нажата
-        # В callback_data нет текста кнопки, поэтому получаем его через query.data
-        # На самом деле мы не знаем точно, какая кнопка была нажата.
-        # Используем query.mostly... нет такого.
-        # Придётся определить по callback_data. Но у всех трёх кнопок одинаковый callback_data.
-        # Значит, используем query.data от разных кнопок? Нет, он одинаковый.
-        # Модифицируем: сделаем разные callback_data для разных кнопок.
-        # Но проще: просто покажем generic ответ, как в спецификации:
-        # "✔ Родитель ответил: <Текст кнопки>"
-        # Текст кнопки лежит в query.data... нет, query.data у всех одинаковый "demo_resolve:..."
-        # Решение: я сохраню текст нажатой кнопки из query.
-        # На самом деле у InlineKeyboardButton.text есть текст, но его нет в callback.
-        # Проще всего: используем "подтвердил" как generic ответ.
-        parent_answer = "Ответ получен"
-
         if waiting_msg_id:
             try:
                 await _ctx.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=waiting_msg_id,
-                    text="✔ Родитель ответил: Всё хорошо.",
+                    text=f"✔ Родитель ответил: {parent_answer}.",
                 )
             except Exception:
                 pass  # сообщение могло быть удалено
 
         await asyncio.sleep(1.0)
-
-        await upd.effective_chat.send_message("📚 Уведомляю преподавателя...")
+        await upd.effective_chat.send_message("📚 Уведомляю преподавателя и координатора...")
         await asyncio.sleep(1.0)
-
-        await upd.effective_chat.send_message("✅ Ситуация закрыта. Все участники уведомлены.")
-
+        await upd.effective_chat.send_message(f"✅ Ситуация закрыта. Ответ родителя: {parent_answer}.")
         _demo_resolved.add(chat_id)
         return
 
@@ -440,12 +476,31 @@ async def handle_callback(upd: Update, _ctx) -> None:
         except (IndexError, ValueError):
             await query.edit_message_text("Ошибка: некорректные данные.")
             return
+        action = parts[3] if len(parts) > 3 else "ok"
 
         idem_key = f"tg_callback:{data}"
         idem = IdempotencyRepository()
         if await idem.exists(idem_key):
             await query.answer("✅ Уже обработано", show_alert=False)
             return
+
+        # Проверяем статус инцидента ДО обработки
+        inc_repo = IncidentRepository()
+        inc = await inc_repo.get(inc_id)
+        if not inc:
+            await query.edit_message_text("Ситуация не найдена.")
+            return
+
+        if inc["status"] == "resolved":
+            # Инцидент уже закрыт (через другую кнопку, /ok или free text)
+            await query.answer("ℹ️ Эта ситуация уже закрыта", show_alert=False)
+            try:
+                await query.edit_message_reply_markup(None)
+            except Exception:
+                pass
+            return
+
+        was_escalated = inc["status"] == "escalated"
 
         wf_repo = WorkflowRepository()
         wf_row = await wf_repo._fetchone(
@@ -456,8 +511,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
             await query.edit_message_text("Ситуация уже закрыта или workflow не найден.")
             return
         try:
-            import json as _json
-            wf_data = _json.loads(wf_row.get("data") or "{}")
+            wf_data = json.loads(wf_row.get("data") or "{}")
         except Exception:
             wf_data = {}
         expected_nonce = wf_data.get("parent_callback_nonce")
@@ -465,11 +519,79 @@ async def handle_callback(upd: Update, _ctx) -> None:
             await query.answer("⛔ Кнопка устарела", show_alert=True)
             return
 
+        action_map = {
+            "ok": ("parent_ok", "✅ Всё в порядке! Спасибо."),
+            "no": ("parent_not_coming", "❌ Спасибо! Отметили, что сегодня занятия не будет."),
+            "late": ("parent_late", "⏰ Спасибо! Отметили, что ученик опоздает."),
+        }
+        resolution, parent_ack = action_map.get(action, ("parent_confirmed", "✅ Ответ получен."))
+
         wf = AbsenceWorkflow()
-        await wf.resolve_absence(inc_id, str(query.from_user.id))
+        await wf.resolve_absence(inc_id, str(query.from_user.id), resolution=resolution)
+        outcome = "ok" if action == "ok" else ("no_show" if action == "no" else ("late" if action == "late" else "free_text"))
+        await wf.notify_coordinators_parent_reply(
+            inc_id,
+            outcome,
+            parent_telegram_id=str(query.from_user.id),
+        )
+
+        # Если эскалация уже ушла координатору — сообщаем об этом родителю
+        if was_escalated:
+            parent_ack += "\n\nℹ️ Координатор уже был уведомлён об отсутствии ответа. Ваш ответ передан — инцидент закрыт."
+
         await idem.save(idem_key, "telegram_callback", response="resolved")
-        await query.edit_message_text(f"✅ Всё в порядке! Ситуация #{inc_id} закрыта. (подтверждено в {datetime.now():%H:%M})")
-        logger.info("Incident %d resolved via button", inc_id)
+        # Также сохраняем idempotency для ВСЕХ кнопок этого инцидента,
+        # чтобы другие кнопки не сработали повторно
+        for other_action in ("ok", "no", "late"):
+            if other_action != action:
+                other_key = f"tg_callback:resolve:{inc_id}:{nonce}:{other_action}"
+                await idem.save(other_key, "telegram_callback_blocked", response="blocked_by_resolve")
+
+        await query.edit_message_text(f"{parent_ack}\nСитуация #{inc_id} закрыта в {datetime.now():%H:%M}.")
+        logger.info("Incident %d resolved via button action=%s (was_escalated=%s)", inc_id, action, was_escalated)
+        return
+
+    if data.startswith("checkin:"):
+        parts = data.split(":")
+        try:
+            wid = int(parts[1])
+            nonce = parts[2]
+            action = parts[3]
+        except (IndexError, ValueError):
+            await query.edit_message_text("Ошибка: некорректные данные.")
+            return
+        idem_key = f"tg_callback:{data}"
+        idem = IdempotencyRepository()
+        if await idem.exists(idem_key):
+            await query.answer("✅ Уже обработано", show_alert=False)
+            return
+
+        repo = WorkflowRepository()
+        wf_row = await repo.get(wid)
+        if not wf_row or wf_row.get("state") != "running":
+            await query.edit_message_text("Этот сценарий уже завершён.")
+            return
+        try:
+            wf_data = json.loads(wf_row.get("data") or "{}")
+        except Exception:
+            wf_data = {}
+        expected_nonce = wf_data.get("nonce")
+        if expected_nonce and expected_nonce != nonce:
+            await query.answer("⛔ Кнопка устарела", show_alert=True)
+            return
+
+        ops = LessonOpsWorkflow()
+        await ops.record_checkin_response(wid, actor_tg=str(query.from_user.id), action=action)
+        await idem.save(idem_key, "telegram_checkin", response=action)
+        ack_map = {
+            "ready": "✅ Статус принят.",
+            "late": "⏰ Спасибо, отметили опоздание.",
+            "no_show": "❌ Спасибо, отметили отсутствие.",
+            "tech": "🛠 Спасибо, отметили техпроблему.",
+            "class_started": "✅ Отлично, старт урока зафиксирован.",
+            "student_absent": "👤 Спасибо, отметили отсутствие ученика.",
+        }
+        await query.edit_message_text(ack_map.get(action, "✅ Ответ принят."))
         return
 
     await query.edit_message_text("Неизвестная команда.")
@@ -482,7 +604,6 @@ async def handle_callback(upd: Update, _ctx) -> None:
 async def _show_demo_report(upd: Update, _ctx) -> None:
     """Формирует отчёт с реальными метриками из БД."""
     repo = IncidentRepository()
-    # Количество закрытых ситуаций
     closed = await repo._fetchone("SELECT COUNT(*) as cnt FROM incidents WHERE status='resolved'")
     closed_cnt = closed["cnt"] if closed else 0
 
@@ -494,7 +615,6 @@ async def _show_demo_report(upd: Update, _ctx) -> None:
         )
         return
 
-    # Последняя закрытая ситуация
     last = await repo._fetchone(
         "SELECT created_at, resolved_at FROM incidents WHERE status='resolved' AND resolved_at IS NOT NULL ORDER BY resolved_at DESC LIMIT 1"
     )
@@ -507,7 +627,6 @@ async def _show_demo_report(upd: Update, _ctx) -> None:
         except (ValueError, TypeError):
             pass
 
-    # Среднее время реакции по всем закрытым
     avg_row = await repo._fetchone(
         "SELECT AVG(CAST((julianday(resolved_at) - julianday(created_at)) * 86400 AS INTEGER)) as avg_sec "
         "FROM incidents WHERE status='resolved' AND resolved_at IS NOT NULL"
@@ -531,11 +650,115 @@ async def _show_demo_report(upd: Update, _ctx) -> None:
 # =====================================================================
 
 async def handle_message(upd: Update, _ctx) -> None:
-    await _ensure_user(upd, "parent")
-    text = upd.message.text
+    user_rec = await _ensure_user(upd, "parent")
+    text = upd.message.text or ""
+    tg_id = str(upd.effective_user.id)
+    if not text.strip():
+        return
     logger.info("Msg from %s: %s", upd.effective_user.id, text[:100])
+
+    # Parent/tutor pre-lesson check-ins: сначала пытаемся понять, не ответ ли это
+    # на reminder/start-check workflow.
+    ops = LessonOpsWorkflow()
+    role = (user_rec or {}).get("role")
+
+    if role == "parent":
+        active_checkin = await ops.find_active_checkin(tg_id, ("parent",))
+        if active_checkin:
+            wid, _data, _wf_type = active_checkin
+            interpreted = await llm_client.interpret_parent_reply(text)
+            status = interpreted.get("status", "other")
+            action = "ready" if status == "ok" else (status if status in {"late", "no_show"} else "other")
+            await ops.record_checkin_response(wid, actor_tg=tg_id, action=action, free_text=text)
+            reply_map = {
+                "ready": "✅ Спасибо! Отметили, что всё в порядке.",
+                "no_show": "❌ Спасибо! Отметили, что сегодня занятия не будет. Координатор уведомлён.",
+                "late": "⏰ Спасибо! Отметили, что ученик опоздает. Координатор уведомлён.",
+                "other": "💬 Спасибо! Передали ответ координатору для ручной обработки.",
+            }
+            await upd.message.reply_text(reply_map.get(action, reply_map["other"]))
+            return
+
+    if role == "tutor":
+        active_checkin = await ops.find_active_checkin(tg_id, ("tutor", "tutor_start"))
+        if active_checkin:
+            wid, data, _wf_type = active_checkin
+            actor_type = data.get("actor_type")
+            if actor_type == "tutor_start":
+                # Для tutor_start используем кнопки (callback), а не free-text.
+                # Free-text сюда попадает только если репетитор пишет вместо нажатия кнопки.
+                # Не делаем auto-detect student_absent из текста — слишком опасно (ложные срабатывания).
+                # Передаём в координатор для ручной обработки.
+                await ops.record_checkin_response(wid, actor_tg=tg_id, action="other", free_text=text)
+                await upd.message.reply_text(
+                    "💬 Спасибо! Передали ответ координатору для ручной обработки.\n"
+                    "Для быстрого ответа используйте кнопки из предыдущего сообщения."
+                )
+                return
+            else:
+                interpreted = await llm_client.interpret_tutor_reply(text)
+                action = interpreted.get("status", "other")
+            await ops.record_checkin_response(wid, actor_tg=tg_id, action=action, free_text=text)
+            reply_map = {
+                "ready": "✅ Спасибо! Отметили, что вы готовы.",
+                "late": "⏰ Спасибо! Отметили, что вы опоздаете. Координатор уведомлён.",
+                "no_show": "❌ Спасибо! Отметили, что урок не состоится. Координатор уведомлён.",
+                "tech": "🛠 Спасибо! Техпроблема зафиксирована. Координатор уведомлён.",
+                "other": "💬 Спасибо! Передали ответ координатору для ручной обработки.",
+            }
+            await upd.message.reply_text(reply_map.get(action, "✅ Ответ принят."))
+            return
+
+    # Если это родитель и у него есть активный инцидент по неявке — считаем,
+    # что это ответ на отсутствие. Пытаемся понять его через LLM/эвристику.
+    if role == "parent":
+        wf = AbsenceWorkflow()
+        active = await wf.find_active_incident_for_parent(tg_id)
+        if active:
+            inc_id, _wf_data = active
+            interpreted = await llm_client.interpret_parent_reply(text)
+            status = interpreted.get("status", "other")
+            resolution_map = {
+                "ok": "parent_ok",
+                "no_show": "parent_not_coming",
+                "late": "parent_late",
+                "other": "parent_text_reply",
+            }
+            reply_map = {
+                "ok": "✅ Спасибо! Отметили, что всё в порядке. Координатор уведомлён.",
+                "no_show": "❌ Спасибо! Отметили, что сегодня занятия не будет. Координатор уведомлён.",
+                "late": "⏰ Спасибо! Отметили, что ученик опоздает. Координатор уведомлён.",
+                "other": "💬 Спасибо! Передали ответ координатору для ручной обработки.",
+            }
+            await wf.resolve_absence(inc_id, tg_id, resolution=resolution_map.get(status, "parent_text_reply"))
+            await wf.notify_coordinators_parent_reply(
+                inc_id,
+                status if status in {"ok", "no_show", "late"} else "free_text",
+                parent_text=text,
+                parent_telegram_id=tg_id,
+            )
+            await upd.message.reply_text(reply_map.get(status, reply_map["other"]))
+            return
+
+        # Нет активного инцидента, но может быть недавний эскалированный?
+        # Если да — всё равно передаём текст координатору (поздний ответ).
+        escalated = await wf.find_escalated_incident_for_parent(tg_id)
+        if escalated:
+            inc_id, _wf_data = escalated
+            await wf.notify_coordinators_parent_reply(
+                inc_id,
+                "free_text",
+                parent_text=text,
+                parent_telegram_id=tg_id,
+            )
+            await upd.message.reply_text(
+                "💬 Спасибо за ответ! Координатор уже был уведомлён ранее, "
+                "но ваш ответ передан для учёта."
+            )
+            return
+
     await bus.publish(Event(EventTypes.MESSAGE_INCOMING, {
-        "text": text, "telegram_id": str(upd.effective_user.id), "chat_id": str(upd.effective_chat.id),
+        "text": text, "telegram_id": tg_id, "chat_id": str(upd.effective_chat.id),
     }))
     await upd.message.reply_text("Обрабатываю...")
 
@@ -571,6 +794,7 @@ def setup_handlers(app: Application) -> None:
         tg = event.data.get("telegram_id")
         msg = event.data.get("message", "")
         cb_data = event.data.get("callback_data")
+        buttons = event.data.get("buttons") or []
         if not tg or not msg:
             return
         if not await can_send_async(tg):
@@ -579,9 +803,15 @@ def setup_handlers(app: Application) -> None:
         last_error = None
         for attempt in range(3):
             try:
-                if cb_data:
-                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Всё в порядке", callback_data=cb_data)]])
-                    await app.bot.send_message(chat_id=tg, text=msg, reply_markup=kb)
+                reply_markup = None
+                if buttons:
+                    reply_markup = InlineKeyboardMarkup([
+                        [InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])] for btn in buttons
+                    ])
+                elif cb_data:
+                    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Всё в порядке", callback_data=cb_data)]])
+                if reply_markup:
+                    await app.bot.send_message(chat_id=tg, text=msg, reply_markup=reply_markup)
                 else:
                     await app.bot.send_message(chat_id=tg, text=msg)
                 nid = event.data.get("notification_id")
@@ -619,5 +849,6 @@ def setup_handlers(app: Application) -> None:
                 logger.error("DLQ alert send failed to %s: %s", tg, e)
 
     bus.subscribe(EventTypes.SYSTEM_DLQ_ALERT, dlq_handler)
-    bus.subscribe(EventTypes.SCHEDULER_TICK, _demo_tick_handler)
-    logger.info("Bot handlers registered (kill_switch=%d)", _kill_switch_level)
+    if settings.albion_demo_mode:
+        bus.subscribe(EventTypes.SCHEDULER_TICK, _demo_tick_handler)
+    logger.info("Bot handlers registered (kill_switch=%d, demo=%s)", _kill_switch_level, settings.albion_demo_mode)

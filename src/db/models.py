@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS incidents (
     tutor_id INTEGER,
     coordinator_id INTEGER,
     type TEXT NOT NULL CHECK(type IN ('absence','late','cancellation','other')),
-    status TEXT NOT NULL DEFAULT 'open',
+    status TEXT NOT NULL DEFAULT 'pending',
     resolved_at TIMESTAMP,
     resolution TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -119,11 +119,15 @@ CREATE TABLE IF NOT EXISTS merithub_students (
     client_user_id TEXT PRIMARY KEY,
     merithub_user_id TEXT,
     name TEXT NOT NULL,
+    email TEXT,
     parent_telegram_id TEXT,
+    timezone TEXT DEFAULT 'Europe/London',
+    country TEXT,
     role TEXT NOT NULL DEFAULT 'student',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_mh_students_mh ON merithub_students(merithub_user_id);
+CREATE INDEX IF NOT EXISTS idx_mh_students_tz ON merithub_students(timezone);
 
 -- Метаданные классов MeritHub, созданных через ALBION.
 -- Нужны, чтобы потом реально добавлять пользователей в класс: MeritHub
@@ -139,6 +143,30 @@ CREATE TABLE IF NOT EXISTS merithub_classes (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_mh_classes_start ON merithub_classes(start_time);
+
+-- Контакты участников MeritHub в Telegram. Нужны для напоминаний tutor/parent.
+CREATE TABLE IF NOT EXISTS merithub_contacts (
+    client_user_id TEXT PRIMARY KEY,
+    telegram_id TEXT,
+    phone TEXT,
+    email TEXT,
+    name TEXT,
+    country TEXT,
+    city TEXT,
+    role TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_mh_contacts_tg ON merithub_contacts(telegram_id);
+CREATE INDEX IF NOT EXISTS idx_mh_contacts_phone ON merithub_contacts(phone);
+
+-- Последний статус класса по webhook classStatus.
+CREATE TABLE IF NOT EXISTS merithub_class_status (
+    class_id TEXT PRIMARY KEY,
+    last_status TEXT,
+    last_event_at TEXT,
+    payload TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 -- Зачисление в класс: нужно, чтобы по webhook attendance вычислить неявки
 -- (зачисленные минус присутствовавшие).
