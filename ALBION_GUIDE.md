@@ -429,6 +429,47 @@ Kill Switch: Полностью
    ```
 3. Перезапустить бота — автоматически переключится на реальный API
 
+### Импорт реальных данных из MeritHub
+
+**Шаг 1: Импорт учеников**
+```
+1. Откройте MeritHub → Users → Learners
+2. Скопируйте всю таблицу (Ctrl+A → Ctrl+C)
+3. Отправьте как сообщение боту
+4. Ответьте на это сообщение: /import_learners
+```
+Загружает: UserId, Name, Email, Country, Timezone.
+
+**Шаг 2: Импорт привязок родитель→ученик**
+```
+1. Откройте MeritHub → Learner's customers
+2. Скопируйте таблицу
+3. Отправьте боту
+4. Ответьте: /import_customers
+```
+Загружает: CustomerName, CustomerEmail, CustomerPhone, Country, City.
+
+**Шаг 3: Привязка Telegram (вручную)**
+```
+/mh_user <LearnerId> <parentTG> <имя>
+/mh_contact <LearnerId> tg <parentTG>
+```
+
+**Шаг 4: Проверка**
+```
+/mh_students     → ученики + timezone + parent contacts
+/mh_contacts     → все контакты
+/today           → обзор системы
+```
+
+### Создание занятий
+
+Все занятия создаются в **Europe/London** (британское время, как просит клиент).
+Ученики и репетиторы видят время в dual-формате:
+```
+🕐 15:00 (London) / 20:00 (ваше время, Asia/Almaty) [+5ч к London]
+```
+
 ### Webhook setup
 
 ```bash

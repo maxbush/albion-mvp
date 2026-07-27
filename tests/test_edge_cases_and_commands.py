@@ -349,6 +349,46 @@ async def test_cmd_mh_contact_unknown_student(tmp_path, monkeypatch):
     assert any("не найден" in r for r in upd.message.replies)
 
 
+# ── P1.2: cmd_import_customers ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cmd_import_customers_parses_tsv(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    await UserRepository("albion.db").create("100", "coordinator", "Admin")
+
+    # Сначала создаём ученика (learner)
+    srepo = MeritHubStudentRepository("albion.db")
+    await srepo.upsert("d7ovi1krtl0ga9qjus10", name="Ernest Mezheritsky", role="student")
+
+    # TSV данные (как при копировании из MeritHub Learner's customers)
+    tsv_data = (
+        "LearnerName\tLearnerEmail\tLearnerId\tCustomerName\tCustomerEmail\tCustomerId\tCustomerPhoneNumber\tCustomerAddress\tCustomerCountry\tCustomerCity\tCustomerZipCode\n"
+        "Ernest Mezheritsky\tmezheritskyiernest@gmail.com\td7ovi1krtl0ga9qjus10\tVictoria Eremayeva\ta.yeshmatova@albionconsult.co.uk\td7ovmlabjmufks8mv91g\t+380505292480\t\tUkraine\t\t"
+    )
+
+    from src.bot.pilot import cmd_import_customers
+    upd = FakeUpdate(FakeUser(100, "admin"))
+    upd.message.text = f"/import_customers {tsv_data}"
+
+    # Simulate reply_to_message
+    class FakeReply:
+        text = tsv_data
+    upd.message.reply_to_message = FakeReply()
+
+    await cmd_import_customers(upd, FakeContext([]))
+
+    # Проверяем что контакт создан
+    contact = await MeritHubContactRepository("albion.db").get("d7ovi1krtl0ga9qjus10")
+    assert contact is not None
+    assert contact["name"] == "Victoria Eremayeva"
+    assert contact["email"] == "a.yeshmatova@albionconsult.co.uk"
+    assert contact["phone"] == "+380505292480"
+    assert any("Импорт привязок" in r for r in upd.message.replies)
+
+
 # ── P1.3: cmd_mh_user with email= and phone= ─────────────────────────
 
 @pytest.mark.asyncio

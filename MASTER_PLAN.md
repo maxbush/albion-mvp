@@ -52,8 +52,9 @@
 
 ## 🟢 P3 — Cleanup / Polish
 
-- [ ] **P3.1** Обновить ALBION_GUIDE.md: добавить /import_learners, /import_customers, timezone info
-- [ ] **P3.2** Обновить DEMO_RUNBOOK.md: добавить секцию "Импорт реальных данных"
+- [x] **P1.2** Тест `cmd_import_customers` — парсинг TSV привязок родитель→ученик
+- [x] **P3.1** ALBION_GUIDE.md обновлён: импорт данных, dual-timezone, Europe/London canonical
+- [x] **P3.2** DEMO_RUNBOOK.md обновлён: секция "Импорт реальных данных" (4 шага)
 
 ---
 

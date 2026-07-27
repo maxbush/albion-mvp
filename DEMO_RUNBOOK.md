@@ -180,7 +180,25 @@ ALBION_CLASS_LIVE_GRACE_MIN=5
 
 ## 🎬 Часть 4: MeritHub интеграция
 
-### 4a. Авто-неявки по attendance webhook
+### 4a. Импорт реальных данных (опционально, для продвинутого демо)
+
+```
+# 1. Скопировать таблицу Learners из MeritHub, отправить боту, ответить:
+/import_learners
+→ 18 учеников загружены с timezone (London, Almaty, Moscow, Dubai, Vienna, Paris)
+
+# 2. Скопировать таблицу Learner's customers, отправить боту, ответить:
+/import_customers
+→ Контакты родителей (email, phone, country, city) привязаны к ученикам
+
+# 3. Привязать Telegram к нескольким ученикам:
+/mh_user d7ovi1krtl0ga9qjus10 <PARENT_TG> Ernest
+
+# 4. Проверить:
+/mh_students     → увидеть timezone и parent contacts
+```
+
+### 4b. Авто-неявки по attendance webhook
 
 Когда MeritHub после окончания урока шлёт `requestType=attendance`, система:
 1. Сравнивает зачисленных с присутствовавшими
