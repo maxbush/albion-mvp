@@ -146,10 +146,15 @@ cloudflared tunnel --url http://localhost:8000  # или ngrok http 8000
 ### Ручное создание
 
 ```bash
-# Ученик
+# Ученик (базовый)
 /mh_user <clientUserId> <parentTG> <Имя>
 # Пример:
 /mh_user s01 333333333 Алиса Джонс
+
+# Ученик с контактами родителя (email и/или телефон)
+/mh_user s01 333333333 Алиса email=parent@example.com
+/mh_user s01 333333333 Алиса phone=+447493994501
+/mh_user s01 333333333 Алиса email=parent@ex.com phone=+447493994501
 
 # Репетитор (без TG)
 /mh_tutor t01 Анна Петрова
@@ -158,8 +163,12 @@ cloudflared tunnel --url http://localhost:8000  # или ngrok http 8000
 /mh_tutor t01 555555555 Анна Петрова
 
 # Проверка
-/mh_students
+/mh_students     → список учеников + контакты родителей
+/mh_contacts     → все контакты
 ```
+
+> **Примечание:** В MeritHub нет полноценных карточек родителей (только email во вкладке Parents/Clients).
+> ALBION хранит все контакты родителя (TG, phone, email) в своей БД, привязывая их к ученику.
 
 ### Регистрация родителей
 

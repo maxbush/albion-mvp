@@ -180,19 +180,49 @@ async def cmd_mh_events(upd: Update, ctx) -> None:
 
 
 async def cmd_mh_user(upd: Update, ctx) -> None:
-    """Связывает ученика MeritHub с TG родителя: /mh_user <clientUserId> <parentTG> <имя>."""
+    """Связывает ученика MeritHub с TG родителя: /mh_user <clientUserId> <parentTG> <имя>.
+
+    Опционально можно указать email и телефон родителя:
+      /mh_user s01 333333333 Алиса Джонс
+      /mh_user s01 333333333 Алиса Джонс email=parent@ex.com
+      /mh_user s01 333333333 Алиса Джонс phone=+447493994501
+      /mh_user s01 333333333 Алиса Джонс email=parent@ex.com phone=+447493994501
+    """
     if not is_admin(upd.effective_user.id):
         await upd.message.reply_text("⛔ Только владелец/админ.")
         return
     args = ctx.args or []
     if len(args) < 3:
         await upd.message.reply_text(
-            "Использование: `/mh_user <clientUserId> <parentTG> <имя_ученика>`\n"
-            "Создаёт ученика в MeritHub (если заданы credentials) и связывает с TG родителя.",
+            "Использование: `/mh_user <clientUserId> <parentTG> <имя> [email=...] [phone=...]`\n\n"
+            "Создаёт ученика в MeritHub (если заданы credentials) и связывает с TG родителя.\n"
+            "Контакты родителя (email, phone) хранятся в ALBION — в MeritHub нет полноценных карточек родителей.\n\n"
+            "Примеры:\n"
+            "  `/mh_user s01 333333333 Алиса Джонс`\n"
+            "  `/mh_user s01 333333333 Алиса email=p@ex.com phone=+44123`",
             parse_mode="Markdown",
         )
         return
-    cuid, parent_tg, name = args[0], args[1], " ".join(args[2:])
+
+    cuid, parent_tg = args[0], args[1]
+
+    # Извлекаем опциональные параметры email= и phone= из аргументов
+    extra_email = None
+    extra_phone = None
+    name_parts = []
+    for arg in args[2:]:
+        if arg.startswith("email="):
+            extra_email = arg[6:]
+        elif arg.startswith("phone="):
+            extra_phone = arg[6:]
+        else:
+            name_parts.append(arg)
+    name = " ".join(name_parts)
+
+    if not name:
+        await upd.message.reply_text("Укажите имя ученика.")
+        return
+
     # Родитель обязан быть зарегистрирован, иначе уведомление уйдёт в эскалацию.
     await UserRepository().set_role_by_telegram(parent_tg, "parent", name=f"Родитель: {name}")
     mh_id = None
@@ -209,8 +239,28 @@ async def cmd_mh_user(upd: Update, ctx) -> None:
             api_note = f" ⚠️ MeritHub API: {str(e)[:120]} (локальная связь сохранена)"
     await MeritHubStudentRepository().upsert(
         cuid, merithub_user_id=mh_id, name=name, parent_telegram_id=parent_tg, role="student")
+
+    # Сохраняем контакты родителя (email, phone) в merithub_contacts
+    contact_note = ""
+    if extra_email or extra_phone:
+        contact_repo = MeritHubContactRepository()
+        await contact_repo.upsert(
+            cuid,
+            telegram_id=parent_tg,
+            role="parent",
+            name=f"Родитель: {name}",
+            phone=extra_phone,
+            email=extra_email,
+        )
+        parts = []
+        if extra_phone:
+            parts.append(f"📱 {extra_phone}")
+        if extra_email:
+            parts.append(f"📧 {extra_email}")
+        contact_note = f"\nКонтакты родителя: {' | '.join(parts)}"
+
     await upd.message.reply_text(
-        f"✅ Ученик привязан: `{cuid}` → родитель `{parent_tg}` ({name}).{api_note}\n"
+        f"✅ Ученик привязан: `{cuid}` → родитель `{parent_tg}` ({name}).{api_note}{contact_note}\n"
         f"Зачислите в класс: `/mh_enroll <classId> {cuid}`",
         parse_mode="Markdown",
     )
@@ -441,12 +491,25 @@ async def cmd_mh_students(upd: Update, _ctx) -> None:
     if not rows:
         await upd.message.reply_text("Пока нет учеников. Используйте /mh_user или /seed10.")
         return
+
+    contact_repo = MeritHubContactRepository()
     lines = ["🔗 Ученики MeritHub:\n"]
     for r in rows:
-        lines.append(
+        base = (
             f"• `{r['client_user_id']}` → MH: `{r.get('merithub_user_id') or '—'}` "
-            f"| parent: `{r.get('parent_telegram_id') or '—'}` | {r['name']} ({r['role']})"
+            f"| parent TG: `{r.get('parent_telegram_id') or '—'}` | {r['name']} ({r['role']})"
         )
+        # Добавляем контакты родителя если есть
+        contact = await contact_repo.get(r["client_user_id"])
+        if contact:
+            extras = []
+            if contact.get("phone"):
+                extras.append(f"📱 {contact['phone']}")
+            if contact.get("email"):
+                extras.append(f"📧 {contact['email']}")
+            if extras:
+                base += f"\n  {' | '.join(extras)}"
+        lines.append(base)
     await upd.message.reply_text("\n".join(lines))
 
 
