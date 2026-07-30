@@ -225,6 +225,9 @@ async def cmd_mh_user(upd: Update, ctx) -> None:
 
     # Родитель обязан быть зарегистрирован, иначе уведомление уйдёт в эскалацию.
     await UserRepository().set_role_by_telegram(parent_tg, "parent", name=f"Родитель: {name}")
+    # Проверяем существующий merithub_user_id (для upsert при duplicate)
+    existing_student = await MeritHubStudentRepository().get_by_client_id(cuid)
+    existing_mh_id = (existing_student or {}).get("merithub_user_id")
     mh_id = None
     api_note = ""
     if settings.merithub_use_real:
@@ -232,11 +235,18 @@ async def cmd_mh_user(upd: Update, ctx) -> None:
             from src.integrations.factory import get_merithub_service
             from src.integrations.merithub_client import MeritHubClient
             client = get_merithub_service()
-            resp = await client.add_user(client_user_id=cuid, name=name, role="M")
-            mh_id = MeritHubClient._extract_id(resp, "userId", "id", "UserId", "userID")
-            api_note = f" MeritHub userId=`{mh_id}`." if mh_id else " (userId не распознан в ответе)"
+            if existing_mh_id and not existing_mh_id.startswith("mh_"):
+                resp = await client.update_user(existing_mh_id, name=name, email=extra_email or f"{cuid}@albion.local")
+                mh_id = existing_mh_id
+                api_note = f" MeritHub userId={mh_id} (обновлён)."
+            else:
+                resp = await client.add_user(client_user_id=cuid, name=name, role="M", email=extra_email or f"{cuid}@albion.local")
+                mh_id = MeritHubClient._extract_id(resp, "userId", "id", "UserId", "userID")
+                api_note = f" MeritHub userId={mh_id}." if mh_id else " (userId не распознан в ответе)"
         except Exception as e:
             api_note = f" ⚠️ MeritHub API: {str(e)[:120]} (локальная связь сохранена)"
+    if not mh_id:
+        mh_id = existing_mh_id or f"mh_{cuid}"
     await MeritHubStudentRepository().upsert(
         cuid, merithub_user_id=mh_id, name=name, parent_telegram_id=parent_tg, role="student")
 
@@ -346,7 +356,7 @@ async def cmd_mh_enroll(upd: Update, ctx) -> None:
         msg += remote_note
     if missing:
         msg += f"\n⚠️ Пропущены (нет привязки/MeritHub id): {', '.join(missing)} — сначала /mh_user ..."
-    await upd.message.reply_text(msg, parse_mode="Markdown")
+    await upd.message.reply_text(msg)
 
 
 async def cmd_mh_tutor(upd: Update, ctx) -> None:
@@ -370,17 +380,27 @@ async def cmd_mh_tutor(upd: Update, ctx) -> None:
     cuid = args[0]
     tutor_tg = args[1] if len(args) >= 3 and args[1].isdigit() else None
     name = " ".join(args[2:] if tutor_tg else args[1:])
+    # Проверяем существующий merithub_user_id
+    existing_tutor = await MeritHubStudentRepository().get_by_client_id(cuid)
+    existing_mh_id = (existing_tutor or {}).get("merithub_user_id")
     mh_id, api_note = None, ""
     if settings.merithub_use_real:
         try:
             from src.integrations.factory import get_merithub_service
             from src.integrations.merithub_client import MeritHubClient
             client = get_merithub_service()
-            resp = await client.add_user(client_user_id=cuid, name=name, role="C")
-            mh_id = MeritHubClient._extract_id(resp, "userId", "id", "UserId", "userID")
-            api_note = f" MeritHub userId=`{mh_id}`." if mh_id else " (userId не распознан)"
+            if existing_mh_id and not existing_mh_id.startswith("mh_"):
+                resp = await client.update_user(existing_mh_id, name=name)
+                mh_id = existing_mh_id
+                api_note = f" MeritHub userId={mh_id} (обновлён)."
+            else:
+                resp = await client.add_user(client_user_id=cuid, name=name, role="C")
+                mh_id = MeritHubClient._extract_id(resp, "userId", "id", "UserId", "userID")
+                api_note = f" MeritHub userId={mh_id}." if mh_id else " (userId не распознан)"
         except Exception as e:
             api_note = f" ⚠️ MeritHub API: {str(e)[:120]}"
+    if not mh_id:
+        mh_id = existing_mh_id or f"mh_{cuid}"
 
     await MeritHubStudentRepository().upsert(
         cuid, merithub_user_id=mh_id, name=name, parent_telegram_id=None, role="tutor")
@@ -388,7 +408,7 @@ async def cmd_mh_tutor(upd: Update, ctx) -> None:
         await MeritHubContactRepository().upsert(cuid, tutor_tg, "tutor", name=name)
     tg_note = f" TG{tutor_tg}." if tutor_tg else ""
     await upd.message.reply_text(
-        f"✅ Репетитор привязан: {cuid} ({name}).{tg_note}{api_note}", parse_mode="Markdown")
+        f"✅ Репетитор привязан: {cuid} ({name}).{tg_note}{api_note}")
 
 
 async def cmd_mh_schedule(upd: Update, ctx) -> None:
@@ -474,7 +494,7 @@ async def cmd_mh_schedule(upd: Update, ctx) -> None:
             student_rows=student_rows,
         )
     except Exception as e:
-        await upd.message.reply_text(f"❌ Ошибка MeritHub API: {str(e)[:200]}", parse_mode="Markdown")
+        await upd.message.reply_text(f"❌ Ошибка MeritHub API: {str(e)[:200]}")
         return
 
     host_url = client.room_url(info["host_link"]) if info["host_link"] else "—"
@@ -483,7 +503,7 @@ async def cmd_mh_schedule(upd: Update, ctx) -> None:
            f"👥 Зачислено учеников: {len(student_rows)}"
            + tutor_note
            + (f"\n⚠️ Пропущено (нет привязки): {', '.join(missing)}" if missing else ""))
-    await upd.message.reply_text(msg, parse_mode="Markdown")
+    await upd.message.reply_text(msg)
 
 
 async def cmd_mh_students(upd: Update, _ctx) -> None:
@@ -523,7 +543,7 @@ async def cmd_mh_students(upd: Update, _ctx) -> None:
             if extras:
                 base += f"\n  Parent: {' | '.join(extras)}"
         lines.append(base)
-    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await upd.message.reply_text("\n".join(lines))
 
 
 # =====================================================================
@@ -531,16 +551,16 @@ async def cmd_mh_students(upd: Update, _ctx) -> None:
 # =====================================================================
 
 _SEED_STUDENTS = [
-    ("s01", "Алиса Джонс", "English, Mathematics"),
-    ("s02", "Бен Смит", "Physics"),
-    ("s03", "София Гарсия", "Chemistry"),
-    ("s04", "Лиам Уильямс", "Mathematics"),
-    ("s05", "Эмма Браун", "English Literature"),
-    ("s06", "Ноа Дэвис", "Biology"),
-    ("s07", "Оливия Уилсон", "History"),
-    ("s08", "Джеймс Тейлор", "Computer Science"),
-    ("s09", "Ава Андерсон", "Mathematics, Physics"),
-    ("s10", "Уильям Томас", "Chemistry, Biology"),
+    ("s01", "Алиса Джонс", "English, Mathematics", "Europe/London", "United Kingdom"),
+    ("s02", "Бен Смит", "Physics", "Europe/London", "United Kingdom"),
+    ("s03", "София Гарсия", "Chemistry", "Europe/Paris", "France"),
+    ("s04", "Лиам Уильямс", "Mathematics", "Asia/Almaty", "Kazakhstan"),
+    ("s05", "Эмма Браун", "English Literature", "Europe/London", "United Kingdom"),
+    ("s06", "Ноа Дэвис", "Biology", "Europe/Moscow", "Russia"),
+    ("s07", "Оливия Уилсон", "History", "Asia/Dubai", "UAE"),
+    ("s08", "Джеймс Тейлор", "Computer Science", "Europe/London", "United Kingdom"),
+    ("s09", "Ава Андерсон", "Mathematics, Physics", "Europe/Vienna", "Austria"),
+    ("s10", "Уильям Томас", "Chemistry, Biology", "Europe/London", "United Kingdom"),
 ]
 
 _SEED_TUTORS = [
@@ -579,9 +599,13 @@ async def cmd_seed10(upd: Update, ctx) -> None:
 
     # Регистрируем родителей
     urepo = UserRepository()
-    await urepo.set_role_by_telegram(parent_tg1, "parent", name=f"Parent Group 1")
+    existing1 = await urepo.get_by_telegram_id(parent_tg1)
+    if not existing1:
+        await urepo.set_role_by_telegram(parent_tg1, "parent", name="Parent Group 1")
     if parent_tg2 != parent_tg1:
-        await urepo.set_role_by_telegram(parent_tg2, "parent", name=f"Parent Group 2")
+        existing2 = await urepo.get_by_telegram_id(parent_tg2)
+        if not existing2:
+            await urepo.set_role_by_telegram(parent_tg2, "parent", name="Parent Group 2")
 
     srepo = MeritHubStudentRepository()
     mh_api_note = ""
@@ -598,11 +622,13 @@ async def cmd_seed10(upd: Update, ctx) -> None:
                 mh_id = MeritHubClient._extract_id(resp, "userId", "id")
             except Exception as e:
                 mh_api_note = f"\n⚠️ MeritHub API: {str(e)[:100]}"
+        if not mh_id:
+            mh_id = f"mh_{cuid}"
         await srepo.upsert(cuid, merithub_user_id=mh_id, name=name, role="tutor")
 
     # Создаём учеников
     created_students = []
-    for i, (cuid, name, subjects) in enumerate(_SEED_STUDENTS):
+    for i, (cuid, name, subjects, tz, country) in enumerate(_SEED_STUDENTS):
         parent_tg = parent_tg1 if i < 5 else parent_tg2
         mh_id = None
         if settings.merithub_use_real:
@@ -614,11 +640,14 @@ async def cmd_seed10(upd: Update, ctx) -> None:
                 mh_id = MeritHubClient._extract_id(resp, "userId", "id")
             except Exception:
                 pass
+        if not mh_id:
+            mh_id = f"mh_{cuid}"
         await srepo.upsert(
             cuid, merithub_user_id=mh_id, name=name,
             parent_telegram_id=parent_tg, role="student",
+            timezone=tz, country=country,
         )
-        created_students.append((cuid, name, parent_tg, subjects))
+        created_students.append((cuid, name, parent_tg, subjects, tz))
 
     # Формируем ответ
     lines = [f"✅ Создано 10 учеников и 3 репетитора{mh_api_note}\n"]
@@ -631,12 +660,12 @@ async def cmd_seed10(upd: Update, ctx) -> None:
         lines.append(f"  `{cuid}` — {name} ({subjects})")
     lines.append("")
     lines.append("🎓 Ученики:")
-    for cuid, name, ptg, subjects in created_students:
-        lines.append(f"  `{cuid}` — {name} ({subjects})")
+    for cuid, name, ptg, subjects, tz in created_students:
+        lines.append(f"  `{cuid}` — {name} ({subjects}) 🕐 {tz}")
     lines.append("")
     lines.append("Далее: `/mh_schedule t01 <start> 60 s01 s02 s04`")
 
-    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await upd.message.reply_text("\n".join(lines))
 
 
 async def cmd_demo_reset(upd: Update, _ctx) -> None:
@@ -905,7 +934,7 @@ async def cmd_morning_digest(upd: Update, _ctx) -> None:
         f"{settings.albion_prelesson_reminder_min} мин до урока."
     )
 
-    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await upd.message.reply_text("\n".join(lines))
 
 
 async def cmd_mh_contact(upd: Update, ctx) -> None:
@@ -947,7 +976,7 @@ async def cmd_mh_contact(upd: Update, ctx) -> None:
     # Проверяем, существует ли ученик/репетитор
     student = await srepo.get_by_client_id(cuid)
     if not student:
-        await upd.message.reply_text(f"❌ `{cuid}` не найден. Сначала создайте: `/mh_user` или `/mh_tutor`.", parse_mode="Markdown")
+        await upd.message.reply_text(f"❌ {cuid} не найден. Сначала создайте: /mh_user или /mh_tutor.")
         return
 
     existing = await contact_repo.get(cuid) or {}
@@ -971,7 +1000,7 @@ async def cmd_mh_contact(upd: Update, ctx) -> None:
         if len(args) >= 5:
             tg = args[4]
     else:
-        await upd.message.reply_text(f"Неизвестное поле `{field}`. Используйте: phone, email, tg, all", parse_mode="Markdown")
+        await upd.message.reply_text(f"Неизвестное поле {field}. Используйте: phone, email, tg, all")
         return
 
     await contact_repo.upsert(cuid, telegram_id=tg, role=role, name=name, phone=phone, email=email)
@@ -998,7 +1027,7 @@ async def cmd_mh_contacts(upd: Update, _ctx) -> None:
     contact_repo = MeritHubContactRepository()
     rows = await contact_repo.list_all()
     if not rows:
-        await upd.message.reply_text("Пока нет контактов. Используйте `/mh_contact <cuid> phone <номер>`", parse_mode="Markdown")
+        await upd.message.reply_text("Пока нет контактов. Используйте /mh_contact <cuid> phone <номер>")
         return
     lines = ["📇 Контакты:\n"]
     for r in rows:
@@ -1010,7 +1039,7 @@ async def cmd_mh_contacts(upd: Update, _ctx) -> None:
         if r.get("email"):
             parts.append(f"📧 {r['email']}")
         lines.append(" | ".join(parts))
-    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await upd.message.reply_text("\n".join(lines))
 
 
 async def cmd_import_learners(upd: Update, ctx) -> None:
@@ -1165,6 +1194,37 @@ async def cmd_import_customers(upd: Update, ctx) -> None:
     )
 
 
+async def cmd_mh_delete_user(upd: Update, ctx) -> None:
+    """Удаляет пользователя из MeritHub: /mh_delete_user <clientUserId>"""
+    if not is_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только владелец/админ.")
+        return
+    args = ctx.args or []
+    if len(args) < 1:
+        await upd.message.reply_text("Использование: /mh_delete_user <clientUserId>")
+        return
+    cuid = args[0]
+    srepo = MeritHubStudentRepository()
+    student = await srepo.get_by_client_id(cuid)
+    if not student:
+        await upd.message.reply_text(f"❌ Пользователь {cuid} не найден в локальной БД.")
+        return
+    mh_id = student.get("merithub_user_id")
+    api_note = ""
+    if settings.merithub_use_real and mh_id and not mh_id.startswith("mh_"):
+        try:
+            from src.integrations.factory import get_merithub_service
+            client = get_merithub_service()
+            await client.delete_user(mh_id)
+            api_note = f" Удалён из MeritHub (`{mh_id}`)."
+        except Exception as e:
+            api_note = f" ⚠️ MeritHub API: {str(e)[:120]}"
+    for table in ("merithub_enrollments", "merithub_students", "merithub_contacts"):
+        await srepo._execute(f"DELETE FROM {table} WHERE client_user_id=?", (cuid,))
+    await upd.message.reply_text(f"✅ Пользователь {cuid} удалён.{api_note}")
+    logger.info("User %s deleted from MeritHub locally%s", cuid, api_note)
+
+
 def register_pilot_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("pilot_seed", cmd_pilot_seed))
     app.add_handler(CommandHandler("pilot_absent", cmd_pilot_absent))
@@ -1176,6 +1236,7 @@ def register_pilot_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("mh_students", cmd_mh_students))
     app.add_handler(CommandHandler("mh_contact", cmd_mh_contact))
     app.add_handler(CommandHandler("mh_contacts", cmd_mh_contacts))
+    app.add_handler(CommandHandler("mh_delete_user", cmd_mh_delete_user))
     app.add_handler(CommandHandler("import_learners", cmd_import_learners))
     app.add_handler(CommandHandler("import_customers", cmd_import_customers))
     # Demo tools

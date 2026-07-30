@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     merithub_class_host: str = "https://class1.meritgraph.com"
     merithub_live_host: str = "https://live.merithub.com"
     merithub_timeout: float = 15.0
+    merithub_log_payload: bool = False
 
     # MeritHub webhooks (push-модель): секрет опционален. Если MeritHub пришлёт
     # подпись/токен в известном заголовке — проверим. Если подписи нет, webhook

@@ -198,7 +198,6 @@ async def cmd_start(upd: Update, _ctx) -> None:
     existing = await repo.get_by_telegram_id(tg_id)
 
     if existing:
-        # Уже зарегистрирован — показываем профиль
         role = existing["role"]
         emoji = {"parent": "👨‍👩‍👦", "tutor": "🧑‍🏫", "coordinator": "👨‍💼", "student": "🎓"}.get(role, "")
         admin_mark = " ★" if is_admin(tg_id) else ""
@@ -212,6 +211,18 @@ async def cmd_start(upd: Update, _ctx) -> None:
                 InlineKeyboardButton("🔄 Сменить роль", callback_data="change_role"),
             ]]),
         )
+        if role == "coordinator":
+            await upd.message.reply_text(
+                "📋 *Ваши команды:*\n\n"
+                "/today — занятия сегодня\n"
+                "/morning — утренняя сводка\n"
+                "/incidents — инциденты\n"
+                "/demo\\_reset — сброс\n"
+                "/seed10 — создать учеников\n"
+                "/mh\\_schedule — создать занятие\n"
+                "/mh\\_students — список учеников",
+                parse_mode="Markdown",
+            )
         return
 
     # Новый пользователь — показываем выбор роли
@@ -369,6 +380,26 @@ async def handle_callback(upd: Update, _ctx) -> None:
             parse_mode="Markdown",
         )
         logger.info("User %s registered as %s", user.id, role)
+        if role == "coordinator":
+            await upd.effective_chat.send_message(
+                "📋 *Ваши команды:*\n\n"
+                "*Обзор:*\n"
+                "/today — занятия сегодня\n"
+                "/morning — утренняя сводка\n"
+                "/incidents — инциденты и статистика\n"
+                "/status — состояние системы\n\n"
+                "*Управление:*\n"
+                "/pilot_absent — тест: сценарий неявки\n"
+                "/demo_reset — сброс между прогонами\n"
+                "/ok <ID> — закрыть инцидент\n\n"
+                "*MeritHub:*\n"
+                "/seed10 <parentTG> — создать 10 учеников\n"
+                "/mh_schedule <tutor> <start> <min> <students...>\n"
+                "/mh_tutor <cuid> <tg> <имя>\n"
+                "/mh_students — список учеников\n"
+                "/mh_events — последние webhook'и",
+                parse_mode="Markdown",
+            )
         return
 
     if data == "change_role":

@@ -26,7 +26,13 @@ from datetime import datetime
 
 import httpx
 
+from src.config import settings
+
 logger = logging.getLogger(__name__)
+
+# Логировать тело запросов/ответов (по умолчанию выкл — включает шум).
+# Можно включить через MERITHUB_LOG_PAYLOAD=true в .env
+_LOG_PAYLOAD = settings.merithub_log_payload
 
 GRANT_TYPE = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 DEFAULT_SERVICE_HOST = "https://serviceaccount1.meritgraph.com"
@@ -80,14 +86,18 @@ class MeritHubClient:
     async def _fetch_token(self) -> str:
         url = f"{self.service_host}/v1/{self.client_id}/api/token"
         data = {"assertion": f"Bearer {self.build_jwt()}", "grant_type": GRANT_TYPE}
+        logger.info("MeritHub Auth: POST %s", url)
         async with httpx.AsyncClient(timeout=self.timeout, transport=self._transport) as c:
             r = await c.post(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
         if r.status_code >= 400:
+            logger.error("MeritHub Auth: %d %s", r.status_code, r.text[:200])
             raise MeritHubError(f"token {r.status_code}: {r.text[:300]}", r.status_code)
         body = r.json() if r.content else {}
         token = body.get("access_token") or body.get("token") or (body.get("data") or {}).get("access_token")
         if not token:
+            logger.error("MeritHub Auth: no access_token in response: %s", str(body)[:300])
             raise MeritHubError(f"token response has no access_token: {str(body)[:300]}")
+        logger.info("MeritHub Auth: token obtained (exp=%dmin)", 55)
         return token
 
     async def _get_token(self) -> str:
@@ -97,18 +107,50 @@ class MeritHubClient:
             self._token_exp = time.time() + 55 * 60
         return self._token
 
+    async def _get_class_token(self) -> str:
+        """Получить токен для class1.meritgraph.com.
+        Если class host не имеет token endpoint — фолбэк на service token."""
+        url = f"{self.class_host}/v1/{self.client_id}/api/token"
+        data = {"assertion": f"Bearer {self.build_jwt()}", "grant_type": GRANT_TYPE}
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, transport=self._transport) as c:
+                r = await c.post(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+            if r.status_code >= 400:
+                logger.warning("MeritHub Auth: class token endpoint returned %d, using service token", r.status_code)
+                return await self._get_token()
+            body = r.json() if r.content else {}
+            token = body.get("access_token") or body.get("token")
+            if token:
+                logger.info("MeritHub Auth: class token obtained (exp=%dmin)", 55)
+                return token
+            logger.warning("MeritHub Auth: class token response has no token, using service token")
+        except Exception as e:
+            logger.warning("MeritHub Auth: class token error %s, using service token", e)
+        return await self._get_token()
+
     # ── общий запрос с авто-обновлением токена на 401 ─────────────────
     async def _request(self, method: str, url: str, json_body: dict | None = None) -> dict:
         for attempt in range(2):
-            token = await self._get_token()
+            # Для class host используем отдельный токен
+            if self.class_host.rstrip("/") in url:
+                token = await self._get_class_token()
+            else:
+                token = await self._get_token()
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             async with httpx.AsyncClient(timeout=self.timeout, transport=self._transport) as c:
                 r = await c.request(method, url, headers=headers, json=json_body)
-            if r.status_code == 401 and attempt == 0:
-                self._token = None  # принудительное обновление
+            status = r.status_code
+            body_preview = r.text[:200].replace("\n", " ")
+            if status == 401 and attempt == 0:
+                logger.warning("MeritHub API: 401 on %s %s - refreshing token", method, url)
+                self._token = None
                 continue
-            if r.status_code >= 400:
-                raise MeritHubError(f"{method} {url} -> {r.status_code}: {r.text[:300]}", r.status_code)
+            if status >= 400:
+                logger.error("MeritHub API: %s %s -> %d %s", method, url, status, body_preview)
+                raise MeritHubError(f"{method} {url} -> {status}: {r.text[:300]}", status)
+            logger.info("MeritHub API: %s %s -> %d", method, url, status)
+            if _LOG_PAYLOAD and json_body:
+                logger.debug("MeritHub API payload: %s", json.dumps(json_body, ensure_ascii=False)[:500])
             return r.json() if r.content else {}
         return {}
 
@@ -295,5 +337,3 @@ class MeritHubClient:
             if present:
                 ids.add(str(uid))
         return ids
-
-
