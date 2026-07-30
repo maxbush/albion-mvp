@@ -16,6 +16,7 @@ merithub_enrollments и src/integrations/factory.py).
 httpx-transport можно подменить в тестах (MockTransport) — сеть не нужна.
 """
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -71,6 +72,9 @@ class MeritHubClient:
         self._transport = transport
         self._token: str | None = None
         self._token_exp: float = 0.0
+        self._token_lock = asyncio.Lock()
+        # Кеш успешного формата авторизации для Class API
+        self._class_auth_mode: str | None = None
 
     # ── JWT + access token ────────────────────────────────────────────
     def build_jwt(self) -> str:
@@ -94,64 +98,92 @@ class MeritHubClient:
             raise MeritHubError(f"token {r.status_code}: {r.text[:300]}", r.status_code)
         body = r.json() if r.content else {}
         token = body.get("access_token") or body.get("token") or (body.get("data") or {}).get("access_token")
-        if not token:
+        if not isinstance(token, str) or not token.strip():
             logger.error("MeritHub Auth: no access_token in response: %s", str(body)[:300])
             raise MeritHubError(f"token response has no access_token: {str(body)[:300]}")
+        token = token.strip()
         logger.info("MeritHub Auth: token obtained (exp=%dmin)", 55)
         return token
 
     async def _get_token(self) -> str:
-        # Обновляем заранее (за 5 мин до истечения) или при отсутствии.
-        if not self._token or time.time() >= self._token_exp:
-            self._token = await self._fetch_token()
-            self._token_exp = time.time() + 55 * 60
-        return self._token
+        """Double-check locking — не более одного _fetch_token при конкурентном доступе."""
+        if self._token and time.time() < self._token_exp:
+            return self._token
+        async with self._token_lock:
+            if not self._token or time.time() >= self._token_exp:
+                self._token = await self._fetch_token()
+                self._token_exp = time.time() + 55 * 60
+            return self._token
 
-    async def _get_class_token(self) -> str:
-        """Получить токен для class1.meritgraph.com.
-        Если class host не имеет token endpoint — фолбэк на service token."""
-        url = f"{self.class_host}/v1/{self.client_id}/api/token"
-        data = {"assertion": f"Bearer {self.build_jwt()}", "grant_type": GRANT_TYPE}
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout, transport=self._transport) as c:
-                r = await c.post(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
-            if r.status_code >= 400:
-                logger.warning("MeritHub Auth: class token endpoint returned %d, using service token", r.status_code)
-                return await self._get_token()
-            body = r.json() if r.content else {}
-            token = body.get("access_token") or body.get("token")
-            if token:
-                logger.info("MeritHub Auth: class token obtained (exp=%dmin)", 55)
-                return token
-            logger.warning("MeritHub Auth: class token response has no token, using service token")
-        except Exception as e:
-            logger.warning("MeritHub Auth: class token error %s, using service token", e)
-        return await self._get_token()
+    @staticmethod
+    def _bearer(token: str) -> str:
+        """Безопасно добавляет 'Bearer ' если его нет."""
+        t = token.strip()
+        return t if t.lower().startswith("bearer ") else f"Bearer {t}"
+
+    def _is_class_api(self, url: str) -> bool:
+        return url.startswith(f"{self.class_host}/")
 
     # ── общий запрос с авто-обновлением токена на 401 ─────────────────
     async def _request(self, method: str, url: str, json_body: dict | None = None) -> dict:
+        is_class = self._is_class_api(url)
+
+        # Определяем форматы заголовков для этого запроса
+        if is_class and self._class_auth_mode:
+            # Используем закешированный успешный формат
+            auth_values = [self._class_auth_mode]
+        elif is_class:
+            # Class API: сначала голый токен, потом Bearer (fallback)
+            auth_values = [None, None]  # будут заполнены ниже
+        else:
+            # Users API: только Bearer
+            auth_values = [None]
+
         for attempt in range(2):
-            # Для class host используем отдельный токен
-            if self.class_host.rstrip("/") in url:
-                token = await self._get_class_token()
-            else:
-                token = await self._get_token()
-            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            async with httpx.AsyncClient(timeout=self.timeout, transport=self._transport) as c:
-                r = await c.request(method, url, headers=headers, json=json_body)
-            status = r.status_code
-            body_preview = r.text[:200].replace("\n", " ")
-            if status == 401 and attempt == 0:
-                logger.warning("MeritHub API: 401 on %s %s - refreshing token", method, url)
-                self._token = None
+            token = await self._get_token()
+            bearer_val = self._bearer(token)
+
+            if is_class and not self._class_auth_mode:
+                auth_values = [token, bearer_val]
+
+            for auth_val in auth_values:
+                if auth_val is None:
+                    auth_val = bearer_val
+                headers = {"Authorization": auth_val, "Content-Type": "application/json"}
+                logger.debug("MeritHub API: trying Authorization: %s...%s",
+                             auth_val[:20], " (class mode)" if is_class else "")
+                async with httpx.AsyncClient(timeout=self.timeout, transport=self._transport) as c:
+                    r = await c.request(method, url, headers=headers, json=json_body)
+                status = r.status_code
+                body_preview = r.text[:200].replace("\n", " ")
+
+                if status == 401:
+                    if is_class and not self._class_auth_mode:
+                        # Пробуем следующий формат авторизации
+                        continue
+                    # Все форматы перепробованы — инвалидируем токен и пробуем заново
+                    if attempt == 0:
+                        logger.warning("MeritHub API: 401 on %s %s - refreshing token", method, url)
+                        self._token = None
+                        self._class_auth_mode = None
+                        break  # выходим из цикла форматов, переходим к следующей попытке
+                    logger.error("MeritHub API: %s %s -> %d %s", method, url, status, body_preview)
+                    raise MeritHubError(f"{method} {url} -> {status}: {r.text[:300]}", status)
+
+                # Успех
+                if is_class:
+                    # Запоминаем успешный формат для Class API
+                    self._class_auth_mode = auth_val
+                logger.info("MeritHub API: %s %s -> %d", method, url, status)
+                if _LOG_PAYLOAD and json_body:
+                    logger.debug("MeritHub API payload: %s", json.dumps(json_body, ensure_ascii=False)[:500])
+                return r.json() if r.content else {}
+
+            if attempt == 0 and is_class and not self._class_auth_mode:
+                # Все форматы перепробовали, токен инвалидирован — повторим с новым токеном
                 continue
-            if status >= 400:
-                logger.error("MeritHub API: %s %s -> %d %s", method, url, status, body_preview)
-                raise MeritHubError(f"{method} {url} -> {status}: {r.text[:300]}", status)
-            logger.info("MeritHub API: %s %s -> %d", method, url, status)
-            if _LOG_PAYLOAD and json_body:
-                logger.debug("MeritHub API payload: %s", json.dumps(json_body, ensure_ascii=False)[:500])
-            return r.json() if r.content else {}
+            break
+
         return {}
 
     @staticmethod
@@ -306,13 +338,33 @@ class MeritHubClient:
         }
 
     @staticmethod
-    def parse_user_links(resp: dict) -> dict:
-        """add_users_to_class → {merithub_user_id: unique_userLink}."""
+    def parse_user_links(resp) -> dict:
+        """add_users_to_class → {merithub_user_id: unique_userLink}.
+
+        Поддерживает:
+        - прямой список [{"userId":..., "userLink":...}, ...]
+        - {"users": [...]}
+        - {"data": {"users": [...]}}
+        - {"data": [...]}
+        """
         out: dict = {}
-        users = resp.get("users") if isinstance(resp, dict) else None
-        if isinstance(resp, dict) and isinstance(resp.get("data"), dict):
-            users = users or resp["data"].get("users")
-        for u in (users or []):
+        users = None
+
+        if isinstance(resp, list):
+            users = resp
+        elif isinstance(resp, dict):
+            users = resp.get("users") or None
+            if users is None and isinstance(resp.get("data"), dict):
+                users = resp["data"].get("users") or None
+            if users is None and isinstance(resp.get("data"), list):
+                users = resp["data"]
+
+        if not isinstance(users, list):
+            return out
+
+        for u in users:
+            if not isinstance(u, dict):
+                continue
             uid = u.get("userId") or u.get("user_id")
             link = u.get("userLink") or u.get("user_link")
             if uid and link:
