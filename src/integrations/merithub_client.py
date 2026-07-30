@@ -170,6 +170,15 @@ class MeritHubClient:
                     logger.error("MeritHub API: %s %s -> %d %s", method, url, status, body_preview)
                     raise MeritHubError(f"{method} {url} -> {status}: {r.text[:300]}", status)
 
+                if status == 409:
+                    # Class already exists — пытаемся извлечь classId из ответа
+                    body = r.json() if r.content else {}
+                    if body.get("classId"):
+                        logger.info("MeritHub API: %s %s -> 409 (class exists, id=%s)", method, url, body["classId"])
+                        return body
+                    logger.error("MeritHub API: %s %s -> 409 %s", method, url, body_preview)
+                    raise MeritHubError(f"409 Conflict: {body}", 409)
+
                 # Успех
                 if is_class:
                     # Запоминаем успешный формат для Class API

@@ -109,8 +109,8 @@ class AbsenceWorkflow:
             await self._notify_parent(wid, inc_id)
         elif action == "escalate":
             await self._escalate(wid, inc_id)
-        else:
-            logger.warning("Unknown action: %s", action)
+        # Lesson ops actions (prelesson_*, tutor_start_check, class_live_check)
+        # обрабатываются в LessonOpsWorkflow — просто пропускаем
 
     async def _check_incident_active(self, inc_id: int | None) -> bool:
         """Проверка: инцидент всё ещё открыт? Если resolved/escalated — пропускаем."""
