@@ -230,25 +230,36 @@ async def cmd_mh_user(upd: Update, ctx) -> None:
     existing_mh_id = (existing_student or {}).get("merithub_user_id")
     mh_id = None
     api_note = ""
+
+    # 1. Сначала MeritHub API
     if settings.merithub_use_real:
         try:
             from src.integrations.factory import get_merithub_service
             from src.integrations.merithub_client import MeritHubClient
             client = get_merithub_service()
             if existing_mh_id and not existing_mh_id.startswith("mh_"):
-                resp = await client.update_user(existing_mh_id, name=name, email=extra_email or f"{cuid}@albion.local")
+                await client.update_user(existing_mh_id, name=name, email=extra_email or f"{cuid}@albion.local")
                 mh_id = existing_mh_id
                 api_note = f" MeritHub userId={mh_id} (обновлён)."
+                logger.info("MH_SYNC: update_user %s (%s)", cuid, mh_id)
             else:
                 resp = await client.add_user(client_user_id=cuid, name=name, role="M", email=extra_email or f"{cuid}@albion.local")
                 mh_id = MeritHubClient._extract_id(resp, "userId", "id", "UserId", "userID")
                 api_note = f" MeritHub userId={mh_id}." if mh_id else " (userId не распознан в ответе)"
+                logger.info("MH_SYNC: add_user %s -> %s", cuid, mh_id)
         except Exception as e:
-            api_note = f" ⚠️ MeritHub API: {str(e)[:120]} (локальная связь сохранена)"
+            await upd.message.reply_text(
+                f"❌ Ошибка MeritHub API: {str(e)[:200]}\n"
+                f"Запись НЕ создана. Проверьте данные и попробуйте снова.")
+            return
+
     if not mh_id:
         mh_id = existing_mh_id or f"mh_{cuid}"
+
+    # 2. Локальная БД (только если MeritHub OK)
     await MeritHubStudentRepository().upsert(
         cuid, merithub_user_id=mh_id, name=name, parent_telegram_id=parent_tg, role="student")
+    logger.info("MH_SYNC: DB upsert merithub_students %s", cuid)
 
     # Сохраняем контакты родителя (email, phone) в merithub_contacts
     contact_note = ""
@@ -384,26 +395,36 @@ async def cmd_mh_tutor(upd: Update, ctx) -> None:
     existing_tutor = await MeritHubStudentRepository().get_by_client_id(cuid)
     existing_mh_id = (existing_tutor or {}).get("merithub_user_id")
     mh_id, api_note = None, ""
+
+    # 1. Сначала MeritHub API
     if settings.merithub_use_real:
         try:
             from src.integrations.factory import get_merithub_service
             from src.integrations.merithub_client import MeritHubClient
             client = get_merithub_service()
             if existing_mh_id and not existing_mh_id.startswith("mh_"):
-                resp = await client.update_user(existing_mh_id, name=name)
+                await client.update_user(existing_mh_id, name=name)
                 mh_id = existing_mh_id
                 api_note = f" MeritHub userId={mh_id} (обновлён)."
+                logger.info("MH_SYNC: update_user %s (%s)", cuid, mh_id)
             else:
                 resp = await client.add_user(client_user_id=cuid, name=name, role="C")
                 mh_id = MeritHubClient._extract_id(resp, "userId", "id", "UserId", "userID")
                 api_note = f" MeritHub userId={mh_id}." if mh_id else " (userId не распознан)"
+                logger.info("MH_SYNC: add_user %s -> %s", cuid, mh_id)
         except Exception as e:
-            api_note = f" ⚠️ MeritHub API: {str(e)[:120]}"
+            await upd.message.reply_text(
+                f"❌ Ошибка MeritHub API: {str(e)[:200]}\n"
+                f"Запись НЕ создана. Проверьте данные и попробуйте снова.")
+            return
+
     if not mh_id:
         mh_id = existing_mh_id or f"mh_{cuid}"
 
+    # 2. Локальная БД (только если MeritHub OK или mock)
     await MeritHubStudentRepository().upsert(
         cuid, merithub_user_id=mh_id, name=name, parent_telegram_id=None, role="tutor")
+    logger.info("MH_SYNC: DB upsert merithub_students %s", cuid)
     if tutor_tg:
         await MeritHubContactRepository().upsert(cuid, tutor_tg, "tutor", name=name)
     tg_note = f" TG{tutor_tg}." if tutor_tg else ""
@@ -1210,19 +1231,30 @@ async def cmd_mh_delete_user(upd: Update, ctx) -> None:
         await upd.message.reply_text(f"❌ Пользователь {cuid} не найден в локальной БД.")
         return
     mh_id = student.get("merithub_user_id")
-    api_note = ""
+
+    # 1. Сначала удаляем из MeritHub API
     if settings.merithub_use_real and mh_id and not mh_id.startswith("mh_"):
         try:
             from src.integrations.factory import get_merithub_service
             client = get_merithub_service()
             await client.delete_user(mh_id)
-            api_note = f" Удалён из MeritHub (`{mh_id}`)."
+            logger.info("MH_SYNC: delete_user %s (%s)", cuid, mh_id)
         except Exception as e:
-            api_note = f" ⚠️ MeritHub API: {str(e)[:120]}"
-    for table in ("merithub_enrollments", "merithub_students", "merithub_contacts"):
-        await srepo._execute(f"DELETE FROM {table} WHERE client_user_id=?", (cuid,))
-    await upd.message.reply_text(f"✅ Пользователь {cuid} удалён.{api_note}")
-    logger.info("User %s deleted from MeritHub locally%s", cuid, api_note)
+            await upd.message.reply_text(
+                f"❌ Ошибка удаления из MeritHub: {str(e)[:200]}\n"
+                f"Локальная запись НЕ удалена. Попробуйте ещё раз.")
+            return
+
+    # 2. Удаляем из локальных таблиц (только если MeritHub OK или mock)
+    from src.db.repository import MeritHubContactRepository
+    await MeritHubStudentRepository()._execute(
+        "DELETE FROM merithub_students WHERE client_user_id=?", (cuid,))
+    await MeritHubContactRepository()._execute(
+        "DELETE FROM merithub_contacts WHERE client_user_id=?", (cuid,))
+    await srepo._execute("DELETE FROM merithub_enrollments WHERE client_user_id=?", (cuid,))
+    logger.info("MH_SYNC: DB delete merithub_students %s", cuid)
+
+    await upd.message.reply_text(f"✅ Пользователь {cuid} удалён из MeritHub и из базы ALBION.")
 
 
 def register_pilot_handlers(app: Application) -> None:
