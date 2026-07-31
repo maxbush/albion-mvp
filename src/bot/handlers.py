@@ -586,13 +586,13 @@ async def handle_callback(upd: Update, _ctx) -> None:
     if data.startswith("demo_resolve:"):
         parts = data.split(":")
         if len(parts) < 4:
-            await query.edit_message_text("Ошибка: некорректные данные.")
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз или напишите текстом.")
             return
         try:
             inc_id = int(parts[1])
             wid = int(parts[2])
         except (IndexError, ValueError):
-            await query.edit_message_text("Ошибка: некорректные данные.")
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз или напишите текстом.")
             return
         action = parts[3]
         demo_labels = {
@@ -673,7 +673,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
             inc_id = int(parts[1])
             nonce = parts[2]
         except (IndexError, ValueError):
-            await query.edit_message_text("Ошибка: некорректные данные.")
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз или напишите текстом.")
             return
         action = parts[3] if len(parts) > 3 else "ok"
 
@@ -746,7 +746,10 @@ async def handle_callback(upd: Update, _ctx) -> None:
                 other_key = f"tg_callback:resolve:{inc_id}:{nonce}:{other_action}"
                 await idem.save(other_key, "telegram_callback_blocked", response="blocked_by_resolve")
 
-        await query.edit_message_text(f"{parent_ack}\nСитуация #{inc_id} закрыта в {datetime.now():%H:%M}.")
+        # UX U5: имя ученика вместо голого номера + без серверного времени
+        # (родителю важно ЧТО он подтвердил, а не id инцидента и чужой часовой пояс).
+        student_label = wf_data.get("student_name") or "Ученик"
+        await query.edit_message_text(f"{parent_ack}\nОтметили: {student_label} · ситуация #{inc_id} закрыта.")
         logger.info("Incident %d resolved via button action=%s (was_escalated=%s)", inc_id, action, was_escalated)
         return
 
@@ -757,7 +760,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
             nonce = parts[2]
             action = parts[3]
         except (IndexError, ValueError):
-            await query.edit_message_text("Ошибка: некорректные данные.")
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз или напишите текстом.")
             return
         idem_key = f"tg_callback:{data}"
         idem = IdempotencyRepository()
@@ -793,7 +796,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
         await query.edit_message_text(ack_map.get(action, "✅ Ответ принят."))
         return
 
-    await query.edit_message_text("Неизвестная команда.")
+    await query.edit_message_text("Не понял действие — попробуйте ещё раз или напишите текстом.")
 
 
 # =====================================================================

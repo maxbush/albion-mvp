@@ -448,3 +448,82 @@ async def test_u4_help_commands_for_parent_points_to_menu(tmp_path, monkeypatch)
     text = upd.callback_query.edits[-1][0]
     assert "меню" in text.lower()
     assert "/cancel_lesson" in text
+
+
+# ── U5: чистка текстов ───────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_u5_absence_message_has_no_duplicated_option_list(tmp_path, monkeypatch):
+    """Варианты ответов называют кнопки — в тексте они не дублируются."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.db.repository import (
+        IncidentRepository, ScheduledActionRepository, UserRepository, WorkflowRepository,
+    )
+    from src.events.bus import bus
+    from src.events.types import EventTypes
+    from src.workflows.absence import AbsenceWorkflow
+    from src.workflows.engine import engine
+
+    engine.repo = WorkflowRepository(db)
+    engine.scheduler = ScheduledActionRepository(db)
+    await UserRepository(db).create("555", "parent", "Родитель")
+    inc_id = await IncidentRepository(db).create(type="absence", status="pending")
+    wid = await engine.start_workflow("absence_notification", {
+        "incident_id": inc_id, "student_name": "Миша",
+        "parent_telegram_id": "555", "lesson_ref": "C9"})
+
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await AbsenceWorkflow(db)._notify_parent(wid, inc_id)
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    parent_msg = [d for d in captured if d.get("telegram_id") == "555"][0]
+    text = parent_msg["message"]
+    assert "• всё в порядке" not in text          # дубль-список убран
+    assert "• ученик опоздает" not in text
+    assert "отсутствовал(а)" in text
+    assert "кнопкой ниже или просто текстом" in text
+    # А кнопки на месте со всеми тремя вариантами
+    btn_texts = [b["text"] for b in parent_msg["buttons"]]
+    assert any("в порядке" in t.lower() for t in btn_texts)
+    assert any("опозда" in t.lower() for t in btn_texts)
+
+@pytest.mark.asyncio
+async def test_u5_resolve_confirmation_names_student(tmp_path, monkeypatch):
+    """Подтверждение закрытия содержит имя ученика, а не только «Ситуация #N»."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import handle_callback
+    from src.db.repository import (
+        IncidentRepository, ScheduledActionRepository, UserRepository, WorkflowRepository,
+    )
+    from src.workflows.engine import engine
+
+    engine.repo = WorkflowRepository(db)
+    engine.scheduler = ScheduledActionRepository(db)
+    await UserRepository(db).create("555", "parent", "Родитель")
+    inc_id = await IncidentRepository(db).create(type="absence", status="pending")
+    wid = await engine.start_workflow("absence_notification", {
+        "incident_id": inc_id, "student_name": "Миша Иванов",
+        "parent_telegram_id": "555", "lesson_ref": "C9"})
+    # Нонс как в реальном флоу.
+    repo = WorkflowRepository(db)
+    data_engine = await engine.repo.get(wid)
+    import json as _json
+    data = _json.loads(data_engine["data"])
+    data["parent_callback_nonce"] = "nonce1"
+    await repo.update_data(wid, data)
+
+    upd = FakeUpdate(FakeUser(555))
+    upd.callback_query = FakeQuery(f"resolve:{inc_id}:nonce1:ok", upd.effective_user)
+    await handle_callback(upd, FakeContext())
+
+    text = upd.callback_query.edits[-1][0]
+    assert "Миша Иванов" in text
+    assert "закрыта" in text
+    assert "закрыта в " not in text, "серверное время убрано из подтверждения"
