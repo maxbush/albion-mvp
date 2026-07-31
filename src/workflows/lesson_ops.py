@@ -207,32 +207,63 @@ class LessonOpsWorkflow:
         student_name = data.get("student_name") or ", ".join(data.get("student_names") or []) or "Ученик"
         tutor_name = data.get("tutor_name") or "Репетитор"
 
+        # Уведомляем координатора о ЛЮБОМ ответе
+        action_labels = {
+            "ready": "✅ Подтвердил",
+            "late": "⏰ Опоздает",
+            "no_show": "❌ Не будет",
+            "tech": "🛠 Техпроблема",
+            "other": "💬 Другое",
+        }
+        status_label = action_labels.get(action, action)
+
         if actor_type == "parent":
-            if action in {"late", "no_show", "other"}:
-                await self.notify_coordinators(
-                    "📣 Ответ родителя до урока",
-                    [
-                        f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
-                        f"Ученик: {student_name}",
-                        f"Репетитор: {tutor_name}",
-                        f"Статус: {action}",
-                        *( [f"Текст: {free_text[:300]}"] if free_text else [] ),
-                    ],
-                )
+            await self.notify_coordinators(
+                "📣 Ответ родителя",
+                [
+                    f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
+                    f"Ученик: {student_name}",
+                    f"Репетитор: {tutor_name}",
+                    f"Статус: {status_label}",
+                    *( [f"Текст: {free_text[:300]}"] if free_text else [] ),
+                ],
+            )
         elif actor_type == "tutor":
-            if action in {"late", "no_show", "tech", "other"}:
+            await self.notify_coordinators(
+                "🧑‍🏫 Ответ репетитора",
+                [
+                    f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
+                    f"Репетитор: {tutor_name}",
+                    f"Ученики: {student_name}",
+                    f"Статус: {status_label}",
+                    *( [f"Текст: {free_text[:300]}"] if free_text else [] ),
+                ],
+            )
+        elif actor_type == "tutor_start":
+            if action == "class_started":
+                # Уведомляем родителя что урок начался
+                parent_tg = data.get("parent_telegram_id")
+                if parent_tg:
+                    class_label = _format_class_label(class_id, data.get('start_time'))
+                    await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                        "telegram_id": parent_tg,
+                        "message": (
+                            f"🔔 Урок начался!\n"
+                            f"📚 {class_label}\n"
+                            f"🧑‍🏫 Репетитор: {tutor_name}\n"
+                            f"👤 Ученик: {student_name}"
+                        ),
+                    }))
                 await self.notify_coordinators(
-                    "🧑‍🏫 Статус репетитора до урока",
+                    "👍 Урок начался",
                     [
                         f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
                         f"Репетитор: {tutor_name}",
                         f"Ученики: {student_name}",
-                        f"Статус: {action}",
-                        *( [f"Текст: {free_text[:300]}"] if free_text else [] ),
+                        f"Статус: {status_label}",
                     ],
                 )
-        elif actor_type == "tutor_start":
-            if action == "student_absent":
+            elif action == "student_absent":
                 student_names = data.get("student_names") or []
                 if len(student_names) == 1 and data.get("parent_telegram_id"):
                     # Автоматический absence-flow только когда ученик один и есть TG родителя.
