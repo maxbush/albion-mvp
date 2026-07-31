@@ -62,11 +62,16 @@ def _format_dual_time(start_time: str, user_tz: str | None = None) -> str:
                 user_zone = ZoneInfo(user_tz)
                 user_time = dt.astimezone(user_zone)
                 result += f" / {user_time.strftime('%H:%M')} (ваше время, {user_tz})"
-                # Добавляем "через N часов" если есть разница
-                diff_hours = int((user_time - london_time).total_seconds() / 3600)
-                if abs(diff_hours) > 0:
+                # Разница в ЧАСОВЫХ ПОЯСАХ (не в инстантах!): вычитание aware-datetime
+                # одного и того же момента даёт 0. Сравниваем utcoffset().
+                london_off = london_time.utcoffset() or timedelta(0)
+                user_off = user_time.utcoffset() or timedelta(0)
+                diff_hours = (user_off - london_off).total_seconds() / 3600
+                if diff_hours != 0:
                     sign = "+" if diff_hours > 0 else ""
-                    result += f" [{sign}{diff_hours}ч к London]"
+                    # Целые часы показываем как int, дробные (5:45 и т.п.) — с 1 знаком
+                    shown = int(diff_hours) if diff_hours == int(diff_hours) else round(diff_hours, 1)
+                    result += f" [{sign}{shown}ч к London]"
             except Exception:
                 pass
         return result

@@ -20,7 +20,7 @@
 
 ## 🔴 P0 — Баги корректности
 
-- [ ] **P0.1** `lesson_ops._format_dual_time` — суффикс `[+Nч к London]` **никогда не показывается**:
+- [x] **P0.1** `lesson_ops._format_dual_time` — суффикс `[+Nч к London]` **никогда не показывается**:
   `diff_hours = (user_time - london_time)` — это один и тот же instant, разница всегда 0.
   Проверено: `_format_dual_time('2026-07-28T15:00:00+00:00','Asia/Almaty')` → нет суффикса.
   План: считать разницу `utcoffset()` пользователя и London. Тест на off-by-offset.
