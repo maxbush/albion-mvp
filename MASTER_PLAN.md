@@ -94,10 +94,10 @@
 
 ## 🟢 P3 — Документация / полировка
 
-- [ ] **P3.1** README: бейдж `tests-75/75` устарел (по факту 95+). Обновить + строка
-  про новые команды Round 3.
-- [ ] **P3.2** ALBION_GUIDE/DEMO_RUNBOOK: добавить `/cancel_lesson`, поведение
-  absence_report, уточнить naive-time → Europe/London.
+- [x] **P3.1** README: бейдж `tests-75/75` → 120/120; добавлены `/cancel_lesson`
+  в таблицу команд и блок «Что нового в v2.3».
+- [x] **P3.2** ALBION_GUIDE: `/cancel_lesson` в таблице, точный dual-time пример,
+  naive-time → Europe/London. DEMO_RUNBOOK: обогащённая эскалация + сценарий 2e.
 
 ---
 

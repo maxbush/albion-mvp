@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-MVP-yellow" alt="Status">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python">
-  <img src="https://img.shields.io/badge/tests-75/75-green" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-120%2F120-green" alt="Tests">
   <img src="https://img.shields.io/badge/LLM-Claude%20%7C%20GPT%20%7C%20any-orange" alt="LLM">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
@@ -36,6 +36,13 @@ ALBION автоматизирует **повторяющиеся задачи к
 | 📨 **Честные статусы уведомлений** | `requested → delivered / failed` |
 | 🗄 **WAL-mode SQLite** | Нет ошибок `database is locked` при конкурентном доступе |
 | ❌ **Отмена эскалаций** | При закрытии ситуации будущие уведомления отменяются |
+
+**Что нового в v2.3 (Round 3, 2026-07-31):**
+🕐 dual-time с **реальной** разницей поясов (`[+4ч к London]`) · 🛰 class-live-check
+работает всегда (отдельный workflow) · 🔄 команда `/cancel_lesson` · 📝 naive-time →
+Europe/London (а не UTC) · 📣 интент `absence_report` доходит до координаторов ·
+🚨 эскалации с полным контекстом (ученик/занятие/TG родителя) · 🧹 reaper добивает
+зомби-задачи scheduler'а.
 
 ---
 
@@ -118,7 +125,8 @@ python -m src.main
 | `/mh_students` | 🔗 Список привязок MeritHub ↔ родитель (владельцы) | — |
 | `/mh_events` | 🛰 Последние вебхуки MeritHub (владельцы) | — |
 | `/status` | Состояние системы (AI, БД, Kill Switch) | — |
-| `/absent ID` | Отметить отсутствие ученика | `/absent lesson_1` |
+| `/absent ID` | Отметить отсутствие ученика (неизвестный урок → честный ответ отправителю) | `/absent lesson_1` |
+| `/cancel_lesson <ID> [причина]` | 🔄 Отмена урока: уведомляет репетитора и координаторов | `/cancel_lesson lesson_1 болезнь` |
 | `/mock_absent` | 🎬 Демо: absent через 10 секунд | — |
 | `/ok ID` | Закрыть инцидент и отменить будущие эскалации (если нет кнопки) | `/ok 1` |
 | `/kill_switch 0\|1\|2` | 🔌 Режим отправки сообщений (только admin/owner) | `/kill_switch 1` |
