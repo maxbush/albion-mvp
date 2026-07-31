@@ -1,7 +1,7 @@
 """Workflow: отмена/перенос занятия.
 
 Уведомляет репетитора (по TG из UserRepository) и всех координаторов
-(через get_coordinator_ids). Без хардкодов.
+(через get_coordinator_ids). Vendor Agnostic — использует фабрику.
 """
 
 import logging
@@ -10,16 +10,15 @@ from src.events.bus import bus
 from src.events.types import Event, EventTypes
 from src.db.repository import UserRepository
 from src.bot.roles import get_coordinator_ids
-from src.integrations.merithub_mock import MockMeritHubService
-from src.integrations.airtable_mock import MockAirtableService
+from src.integrations.factory import get_merithub_service, get_airtable_service
 
 logger = logging.getLogger(__name__)
 
 
 class CancellationWorkflow:
     def __init__(self, db_path: str | None = None):
-        self.merithub = MockMeritHubService()
-        self.airtable = MockAirtableService()
+        self.merithub = get_merithub_service()
+        self.airtable = get_airtable_service()
         self.users = UserRepository(db_path)
 
     async def _get_tutor_telegram(self, tutor_id: str) -> str | None:
@@ -33,7 +32,15 @@ class CancellationWorkflow:
         lid = event.data.get("lesson_id")
         if not lid:
             return
-        lesson = await self.merithub.get_lesson(lid) or await self.airtable.get_lesson(lid)
+        lesson = None
+        merithub_get_lesson = getattr(self.merithub, "get_lesson", None)
+        if callable(merithub_get_lesson):
+            try:
+                lesson = await merithub_get_lesson(lid)
+            except Exception as e:
+                logger.warning("MeritHub get_lesson failed for %s: %s", lid, e)
+        if not lesson:
+            lesson = await self.airtable.get_lesson(lid)
         if not lesson:
             # Честный фидбэк отправителю: иначе /cancel_lesson выглядит
             # «принятой», но молча ничего не делает.
@@ -48,7 +55,12 @@ class CancellationWorkflow:
                 }))
             return
         reason = event.data.get("reason", "Не указана")
-        await self.merithub.cancel_lesson(lid, reason)
+        merithub_cancel = getattr(self.merithub, "cancel_lesson", None)
+        if callable(merithub_cancel):
+            try:
+                await merithub_cancel(lid, reason)
+            except Exception as e:
+                logger.warning("MeritHub cancel_lesson failed for %s: %s", lid, e)
         await self.airtable.cancel_lesson(lid, reason)
 
         student = await self.airtable.get_student(lesson.student_id)

@@ -20,7 +20,7 @@ from src.db.repository import (
 )
 from src.events.bus import bus
 from src.events.types import Event, EventTypes
-from src.integrations.airtable_mock import MockAirtableService
+from src.integrations.factory import get_airtable_service
 from src.workflows.engine import engine
 from src.workflows.absence import AbsenceWorkflow
 from src.workflows.lesson_ops import LessonOpsWorkflow
@@ -320,7 +320,7 @@ async def cmd_mock_absent(upd: Update, _ctx) -> None:
         await upd.message.reply_text("Демо-режим выключен. Установите ALBION_DEMO_MODE=true.")
         return
     await _ensure_user(upd, "coordinator")
-    at = MockAirtableService()
+    at = get_airtable_service()
     lesson = await at.get_lesson("lesson_1")
     student = await at.get_student("student_1")
     if not lesson or not student:
@@ -394,7 +394,15 @@ async def cmd_cancel_lesson(upd: Update, _ctx) -> None:
     # на случай, если урок исчезнет между этой проверкой и обработкой события.
     from src.workflows.cancellation import CancellationWorkflow
     cwf = CancellationWorkflow()
-    lesson = await cwf.merithub.get_lesson(lid) or await cwf.airtable.get_lesson(lid)
+    lesson = None
+    mh_get = getattr(cwf.merithub, "get_lesson", None)
+    if callable(mh_get):
+        try:
+            lesson = await mh_get(lid)
+        except Exception:
+            pass
+    if not lesson:
+        lesson = await cwf.airtable.get_lesson(lid)
     if not lesson:
         await upd.message.reply_text(
             f"❌ Урок {lid} не найден в расписании. "

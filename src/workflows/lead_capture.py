@@ -10,7 +10,8 @@ from src.db.repository import LeadRepository
 from src.events.bus import bus
 from src.events.types import Event, EventTypes
 from src.bot.roles import get_coordinator_ids
-from src.integrations.airtable_mock import MockAirtableService, Lead
+from src.integrations.factory import get_airtable_service
+from src.integrations.base import Lead
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 class LeadCaptureWorkflow:
     def __init__(self, db_path: str | None = None):
         self.repo = LeadRepository(db_path)
-        self.airtable = MockAirtableService()
+        self.airtable = get_airtable_service()
         self._db_path = db_path
 
     async def handle_lead_new(self, event):
