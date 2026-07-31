@@ -137,3 +137,60 @@ async def test_p03_cancel_lesson_usage_hint(tmp_path, monkeypatch):
         assert any("/cancel_lesson" in t for t in texts)
     finally:
         bus.unsubscribe(EventTypes.LESSON_CANCELLED, boom)
+
+
+# ── P0.4: parse_mode + экранирование динамики в Markdown-ответах ─────
+
+@pytest.mark.asyncio
+async def test_p04_mh_students_has_parse_mode_and_escapes(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.config import settings
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    from src.bot.pilot import cmd_mh_students
+    from src.db.repository import MeritHubStudentRepository
+
+    # Имя с underscore — раньше ломало бы Markdown-отправку без экранирования.
+    await MeritHubStudentRepository(db).upsert(
+        "s01", merithub_user_id="mh_s01", name="Anna_Maria Jones",
+        parent_telegram_id="555", timezone="Europe/London", role="student")
+
+    upd = FakeUpdate(FakeUser(100))
+    await cmd_mh_students(upd, FakeContext([]))
+    assert upd.message.replies, "ожидался ответ со списком учеников"
+    text, kw = upd.message.replies[0]
+    assert kw.get("parse_mode") == "Markdown", "Markdown-разметка требует parse_mode"
+    assert "*Anna\\_Maria Jones*" in text  # жирный сохранён, underscore экранирован
+
+
+@pytest.mark.asyncio
+async def test_p04_mh_contacts_has_parse_mode(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.config import settings
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    from src.bot.pilot import cmd_mh_contacts
+    from src.db.repository import MeritHubContactRepository
+
+    await MeritHubContactRepository(db).upsert(
+        "s01", telegram_id="555", role="parent", name="Parent_One", phone="+44_123")
+
+    upd = FakeUpdate(FakeUser(100))
+    await cmd_mh_contacts(upd, FakeContext([]))
+    text, kw = upd.message.replies[0]
+    assert kw.get("parse_mode") == "Markdown"
+    assert "Parent\\_One" in text
+    assert "+44\\_123" in text
+
+
+@pytest.mark.asyncio
+async def test_p04_seed10_has_parse_mode(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.config import settings
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    from src.bot.pilot import cmd_seed10
+
+    upd = FakeUpdate(FakeUser(100))
+    await cmd_seed10(upd, FakeContext(["555"]))
+    text, kw = upd.message.replies[0]
+    assert kw.get("parse_mode") == "Markdown"
+    # backticks вокруг команд должны интерпретироваться Telegram, т.к. parse_mode есть
+    assert "`/mh_schedule" in text

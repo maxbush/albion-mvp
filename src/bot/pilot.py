@@ -28,6 +28,20 @@ from src.bot.roles import is_admin, ROLE_EMOJI
 
 logger = logging.getLogger(__name__)
 
+
+def _esc_md(text) -> str:
+    """Экранирует спецсимволы Telegram Markdown V1 в динамических данных
+    (имена, email, phone) перед вставкой в сообщения с parse_mode="Markdown".
+    Без этого имя вида 'Anna_Maria' ломает отправку всего сообщения
+    (BadRequest: can't parse entities)."""
+    if text is None:
+        return ""
+    s = str(text)
+    for ch in ("_", "*", "`", "["):
+        s = s.replace(ch, "\\" + ch)
+    return s
+
+
 PILOT_LESSON_REF = "pilot_lesson_1"
 PILOT_STUDENT_ID = "pilot_student_1"
 NOTIFY_DELAY_SECONDS = 10  # быстрое уведомление для живого демо
@@ -275,13 +289,13 @@ async def cmd_mh_user(upd: Update, ctx) -> None:
         )
         parts = []
         if extra_phone:
-            parts.append(f"📱 {extra_phone}")
+            parts.append(f"📱 {_esc_md(extra_phone)}")
         if extra_email:
-            parts.append(f"📧 {extra_email}")
+            parts.append(f"📧 {_esc_md(extra_email)}")
         contact_note = f"\nКонтакты родителя: {' | '.join(parts)}"
 
     await upd.message.reply_text(
-        f"✅ Ученик привязан: `{cuid}` → родитель `{parent_tg}` ({name}).{api_note}{contact_note}\n"
+        f"✅ Ученик привязан: `{cuid}` → родитель `{parent_tg}` ({_esc_md(name)}).{api_note}{contact_note}\n"
         f"Зачислите в класс: `/mh_enroll <classId> {cuid}`",
         parse_mode="Markdown",
     )
@@ -540,31 +554,31 @@ async def cmd_mh_students(upd: Update, _ctx) -> None:
     contact_repo = MeritHubContactRepository()
     lines = [f"🔗 Ученики MeritHub ({len(rows)}):\n"]
     for r in rows:
-        tz = r.get("timezone") or "—"
-        country = r.get("country") or ""
+        tz = _esc_md(r.get("timezone") or "—")
+        country = _esc_md(r.get("country") or "")
         tz_info = f"🕐 {tz}" + (f" ({country})" if country else "")
         base = (
-            f"• *{r['name']}* `{r['client_user_id'][:12]}...` ({r['role']})\n"
+            f"• *{_esc_md(r['name'])}* `{r['client_user_id'][:12]}...` ({r['role']})\n"
             f"  {tz_info}"
         )
         if r.get("parent_telegram_id"):
             base += f" | parent TG: `{r['parent_telegram_id']}`"
         if r.get("email"):
-            base += f" | 📧 {r['email']}"
+            base += f" | 📧 {_esc_md(r['email'])}"
         # Добавляем контакты родителя если есть
         contact = await contact_repo.get(r["client_user_id"])
         if contact:
             extras = []
             if contact.get("phone"):
-                extras.append(f"📱 {contact['phone']}")
+                extras.append(f"📱 {_esc_md(contact['phone'])}")
             if contact.get("email"):
-                extras.append(f"📧 {contact['email']}")
+                extras.append(f"📧 {_esc_md(contact['email'])}")
             if contact.get("name"):
-                extras.append(f"👤 {contact['name']}")
+                extras.append(f"👤 {_esc_md(contact['name'])}")
             if extras:
                 base += f"\n  Parent: {' | '.join(extras)}"
         lines.append(base)
-    await upd.message.reply_text("\n".join(lines))
+    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 # =====================================================================
@@ -686,7 +700,7 @@ async def cmd_seed10(upd: Update, ctx) -> None:
     lines.append("")
     lines.append("Далее: `/mh_schedule t01 <start> 60 s01 s02 s04`")
 
-    await upd.message.reply_text("\n".join(lines))
+    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_demo_reset(upd: Update, _ctx) -> None:
@@ -1028,14 +1042,14 @@ async def cmd_mh_contact(upd: Update, ctx) -> None:
 
     parts = []
     if phone:
-        parts.append(f"📱 {phone}")
+        parts.append(f"📱 {_esc_md(phone)}")
     if email:
-        parts.append(f"📧 {email}")
+        parts.append(f"📧 {_esc_md(email)}")
     if tg:
         parts.append(f"💬 TG `{tg}`")
 
     await upd.message.reply_text(
-        f"✅ Контакт `{cuid}` ({name}) обновлён:\n" + "\n".join(parts),
+        f"✅ Контакт `{cuid}` ({_esc_md(name)}) обновлён:\n" + "\n".join(parts),
         parse_mode="Markdown",
     )
 
@@ -1052,15 +1066,15 @@ async def cmd_mh_contacts(upd: Update, _ctx) -> None:
         return
     lines = ["📇 Контакты:\n"]
     for r in rows:
-        parts = [f"• `{r['client_user_id']}` ({r['name'] or '—'}) [{r['role']}]"]
+        parts = [f"• `{r['client_user_id']}` ({_esc_md(r['name'] or '—')}) [{r['role']}]"]
         if r.get("telegram_id"):
             parts.append(f"TG: `{r['telegram_id']}`")
         if r.get("phone"):
-            parts.append(f"📱 {r['phone']}")
+            parts.append(f"📱 {_esc_md(r['phone'])}")
         if r.get("email"):
-            parts.append(f"📧 {r['email']}")
+            parts.append(f"📧 {_esc_md(r['email'])}")
         lines.append(" | ".join(parts))
-    await upd.message.reply_text("\n".join(lines))
+    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_import_learners(upd: Update, ctx) -> None:
