@@ -378,3 +378,73 @@ async def test_u3_kill_switch_args_still_work(tmp_path, monkeypatch):
     finally:
         upd = FakeUpdate(FakeUser(100))
         await cmd_kill_switch(upd, FakeContext(["2"]))
+
+
+# ── U4: онбординг ────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_u4_registration_shows_honest_expectations(tmp_path, monkeypatch):
+    """После регистрации — что бот РЕАЛЬНО делает, а не «разберусь» AI-магией."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import handle_callback
+
+    upd = FakeUpdate(FakeUser(700))
+    upd.callback_query = FakeQuery("register_parent", upd.effective_user)
+    await handle_callback(upd, FakeContext())
+    text = upd.callback_query.edits[-1][0]
+    assert "разберусь" not in text
+    assert "напомню" in text            # реактивная механика — напоминания
+    assert "/cancel_lesson" in text     # существующая команда, которую можно упомянуть
+
+
+@pytest.mark.asyncio
+async def test_u4_tutor_registration_expectations(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import handle_callback
+
+    upd = FakeUpdate(FakeUser(701))
+    upd.callback_query = FakeQuery("register_tutor", upd.effective_user)
+    await handle_callback(upd, FakeContext())
+    text = upd.callback_query.edits[-1][0]
+    assert "подтвердить готовность" in text or "отметить старт" in text
+
+
+@pytest.mark.asyncio
+async def test_u4_start_coordinator_single_message_with_help_button(tmp_path, monkeypatch):
+    """Для координатора /start — одно сообщение; помощь по кнопке, с возвратом."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import cmd_start, handle_callback
+    from src.db.repository import UserRepository
+
+    await UserRepository(db).create("702", "coordinator", "Coord")
+    upd = FakeUpdate(FakeUser(702))
+    await cmd_start(upd, FakeContext([]))
+    assert len(upd.message.replies) == 1
+    text, kw = upd.message.replies[0]
+    markup = kw.get("reply_markup")
+    assert markup is not None
+    labels = [b.text for row in markup.inline_keyboard for b in row]
+    assert "📋 Команды" in labels
+
+    # Тап «Команды» → помощь; тап «Назад» → снова приветствие.
+    upd.callback_query = FakeQuery("help_commands", upd.effective_user)
+    await handle_callback(upd, FakeContext([]))
+    assert "/today" in upd.callback_query.edits[-1][0]
+    upd.callback_query = FakeQuery("help_back", upd.effective_user)
+    await handle_callback(upd, FakeContext([]))
+    assert "С возвращением" in upd.callback_query.edits[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_u4_help_commands_for_parent_points_to_menu(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import handle_callback
+    from src.db.repository import UserRepository
+
+    await UserRepository(db).create("703", "parent", "Parent")
+    upd = FakeUpdate(FakeUser(703))
+    upd.callback_query = FakeQuery("help_commands", upd.effective_user)
+    await handle_callback(upd, FakeContext([]))
+    text = upd.callback_query.edits[-1][0]
+    assert "меню" in text.lower()
+    assert "/cancel_lesson" in text

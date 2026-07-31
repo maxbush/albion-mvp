@@ -211,6 +211,32 @@ def _coordinator_help_text() -> str:
     )
 
 
+def _role_expectations(role: str) -> str:
+    """Честные ожидания по роли — только то, что бот реально умеет (UX U4).
+
+    Никаких обещаний AI-магии и несуществующих механик: для родителя/репетитора
+    бот в первую очередь реактивный (напоминания и вопросы придут сами)."""
+    if role == "coordinator":
+        return (
+            "Я присылаю эскалации и алерты — обычно реакция занимает одну кнопку.\n"
+            "Все инструменты — по кнопке «Команды» ниже или в меню «/»."
+        )
+    if role == "tutor":
+        return (
+            "Как это работает:\n"
+            "• перед уроком напомню и попрошу подтвердить готовность;\n"
+            "• в начале урока попрошу отметить старт.\n\n"
+            "Отменить урок: /cancel_lesson"
+        )
+    # parent (и дефолт)
+    return (
+        "Дальше ничего настраивать не нужно:\n"
+        "• перед занятием напомню и уточню статус;\n"
+        "• если ученик не придёт — спрошу у вас.\n\n"
+        "Отменить занятие: /cancel_lesson"
+    )
+
+
 async def cmd_start(upd: Update, _ctx) -> None:
     user = upd.effective_user
     tg_id = str(user.id)
@@ -223,18 +249,19 @@ async def cmd_start(upd: Update, _ctx) -> None:
         admin_mark = " ★" if is_admin(tg_id) else ""
         # Меню «/» под роль (UX U1): идемпотентно, обновляем при каждом /start.
         await apply_command_menu(getattr(_ctx, "bot", None), tg_id, role)
+        # Одно сообщение вместо двух (UX U4): помощь открывается по кнопке,
+        # а не дублируется в чат при каждом /start.
+        buttons = [InlineKeyboardButton("🔄 Сменить роль", callback_data="change_role")]
+        if role == "coordinator":
+            buttons.insert(0, InlineKeyboardButton("📋 Команды", callback_data="help_commands"))
         await upd.message.reply_text(
             f"👋 С возвращением, {user.full_name or '—'}!\n\n"
             f"Ваша роль: {emoji} {role}{admin_mark}\n"
             f"TG ID: `{tg_id}`\n\n"
-            f"Хотите сменить роль? Нажмите кнопку ниже.",
+            f"{_role_expectations(role)}",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔄 Сменить роль", callback_data="change_role"),
-            ]]),
+            reply_markup=InlineKeyboardMarkup([buttons]),
         )
-        if role == "coordinator":
-            await upd.message.reply_text(_coordinator_help_text(), parse_mode="Markdown")
         return
 
     # Новый пользователь — показываем выбор роли
@@ -421,16 +448,21 @@ async def handle_callback(upd: Update, _ctx) -> None:
         await apply_command_menu(getattr(_ctx, "bot", None), user.id, role)
         emoji = {"parent": "👨‍👩‍👦", "tutor": "🧑‍🏫", "coordinator": "👨‍💼"}.get(role, "")
         admin_mark = " ★" if is_admin(str(user.id)) else ""
+        # Честные ожидания по роли (UX U4) — вместо «напишите что-нибудь» в пустоту.
+        markup = None
+        if role == "coordinator":
+            markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📋 Команды", callback_data="help_commands"),
+                InlineKeyboardButton("🔄 Сменить роль", callback_data="change_role"),
+            ]])
         await query.edit_message_text(
-            f"✅ Отлично! Вы зарегистрированы как {emoji} *{role}*{admin_mark}.\n\n"
-            f"TG ID: `{user.id}`\n"
-            f"Имя: {user.full_name or '—'}\n\n"
-            f"Напишите что-нибудь — я разберусь!",
+            f"✅ Вы зарегистрированы как {emoji} *{role}*{admin_mark}.\n\n"
+            f"{_role_expectations(role)}\n\n"
+            f"TG ID: `{user.id}` · Имя: {user.full_name or '—'}",
             parse_mode="Markdown",
+            reply_markup=markup,
         )
         logger.info("User %s registered as %s", user.id, role)
-        if role == "coordinator":
-            await upd.effective_chat.send_message(_coordinator_help_text(), parse_mode="Markdown")
         return
 
     if data == "change_role":
@@ -444,6 +476,41 @@ async def handle_callback(upd: Update, _ctx) -> None:
             ],
         ])
         await query.edit_message_text("Выберите новую роль:", reply_markup=kb)
+        return
+
+    # --- Помощь «📋 Команды» по требованию (UX U4) ---
+    if data in ("help_commands", "help_back"):
+        user_rec = await UserRepository().get_by_telegram_id(str(query.from_user.id))
+        role = (user_rec or {}).get("role", "parent")
+        back_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("« Назад", callback_data="help_back"),
+        ]])
+        if data == "help_commands":
+            if role == "coordinator":
+                await query.edit_message_text(
+                    _coordinator_help_text(), parse_mode="Markdown", reply_markup=back_kb)
+            else:
+                await query.edit_message_text(
+                    f"Ваши возможности:\n\n{_role_expectations(role)}\n\n"
+                    "Команды также доступны в меню «/» слева от поля ввода.",
+                    reply_markup=back_kb,
+                )
+            return
+        # help_back — возвращаем приветствие
+        user = query.from_user
+        emoji = {"parent": "👨‍👩‍👦", "tutor": "🧑‍🏫", "coordinator": "👨‍💼", "student": "🎓"}.get(role, "")
+        admin_mark = " ★" if is_admin(user.id) else ""
+        buttons = [InlineKeyboardButton("🔄 Сменить роль", callback_data="change_role")]
+        if role == "coordinator":
+            buttons.insert(0, InlineKeyboardButton("📋 Команды", callback_data="help_commands"))
+        await query.edit_message_text(
+            f"👋 С возвращением, {user.full_name or '—'}!\n\n"
+            f"Ваша роль: {emoji} {role}{admin_mark}\n"
+            f"TG ID: `{user.id}`\n\n"
+            f"{_role_expectations(role)}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([buttons]),
+        )
         return
 
     # --- Подтверждение опасных действий (UX U3) ---

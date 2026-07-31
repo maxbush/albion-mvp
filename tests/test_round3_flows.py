@@ -529,34 +529,36 @@ class _FakeQuery:
 
 @pytest.mark.asyncio
 async def test_p24_coordinator_help_is_unified(tmp_path, monkeypatch):
-    """/start (уже координатор) и регистрация по кнопке показывают ОДИН текст."""
+    """Помощь координатора едина: /start и регистрация ведут на одну кнопку «📋 Команды»,
+    которая показывает один и тот же текст (P2.4 + U4)."""
     db = await _init_tmp_db(tmp_path, monkeypatch)
-    from src.bot.handlers import cmd_start, handle_callback
+    from src.bot.handlers import cmd_start, handle_callback, _coordinator_help_text
     from src.db.repository import UserRepository
 
     await UserRepository(db).create("321", "coordinator", "Координатор")
 
-    # Путь 1: /start для существующего координатора.
+    # Путь 1: /start → одно сообщение с кнопкой «Команды» → help по тапу.
     upd1 = FakeUpdate(FakeUser(321))
     await cmd_start(upd1, FakeContext([]))
-    assert len(upd1.message.replies) == 2  # приветствие + помощь
-    help_from_start, kw1 = upd1.message.replies[1]
-    assert kw1.get("parse_mode") == "Markdown"
+    assert len(upd1.message.replies) == 1, "U4: /start координатора — одно сообщение"
 
-    # Путь 2: регистрация через кнопку register_coordinator.
+    upd1.callback_query = _FakeQuery("help_commands", FakeUser(321))
+    await handle_callback(upd1, FakeContext([]))
+    help_from_start = upd1.callback_query.edits[-1][0]
+
+    # Путь 2: регистрация → тот же тап «Команды» → тот же текст.
     upd2 = FakeUpdate(FakeUser(654))
-    upd2.effective_chat = _FakeChatRich()
     upd2.callback_query = _FakeQuery("register_coordinator", upd2.effective_user)
     await handle_callback(upd2, FakeContext([]))
-    help_from_button, kw2 = upd2.effective_chat.sent[0]
+    upd2.callback_query = _FakeQuery("help_commands", FakeUser(654))
+    await handle_callback(upd2, FakeContext([]))
+    help_from_button = upd2.callback_query.edits[-1][0]
 
-    assert help_from_start == help_from_button, "помощь должна быть единой в обоих путях"
-    assert kw2.get("parse_mode") == "Markdown"
+    assert help_from_start == help_from_button == _coordinator_help_text()
     # Underscore в командах экранирован (Markdown V1), иначе текст ломается.
     assert "/pilot\\_absent" in help_from_start
-    assert "/cancel\\_lesson <ID>" in help_from_start  # новая команда из P0.3 в помощи
+    assert "/cancel\\_lesson <ID>" in help_from_start
     assert "/mh\\_schedule" in help_from_start
-    # Нет непарных «голых» подчёркиваний в командах.
     for line in help_from_start.splitlines():
         if line.strip().startswith("/"):
             assert "\\_" in line or "_" not in line, line
