@@ -362,9 +362,17 @@ class AbsenceWorkflow:
         created = (inc_row.get("created_at") or "")[:16]
         if created:
             esc_msg += f"\nСоздан: {created} UTC"
+
+        # UX U2: действия прямо на эскалации — без ручного ввода /ok <ID>
+        # (management by exception должен решаться в один тап).
+        buttons = [{"text": "✅ Закрыть ситуацию", "callback_data": f"coord_resolve:{inc_id}:ok"}]
+        if parent_tg:
+            buttons.append({"text": "👤 Написать родителю", "url": f"tg://user?id={parent_tg}"})
+
         from src.bot.roles import notify_all_coordinators
         await notify_all_coordinators(
-            esc_msg, notification_type="absence_escalation", db_path=self.incidents.db_path)
+            esc_msg, notification_type="absence_escalation",
+            db_path=self.incidents.db_path, buttons=buttons)
 
         # Сохраняем ключевые поля в result, чтобы find_* методы могли
         # найти workflow по LIKE-запросу даже после эскалации.

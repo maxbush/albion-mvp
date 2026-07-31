@@ -158,3 +158,119 @@ async def test_u1_menu_survives_bot_api_failure(tmp_path, monkeypatch):
     # Пользователь всё равно зарегистрирован.
     from src.db.repository import UserRepository
     assert (await UserRepository(db).get_by_telegram_id("503"))["role"] == "parent"
+
+
+# ── U2: кнопки действий на эскалации ─────────────────────────────────
+
+async def _setup_escalation(db, engine_module=True):
+    """Создаёт инцидент + workflow + координатора и возвращает id инцидента."""
+    from src.db.repository import (
+        IncidentRepository, ScheduledActionRepository, UserRepository, WorkflowRepository,
+    )
+    from src.workflows.engine import engine
+
+    engine.repo = WorkflowRepository(db)
+    engine.scheduler = ScheduledActionRepository(db)
+    await UserRepository(db).create("999", "coordinator", "Мария Координатор")
+    await UserRepository(db).create("555", "parent", "Родитель Миши")
+    inc_id = await IncidentRepository(db).create(
+        lesson_ref="C9", type="absence", status="pending")
+    wid = await engine.start_workflow("absence_notification", {
+        "incident_id": inc_id, "student_name": "Миша",
+        "parent_telegram_id": "555", "lesson_ref": "C9"})
+    return inc_id, wid
+
+
+@pytest.mark.asyncio
+async def test_u2_escalation_carries_action_buttons(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.events.bus import bus
+    from src.events.types import EventTypes
+    from src.workflows.absence import AbsenceWorkflow
+
+    inc_id, wid = await _setup_escalation(db)
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await AbsenceWorkflow(db)._escalate(wid, inc_id)
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    esc = [d for d in captured if d.get("telegram_id") == "999"][-1]
+    buttons = esc.get("buttons")
+    assert buttons, "у эскалации должны быть кнопки действий"
+    kinds = {tuple(k for k in b if b.get(k)) for b in buttons}
+    assert any(b.get("callback_data") == f"coord_resolve:{inc_id}:ok" for b in buttons)
+    assert any(b.get("url") == "tg://user?id=555" for b in buttons)
+
+
+@pytest.mark.asyncio
+async def test_u2_coordinator_closes_from_escalation(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import handle_callback
+    from src.db.repository import IncidentRepository
+
+    inc_id, wid = await _setup_escalation(db)
+    from src.workflows.absence import AbsenceWorkflow
+    await AbsenceWorkflow(db)._escalate(wid, inc_id)
+
+    upd = FakeUpdate(FakeUser(999, full_name="Мария Координатор"))
+    upd.callback_query = FakeQuery(f"coord_resolve:{inc_id}:ok", upd.effective_user)
+    upd.callback_query.message = type("M", (), {"text": "🚨 Эскалация базовая"})()
+    ctx = FakeContext()
+    await handle_callback(upd, ctx)
+
+    inc = await IncidentRepository(db).get(inc_id)
+    assert inc["status"] == "resolved"
+    assert inc["resolution"] == "coordinator_closed"
+    # Сообщение отредактировано с отметкой (а не новое в чат).
+    assert upd.callback_query.edits, "эскалация должна редактироваться"
+    assert "Закрыто" in upd.callback_query.edits[-1][0]
+    assert "Мария Координатор" in upd.callback_query.edits[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_u2_non_coordinator_cannot_close(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import handle_callback
+    from src.db.repository import IncidentRepository
+
+    inc_id, wid = await _setup_escalation(db)
+    from src.workflows.absence import AbsenceWorkflow
+    await AbsenceWorkflow(db)._escalate(wid, inc_id)
+
+    # Родитель получил пересланную эскалацию и тыкает кнопку.
+    upd = FakeUpdate(FakeUser(555))
+    upd.callback_query = FakeQuery(f"coord_resolve:{inc_id}:ok", upd.effective_user)
+    ctx = FakeContext()
+    await handle_callback(upd, ctx)
+
+    inc = await IncidentRepository(db).get(inc_id)
+    assert inc["status"] == "escalated", "не-координатор не должен закрывать"
+    assert any("координатор" in (t or "") for t, _ in upd.callback_query.answers)
+
+
+@pytest.mark.asyncio
+async def test_u2_double_close_is_safe(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import handle_callback
+    from src.db.repository import IncidentRepository
+
+    inc_id, wid = await _setup_escalation(db)
+    from src.workflows.absence import AbsenceWorkflow
+    wf = AbsenceWorkflow(db)
+    await wf._escalate(wid, inc_id)
+    await wf.resolve_absence(inc_id, "999", resolution="first_close")
+
+    upd = FakeUpdate(FakeUser(999))
+    upd.callback_query = FakeQuery(f"coord_resolve:{inc_id}:ok", upd.effective_user)
+    ctx = FakeContext()
+    await handle_callback(upd, ctx)
+
+    inc = await IncidentRepository(db).get(inc_id)
+    assert inc["resolution"] == "first_close", "второе закрытие не перезаписывает"
+    assert any("закрыта" in (t or "") for t, _ in upd.callback_query.answers)

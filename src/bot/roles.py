@@ -115,11 +115,13 @@ async def notify_all_coordinators(
     *,
     notification_type: str = "ops_alert",
     db_path: str | None = None,
+    buttons: list[dict] | None = None,
 ) -> None:
     """Отправляет уведомление всем координаторам через event bus.
 
     Единый helper для всех workflow'ов, которым нужно уведомить координаторов.
-    Убирает дублирование логики list_by_role → fallback → loop create+publish."""
+    Убирает дублирование логики list_by_role → fallback → loop create+publish.
+    `buttons` — опциональные inline-кнопки (см. формат NOTIFICATION_REQUESTED)."""
     from src.db.repository import NotificationRepository
     from src.events.bus import bus
     from src.events.types import Event, EventTypes
@@ -136,6 +138,7 @@ async def notify_all_coordinators(
             "notification_id": nid,
             "telegram_id": tg,
             "message": message,
+            **({"buttons": buttons} if buttons else {}),
         }))
 
 

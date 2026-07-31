@@ -518,6 +518,44 @@ async def handle_callback(upd: Update, _ctx) -> None:
         await upd.effective_chat.send_message(f"✅ Ситуация закрыта. Ответ родителя: {parent_answer}.")
         return
 
+    # --- Координатор закрывает ситуацию прямо с эскалации (UX U2) ---
+    if data.startswith("coord_resolve:"):
+        parts = data.split(":")
+        try:
+            inc_id = int(parts[1])
+        except (IndexError, ValueError):
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз или напишите текстом.")
+            return
+        # Guard: закрывать может только координатор (callback_data виден всем,
+        # кто перешлёт сообщение — проверяем роль из БД, а не доверяем кнопке).
+        user_rec = await UserRepository().get_by_telegram_id(str(query.from_user.id))
+        if not user_rec or user_rec.get("role") != "coordinator":
+            await query.answer("⛔ Закрывать ситуации может только координатор", show_alert=True)
+            return
+        inc_repo = IncidentRepository()
+        inc = await inc_repo.get(inc_id)
+        if not inc:
+            await query.answer("Ситуация не найдена", show_alert=True)
+            return
+        if inc["status"] == "resolved":
+            await query.answer("ℹ️ Уже закрыта", show_alert=False)
+            try:
+                await query.edit_message_reply_markup(None)
+            except Exception:
+                pass
+            return
+        wf = AbsenceWorkflow()
+        await wf.resolve_absence(inc_id, str(query.from_user.id), resolution="coordinator_closed")
+        # Редактируем исходное сообщение, сохраняя контекст + отметку кто закрыл.
+        base_text = getattr(getattr(query, "message", None), "text", "") or ""
+        suffix = f"\n\n✅ Закрыто ({query.from_user.full_name or query.from_user.id})"
+        try:
+            await query.edit_message_text((base_text + suffix)[:4000])
+        except Exception:
+            await query.answer("✅ Закрыто", show_alert=False)
+        logger.info("Incident %d closed by coordinator %s via escalation button", inc_id, query.from_user.id)
+        return
+
     # --- Реальный resolve (из уведомления) ---
     if data.startswith("resolve:"):
         parts = data.split(":")
@@ -857,8 +895,14 @@ def setup_handlers(app: Application) -> None:
             try:
                 reply_markup = None
                 if buttons:
+                    # Кнопка бывает двух видов: callback (действие) и url (ссылка,
+                    # например tg://user?id= «написать родителю»). Ровно одно из двух.
                     reply_markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])] for btn in buttons
+                        [InlineKeyboardButton(
+                            btn["text"],
+                            callback_data=btn.get("callback_data"),
+                            url=btn.get("url"),
+                        )] for btn in buttons
                     ])
                 elif cb_data:
                     reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Всё в порядке", callback_data=cb_data)]])
