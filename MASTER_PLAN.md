@@ -183,7 +183,7 @@ P3.1-P3.2 docs                       → правки                ~10 мин
 - [x] **U2** Кнопки эскалации: `[✅ Закрыть]` (callback coord_resolve, guard по роли
   coordinator) + `[👤 Написать родителю]` (url tg://user?id=). Расширить
   notify_all_coordinators(buttons=...) и notif_handler (поддержка url).
-- [ ] **U3** Опасные действия: `/demo_reset` → confirm-кнопки; `/kill_switch` →
+- [x] **U3** Опасные действия: `/demo_reset` → confirm-кнопки; `/kill_switch` →
   3 кнопки-уровня (аргументы сохраняются).
 - [ ] **U4** Онбординг: role-specific expectations (без обещаний несуществующих
   механик); `/start` координатора — 1 сообщение + кнопка «📋 Команды» (help по

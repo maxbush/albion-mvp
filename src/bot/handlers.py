@@ -320,7 +320,19 @@ async def cmd_kill_switch(upd: Update, _ctx) -> None:
         await upd.message.reply_text("⛔ Только владелец/админ может менять kill switch.")
         return
     if not _ctx.args:
-        await upd.message.reply_text("/kill_switch 0|1|2")
+        # UX U3: уровни кнопками вместо запоминания 0|1|2 (recognition, не recall).
+        labels = {0: "ВСЁ ВЫКЛ", 1: "Только координаторам", 2: "Полностью"}
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔴 Всё выкл", callback_data="killswitch:0"),
+        ], [
+            InlineKeyboardButton("🟡 Только координаторам", callback_data="killswitch:1"),
+        ], [
+            InlineKeyboardButton("🟢 Полностью", callback_data="killswitch:2"),
+        ]])
+        await upd.message.reply_text(
+            f"🔌 Kill Switch. Сейчас: *{labels.get(_kill_switch_level, '?')}*",
+            parse_mode="Markdown", reply_markup=kb,
+        )
         return
     try:
         lvl = int(_ctx.args[0])
@@ -432,6 +444,37 @@ async def handle_callback(upd: Update, _ctx) -> None:
             ],
         ])
         await query.edit_message_text("Выберите новую роль:", reply_markup=kb)
+        return
+
+    # --- Подтверждение опасных действий (UX U3) ---
+    if data in ("demo_reset:confirm", "demo_reset:cancel"):
+        if not is_admin(query.from_user.id):
+            await query.answer("⛔ Только владелец/админ", show_alert=True)
+            return
+        if data.endswith(":cancel"):
+            await query.edit_message_text("✖️ Сброс отменён — данные на месте.")
+            return
+        from src.bot.pilot import perform_demo_reset, format_demo_reset_result
+        counts = await perform_demo_reset()
+        await query.edit_message_text(format_demo_reset_result(counts))
+        return
+
+    if data.startswith("killswitch:"):
+        if not is_admin(query.from_user.id):
+            await query.answer("⛔ Только владелец/админ", show_alert=True)
+            return
+        try:
+            lvl = int(data.split(":", 1)[1])
+            if lvl not in (0, 1, 2):
+                raise ValueError
+        except ValueError:
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
+            return
+        set_kill_switch_level(lvl)
+        labels = {0: "🔴 ВСЁ ВЫКЛ", 1: "🟡 Только координаторам", 2: "🟢 Полностью"}
+        await query.edit_message_text(f"🔌 Kill Switch: {labels[lvl]}")
+        logger.info("Kill switch set to %d via button by %s", lvl, query.from_user.id)
+        await bus.publish(Event(EventTypes.SYSTEM_KILL_SWITCH, {"level": lvl}))
         return
 
     # --- Выбор роли в демо-режиме ---

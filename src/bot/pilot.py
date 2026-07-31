@@ -703,36 +703,78 @@ async def cmd_seed10(upd: Update, ctx) -> None:
     await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-async def cmd_demo_reset(upd: Update, _ctx) -> None:
-    """Сбрасывает инциденты, workflow'ы и scheduled actions для чистого демо-прогона."""
-    if not is_admin(upd.effective_user.id):
-        await upd.message.reply_text("⛔ Только владелец/админ.")
-        return
+_DEMO_RESET_TABLES = [
+    "dead_letter_queue",
+    "scheduled_actions",
+    "notifications",
+    "incidents",
+    "workflow_instances",
+    "merithub_class_status",
+]
 
+
+async def _demo_reset_counts() -> dict:
+    """Считает записи в таблицах демо-сброса (если таблицы нет — 0)."""
     import aiosqlite
-    tables = [
-        "dead_letter_queue",
-        "scheduled_actions",
-        "notifications",
-        "incidents",
-        "workflow_instances",
-        "merithub_class_status",
-    ]
     counts = {}
     async with aiosqlite.connect(settings.database_path) as db:
-        for t in tables:
-            row = await (await db.execute(f"SELECT COUNT(*) FROM {t}")).fetchone()
-            counts[t] = row[0] if row else 0
-            await db.execute(f"DELETE FROM {t}")
-        await db.commit()
+        for t in _DEMO_RESET_TABLES:
+            try:
+                row = await (await db.execute(f"SELECT COUNT(*) FROM {t}")).fetchone()
+                counts[t] = row[0] if row else 0
+            except Exception:
+                counts[t] = 0
+    return counts
 
+
+async def perform_demo_reset() -> dict:
+    """Фактический сброс; возвращает {таблица: сколько было до удаления}."""
+    import aiosqlite
+    counts = await _demo_reset_counts()
+    async with aiosqlite.connect(settings.database_path) as db:
+        for t in _DEMO_RESET_TABLES:
+            try:
+                await db.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        await db.commit()
+    logger.info("Demo reset performed: %s", counts)
+    return counts
+
+
+def format_demo_reset_result(counts: dict) -> str:
     lines = ["🗑 Демо-сброс выполнен:\n"]
     for t, c in counts.items():
         lines.append(f"  {t}: удалено {c} записей")
     lines.append("\nПользователи, ученики MeritHub и зачисления сохранены.")
     lines.append("Готово к чистому прогону: `/pilot_absent` или `/mh_schedule ...`")
+    return "\n".join(lines)
 
-    await upd.message.reply_text("\n".join(lines))
+
+async def cmd_demo_reset(upd: Update, _ctx) -> None:
+    """Сброс демо-данных — только с подтверждением (UX U3: опасное действие).
+
+    Раньше команда мгновенно стирала 6 таблиц — один случайный ввод на живом
+    демо = потеря состояния. Теперь: превью последствий + confirm-кнопки."""
+    if not is_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только владелец/админ.")
+        return
+
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    counts = await _demo_reset_counts()
+    lines = ["🗑 *Сбросить демо-данные?*\n"]
+    nonempty = {t: c for t, c in counts.items() if c}
+    if nonempty:
+        for t, c in nonempty.items():
+            lines.append(f"  {t}: {c} записей")
+    else:
+        lines.append("  (таблицы уже пустые)")
+    lines.append("\nПользователи, ученики MeritHub и зачисления *сохранятся*.")
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Да, сбросить", callback_data="demo_reset:confirm"),
+        InlineKeyboardButton("✖️ Отмена", callback_data="demo_reset:cancel"),
+    ]])
+    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=kb)
 
 
 async def cmd_incidents(upd: Update, _ctx) -> None:

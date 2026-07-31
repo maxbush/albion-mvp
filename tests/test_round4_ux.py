@@ -274,3 +274,107 @@ async def test_u2_double_close_is_safe(tmp_path, monkeypatch):
     inc = await IncidentRepository(db).get(inc_id)
     assert inc["resolution"] == "first_close", "второе закрытие не перезаписывает"
     assert any("закрыта" in (t or "") for t, _ in upd.callback_query.answers)
+
+
+# ── U3: подтверждения опасных действий ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_u3_demo_reset_preview_keeps_data(tmp_path, monkeypatch):
+    """Команда НЕ удаляет до подтверждения и показывает, что именно будет стёрто."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    from src.bot.pilot import cmd_demo_reset
+    from src.db.repository import IncidentRepository
+
+    await IncidentRepository(db).create(lesson_ref="l1", type="absence", status="pending")
+    upd = FakeUpdate(FakeUser(100))
+    await cmd_demo_reset(upd, FakeContext([]))
+
+    text, kw = upd.message.replies[-1]
+    assert "Сбросить демо-данные" in text
+    assert "incidents: 1" in text                    # превью последствий
+    assert kw.get("reply_markup") is not None        # кнопки подтверждения
+    incs = await IncidentRepository(db)._fetchall("SELECT * FROM incidents")
+    assert len(incs) == 1, "превью ничего не удаляет"
+
+
+@pytest.mark.asyncio
+async def test_u3_demo_reset_confirm_flow(tmp_path, monkeypatch):
+    """Кнопка confirm реально сбрасывает; cancel оставляет всё как есть."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    from src.bot.handlers import handle_callback
+    from src.db.repository import IncidentRepository
+
+    await IncidentRepository(db).create(lesson_ref="l1", type="absence", status="pending")
+
+    # cancel — данные целы
+    upd = FakeUpdate(FakeUser(100))
+    upd.callback_query = FakeQuery("demo_reset:cancel", upd.effective_user)
+    await handle_callback(upd, FakeContext())
+    assert len(await IncidentRepository(db)._fetchall("SELECT * FROM incidents")) == 1
+    assert "отменён" in upd.callback_query.edits[-1][0]
+
+    # confirm — сброс + сообщение с результатом
+    upd = FakeUpdate(FakeUser(100))
+    upd.callback_query = FakeQuery("demo_reset:confirm", upd.effective_user)
+    await handle_callback(upd, FakeContext())
+    assert len(await IncidentRepository(db)._fetchall("SELECT * FROM incidents")) == 0
+    assert "Демо-сброс выполнен" in upd.callback_query.edits[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_u3_demo_reset_confirm_admin_only(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    # Админов нет вообще → никто не может подтвердить сброс.
+    from src.bot.handlers import handle_callback
+    from src.db.repository import IncidentRepository
+
+    await IncidentRepository(db).create(lesson_ref="l1", type="absence", status="pending")
+    upd = FakeUpdate(FakeUser(777))
+    upd.callback_query = FakeQuery("demo_reset:confirm", upd.effective_user)
+    await handle_callback(upd, FakeContext())
+    assert len(await IncidentRepository(db)._fetchall("SELECT * FROM incidents")) == 1
+    assert any("админ" in (t or "") for t, _ in upd.callback_query.answers)
+
+
+@pytest.mark.asyncio
+async def test_u3_kill_switch_buttons(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    from src.bot.handlers import cmd_kill_switch, handle_callback, get_kill_switch_level
+
+    # Команда без аргументов → кнопки уровней, а не подсказка синтаксиса.
+    upd = FakeUpdate(FakeUser(100))
+    await cmd_kill_switch(upd, FakeContext([]))
+    text, kw = upd.message.replies[-1]
+    assert "Kill Switch" in text and kw.get("reply_markup") is not None
+    assert "Сейчас" in text
+
+    # Нажатие кнопки → уровень сменился, сообщение отредактировано.
+    upd = FakeUpdate(FakeUser(100))
+    upd.callback_query = FakeQuery("killswitch:1", upd.effective_user)
+    await handle_callback(upd, FakeContext())
+    try:
+        assert get_kill_switch_level() == 1
+        assert "координаторам" in upd.callback_query.edits[-1][0]
+    finally:
+        upd = FakeUpdate(FakeUser(100))
+        upd.callback_query = FakeQuery("killswitch:2", upd.effective_user)
+        await handle_callback(upd, FakeContext())  # возвращаем дефолт
+
+
+@pytest.mark.asyncio
+async def test_u3_kill_switch_args_still_work(tmp_path, monkeypatch):
+    """Обратная совместимость: /kill_switch 1 работает как раньше."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    from src.bot.handlers import cmd_kill_switch, get_kill_switch_level
+
+    upd = FakeUpdate(FakeUser(100))
+    await cmd_kill_switch(upd, FakeContext(["1"]))
+    try:
+        assert get_kill_switch_level() == 1
+    finally:
+        upd = FakeUpdate(FakeUser(100))
+        await cmd_kill_switch(upd, FakeContext(["2"]))
