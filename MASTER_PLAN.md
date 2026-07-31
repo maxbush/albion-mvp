@@ -2,10 +2,11 @@
 
 > Создан: 2026-07-31 (Round 3, полный ре-аудит)
 > Базовая линия на старте: **95/95 тестов passing**
+> Статус: ✅ **Round 3 ЗАВЕРШЁН** — 15/15 задач, **120/120 тестов passing**
+> (+25 новых E2E/регрессионных тестов), 15 коммитов.
 > Интерфейс продукта = Telegram-бот (нет веб-UI), поэтому E2E-проверки =
-> pytest-эмуляция Telegram-апдейтов (FakeUpdate/FakeContext) + живой прогон
-> через SQLite scheduler + FastAPI TestClient для webhook'ов.
-> Playwright неприменим: веб-фронтенда в репозитории нет.
+> pytest-эмуляция Telegram-апдейтов (FakeUpdate/FakeContext) + прогон полного
+> цепочного флоу через event bus/scheduler. Playwright неприменим: веб-UI нет.
 
 ---
 
@@ -139,4 +140,19 @@ P3.1-P3.2 docs                       → правки                ~10 мин
 ## Журнал выполнения
 
 - 2026-07-31: разбор владельца применён (P2.2 → comment-out, H1 → не трогаем). Старт Round 3.
-<!-- Сюда по ходу работы: отметки [~]/[x], ссылки на коммиты -->
+- ✅ P0.1 dual-time offset fix → `21147da` (4 теста)
+- ✅ P0.2 class_live_check на отдельном workflow → `680882d` (2 E2E)
+- ✅ P0.3 `/cancel_lesson` + not-found фидбэк → `d8ff9d1` (3 E2E)
+- ✅ P0.4 parse_mode + md-экранирование → `c3084cd` (3 теста)
+- ✅ P0.5 naive-time → Europe/London → `9b9301e` (3 теста)
+- ✅ P1.1 absence_report → координаторы → `c3e81c1` (2 E2E)
+- ✅ P1.2 TTL протухших check-in → `53a413d` (2 теста)
+- ✅ P1.3 /absent unknown → фидбэк → `ba67475` (2 E2E)
+- ✅ P1.4 zombie reaper → failed → `3ed7c96` (2 теста)
+- ✅ P1.5 богатая эскалация → `ca51967` (2 теста)
+- ✅ P2.1+P2.3 мёртвый код → `beae169`
+- ✅ P2.2 balance методы закомментированы (Xero backlog) → `9528128`
+- ✅ P2.4 единый help координатора → `ebb23c7` (1 тест)
+- ✅ P2.5 документировано ограничение LIKE-by-JSON → `c54790d`
+- ✅ P3.1+P3.2 README/GUIDE/RUNBOOK синхронизированы → `76535e6`
+- Финал: `compileall` + импорт-смоук main/webhook + полный прогон = **120/120**.
