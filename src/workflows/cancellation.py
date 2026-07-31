@@ -35,6 +35,17 @@ class CancellationWorkflow:
             return
         lesson = await self.merithub.get_lesson(lid) or await self.airtable.get_lesson(lid)
         if not lesson:
+            # Честный фидбэк отправителю: иначе /cancel_lesson выглядит
+            # «принятой», но молча ничего не делает.
+            reporter = event.data.get("reported_by")
+            if reporter:
+                await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                    "telegram_id": reporter,
+                    "message": (
+                        f"❌ Урок {lid} не найден в расписании. "
+                        "Проверьте ID (/today) или напишите координатору."
+                    ),
+                }))
             return
         reason = event.data.get("reason", "Не указана")
         await self.merithub.cancel_lesson(lid, reason)

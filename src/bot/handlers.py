@@ -324,6 +324,29 @@ async def cmd_kill_switch(upd: Update, _ctx) -> None:
     await bus.publish(Event(EventTypes.SYSTEM_KILL_SWITCH, {"level": lvl}))
 
 
+async def cmd_cancel_lesson(upd: Update, _ctx) -> None:
+    """Отмена урока: /cancel_lesson <ID урока> [причина...]
+
+    Команда, на которую ссылается подсказка бота при интенте «отмена»
+    (cancellation.handle_classified). Раньше отсылала в никуда — команды не было.
+    """
+    if not _ctx.args:
+        await upd.message.reply_text("Используйте: /cancel_lesson <ID урока> [причина...]")
+        return
+    lid = _ctx.args[0]
+    reason = " ".join(_ctx.args[1:]) or "не указана"
+    await _ensure_user(upd, "parent")
+    await bus.publish(Event(EventTypes.LESSON_CANCELLED, {
+        "lesson_id": lid,
+        "reason": reason,
+        "reported_by": str(upd.effective_user.id),
+    }))
+    await upd.message.reply_text(
+        f"🔄 Отмена урока `{lid}` передана репетитору и координаторам.",
+        parse_mode="Markdown",
+    )
+
+
 async def cmd_ok(upd: Update, _ctx) -> None:
     if not _ctx.args:
         await upd.message.reply_text("Используйте: /ok <ID ситуации>")
@@ -815,6 +838,7 @@ def setup_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("mock_absent", cmd_mock_absent))
     app.add_handler(CommandHandler("mock_demo", cmd_mock_demo))
     app.add_handler(CommandHandler("kill_switch", cmd_kill_switch))
+    app.add_handler(CommandHandler("cancel_lesson", cmd_cancel_lesson))
     app.add_handler(CommandHandler("ok", cmd_ok))
     register_role_handlers(app)  # /whoami /role /roles — раздача ролей владельцами
     register_pilot_handlers(app)  # /pilot_seed /pilot_absent — прогон сценария на живых аккаунтах

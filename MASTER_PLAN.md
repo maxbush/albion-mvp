@@ -34,7 +34,7 @@
   (ищет tutor_start_check wf по class_id). E2E: tutor нажал «class_started» →
   через grace-период без статуса `lv` координатор получает алерт.
 
-- [ ] **P0.3** UI/Backend mismatch: `cancellation.handle_classified` отвечает пользователю
+- [x] **P0.3** UI/Backend mismatch: `cancellation.handle_classified` отвечает пользователю
   «Укажите ID урока: /cancel_lesson <ID>» — но **команда `/cancel_lesson` не существует**
   (ни в setup_handlers, нигде). План: реализовать `/cancel_lesson <lesson_id> [причина...]`
   → публикует `LESSON_CANCELLED` + подтверждение; E2E тест полного флоу
