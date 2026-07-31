@@ -51,6 +51,17 @@ class AbsenceWorkflow:
             lesson = await self.airtable.get_lesson(lid)
         if not lesson:
             logger.warning("Lesson %s not found", lid)
+            # Честный фидбэк отправителю: /absent уже ответил «зафиксировал» —
+            # без этого уведомления неизвестный урок был бы тихим no-op.
+            reporter = event.data.get("reported_by")
+            if reporter:
+                await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                    "telegram_id": reporter,
+                    "message": (
+                        f"❌ Урок {lid} не найден в расписании. "
+                        "Проверьте ID (/today) или напишите координатору."
+                    ),
+                }))
             return
 
         merithub_mark_absent = getattr(self.merithub, "mark_absent", None)

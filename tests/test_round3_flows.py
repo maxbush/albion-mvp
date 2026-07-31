@@ -305,3 +305,70 @@ async def test_p12_fresh_checkin_still_found(tmp_path, monkeypatch):
     # И не должен помечаться expired
     wf = await repo.get(wid)
     assert wf["state"] == "running"
+
+
+# ── P1.3: /absent — неизвестный урок → фидбэк отправителю ────────────
+
+@pytest.mark.asyncio
+async def test_p13_absent_unknown_lesson_notifies_reporter(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.events.types import Event
+    from src.workflows.absence import AbsenceWorkflow
+
+    wf = AbsenceWorkflow(db)
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await wf.handle_lesson_absent(Event(EventTypes.LESSON_ABSENT, {
+            "lesson_id": "unknown_x", "reported_by": "777",
+        }))
+        msgs = [d for d in captured if d.get("telegram_id") == "777"]
+        assert msgs, "отправитель /absent должен узнать, что урок не найден"
+        assert "не найден" in msgs[0]["message"]
+        assert "unknown_x" in msgs[0]["message"]
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+
+@pytest.mark.asyncio
+async def test_p13_absent_known_lesson_still_works(tmp_path, monkeypatch):
+    """Регрессия: известный mock-урок → инцидент + workflow создаются как раньше."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.workflows.engine import engine
+    from src.db.repository import (
+        IncidentRepository, ScheduledActionRepository, WorkflowRepository,
+    )
+    from src.events.types import Event
+    from src.workflows.absence import AbsenceWorkflow
+
+    engine.repo = WorkflowRepository(db)
+    engine.scheduler = ScheduledActionRepository(db)
+    await _seed_lesson_student_user(db)
+
+    wf = AbsenceWorkflow(db)
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await wf.handle_lesson_absent(Event(EventTypes.LESSON_ABSENT, {
+            "lesson_id": "lesson_1", "reported_by": "111111",
+        }))
+        # Инцидент создан и pending — «урок не найден» НЕ отправлен.
+        rows = await IncidentRepository(db)._fetchall("SELECT * FROM incidents")
+        assert len(rows) == 1 and rows[0]["type"] == "absence"
+        assert not any("не найден" in (d.get("message") or "") for d in captured)
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+
+async def _seed_lesson_student_user(db):
+    """Родитель из mock Airtable (student_1 → parent_1) должен быть в users."""
+    from src.db.repository import UserRepository
+    await UserRepository(db).create("parent_1", "parent", "Родитель Миши")

@@ -64,7 +64,7 @@
   в протухший check-in и закроет его. План: экспайр по `start_time + 3ч` (или updated_at):
   протухший wf → auto-complete `response_status='expired'` и пропуск. Тест.
 
-- [ ] **P1.3** `/absent <id>` для реального class_id — тихий no-op: `handle_lesson_absent`
+- [x] **P1.3** `/absent <id>` для реального class_id — тихий no-op: `handle_lesson_absent`
   не находит урок ни в MeritHub (метода `get_lesson` у real client нет), ни в mock Airtable,
   а юзеру уже отвечено «Зафиксировал отсутствие по ...». План: при неизвестном уроке
   и наличии `reported_by` — TG-уведомление отправителю «урок не найден». Тест.
