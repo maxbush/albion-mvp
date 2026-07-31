@@ -498,3 +498,65 @@ async def test_p15_escalation_minimal_when_no_context(tmp_path, monkeypatch):
         assert f"#{inc_id}" in msgs[0]["message"]
     finally:
         bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+
+# ── P2.4: единый текст помощи координатора в обоих путях ────────────
+
+class _FakeChatRich:
+    def __init__(self, id=1):
+        self.id = id
+        self.sent = []
+
+    async def send_message(self, text, **kw):
+        self.sent.append((text, kw))
+
+
+class _FakeQuery:
+    def __init__(self, data, user):
+        self.data = data
+        self.from_user = user
+        self.edits = []
+
+    async def answer(self, text=None, show_alert=False):
+        pass
+
+    async def edit_message_text(self, text, **kw):
+        self.edits.append((text, kw))
+
+    async def edit_message_reply_markup(self, markup):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_p24_coordinator_help_is_unified(tmp_path, monkeypatch):
+    """/start (уже координатор) и регистрация по кнопке показывают ОДИН текст."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import cmd_start, handle_callback
+    from src.db.repository import UserRepository
+
+    await UserRepository(db).create("321", "coordinator", "Координатор")
+
+    # Путь 1: /start для существующего координатора.
+    upd1 = FakeUpdate(FakeUser(321))
+    await cmd_start(upd1, FakeContext([]))
+    assert len(upd1.message.replies) == 2  # приветствие + помощь
+    help_from_start, kw1 = upd1.message.replies[1]
+    assert kw1.get("parse_mode") == "Markdown"
+
+    # Путь 2: регистрация через кнопку register_coordinator.
+    upd2 = FakeUpdate(FakeUser(654))
+    upd2.effective_chat = _FakeChatRich()
+    upd2.callback_query = _FakeQuery("register_coordinator", upd2.effective_user)
+    await handle_callback(upd2, FakeContext([]))
+    help_from_button, kw2 = upd2.effective_chat.sent[0]
+
+    assert help_from_start == help_from_button, "помощь должна быть единой в обоих путях"
+    assert kw2.get("parse_mode") == "Markdown"
+    # Underscore в командах экранирован (Markdown V1), иначе текст ломается.
+    assert "/pilot\\_absent" in help_from_start
+    assert "/cancel\\_lesson <ID>" in help_from_start  # новая команда из P0.3 в помощи
+    assert "/mh\\_schedule" in help_from_start
+    # Нет непарных «голых» подчёркиваний в командах.
+    for line in help_from_start.splitlines():
+        if line.strip().startswith("/"):
+            assert "\\_" in line or "_" not in line, line

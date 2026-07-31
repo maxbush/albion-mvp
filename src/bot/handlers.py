@@ -186,6 +186,31 @@ async def _demo_solo_absence(upd: Update, _ctx) -> None:
 # COMMAND HANDLERS
 # =====================================================================
 
+def _coordinator_help_text() -> str:
+    """Единый список команд координатора (было два расходящихся списка —
+    в /start и в регистрации по кнопке). Underscore в командах экранируем
+    для Markdown V1, иначе парные '_' ломают отображение."""
+    return (
+        "📋 *Ваши команды:*\n\n"
+        "*Обзор:*\n"
+        "/today — занятия сегодня\n"
+        "/morning — утренняя сводка\n"
+        "/incidents — инциденты и статистика\n"
+        "/status — состояние системы\n\n"
+        "*Управление:*\n"
+        "/pilot\\_absent — тест: сценарий неявки\n"
+        "/demo\\_reset — сброс между прогонами\n"
+        "/cancel\\_lesson <ID> — отмена урока\n"
+        "/ok <ID> — закрыть инцидент\n\n"
+        "*MeritHub:*\n"
+        "/seed10 <parentTG> — создать 10 учеников\n"
+        "/mh\\_schedule <tutor> <start> <min> <students...>\n"
+        "/mh\\_tutor <cuid> <tg> <имя>\n"
+        "/mh\\_students — список учеников\n"
+        "/mh\\_events — последние webhook'и"
+    )
+
+
 async def cmd_start(upd: Update, _ctx) -> None:
     user = upd.effective_user
     tg_id = str(user.id)
@@ -207,17 +232,7 @@ async def cmd_start(upd: Update, _ctx) -> None:
             ]]),
         )
         if role == "coordinator":
-            await upd.message.reply_text(
-                "📋 *Ваши команды:*\n\n"
-                "/today — занятия сегодня\n"
-                "/morning — утренняя сводка\n"
-                "/incidents — инциденты\n"
-                "/demo\\_reset — сброс\n"
-                "/seed10 — создать учеников\n"
-                "/mh\\_schedule — создать занятие\n"
-                "/mh\\_students — список учеников",
-                parse_mode="Markdown",
-            )
+            await upd.message.reply_text(_coordinator_help_text(), parse_mode="Markdown")
         return
 
     # Новый пользователь — показываем выбор роли
@@ -399,25 +414,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
         )
         logger.info("User %s registered as %s", user.id, role)
         if role == "coordinator":
-            await upd.effective_chat.send_message(
-                "📋 *Ваши команды:*\n\n"
-                "*Обзор:*\n"
-                "/today — занятия сегодня\n"
-                "/morning — утренняя сводка\n"
-                "/incidents — инциденты и статистика\n"
-                "/status — состояние системы\n\n"
-                "*Управление:*\n"
-                "/pilot_absent — тест: сценарий неявки\n"
-                "/demo_reset — сброс между прогонами\n"
-                "/ok <ID> — закрыть инцидент\n\n"
-                "*MeritHub:*\n"
-                "/seed10 <parentTG> — создать 10 учеников\n"
-                "/mh_schedule <tutor> <start> <min> <students...>\n"
-                "/mh_tutor <cuid> <tg> <имя>\n"
-                "/mh_students — список учеников\n"
-                "/mh_events — последние webhook'и",
-                parse_mode="Markdown",
-            )
+            await upd.effective_chat.send_message(_coordinator_help_text(), parse_mode="Markdown")
         return
 
     if data == "change_role":
