@@ -86,7 +86,7 @@ class Transcript:
         if buttons:
             parts = []
             for b in buttons:
-                parts.append(f"[{b['text']}]" if b.get("callback_data") else f"[{b['text']} →в чат]")
+                parts.append(f"[{b['text']}]" if b.get("callback_data") else f"[{b['text']} ↗]")
             block += "\n> кнопки: " + " ".join(parts)
         self.blocks.append(block)
 
@@ -105,8 +105,11 @@ class Transcript:
             f"| 👨‍👩‍👦 Родитель | {PARENT_TG} | {PARENT_NAME} |\n"
             f"| 🧑‍🏫 Репетитор | {TUTOR_TG} | {TUTOR_NAME} |\n"
         )
-        return head + "\n\n---\n\n" + "\n\n---\n\n".join(
-            b if b.startswith("## ") else b for b in self.blocks) + "\n"
+        out = head
+        for block in self.blocks:
+            # Горизонтальный разделитель — только между сценами.
+            out += "\n\n---\n\n" + block if block.startswith("## ") else "\n\n" + block
+        return out + "\n"
 
 
 # ── Фейки telegram (минимально достаточные для handlers) ─────────────
@@ -225,7 +228,18 @@ async def run_demo(workdir: str | None = None) -> str:
     settings.albion_admin_telegram_ids = ADMIN_TG
 
     from src.db.migrations import init_db
-    await init_db("albion.db")
+    db_abs = os.path.join(workdir, "albion.db")
+    await init_db(db_abs)
+
+    # engine — глобальный синглтон: тестовые фикстуры (conftest) могли уже
+    # перенаправить его в свою БД. Явно нацеливаем на базу прогона,
+    # иначе workflow уйдёт в чужую базу, а остальное — в локальную.
+    from src.db.repository import ScheduledActionRepository as _SchedRepo
+    from src.db.repository import WorkflowRepository as _WfRepo
+    from src.workflows.engine import engine
+    old_engine_repos = (engine.repo, engine.scheduler)
+    engine.repo = _WfRepo(db_abs)
+    engine.scheduler = _SchedRepo(db_abs)
 
     from src.bot import handlers as H
     from src.bot import pilot as P
@@ -236,7 +250,9 @@ async def run_demo(workdir: str | None = None) -> str:
     from src.workflows.cancellation import CancellationWorkflow
 
     users = UserRepository()
-    await users.create(ADMIN_TG, "coordinator", ADMIN_NAME)   # владелец тоже видит координаторские алерты
+    # Админ НЕ получает user-запись: is_admin() смотрит в ALBION_ADMIN_TELEGRAM_IDS,
+    # а не в БД — так он не попадает и в рассылку координаторов (как в живом демо,
+    # где роли играют разные люди).
     await users.create(COORD_TG, "coordinator", COORD_NAME)
     await users.create(PARENT_TG, "parent", PARENT_NAME)
     await users.create(TUTOR_TG, "tutor", TUTOR_NAME)
@@ -271,37 +287,38 @@ async def run_demo(workdir: str | None = None) -> str:
         nonce = json.loads(wf["data"]).get("parent_callback_nonce", "") if wf else ""
         return int(inc["id"]), int(wf["id"]), nonce
 
-    async def parent_notified(inc_id: int, nonce: str) -> None:
-        rec.note("⏱ проходит ~10 сек — тикает планировщик, родителю уходит уведомление")
+    async def pilot_round() -> list[tuple[str, dict]]:
+        """/pilot_absent от имени владельца → ответ бота → перемотка времени."""
+        rec.command(ADMIN_TG, "/pilot_absent")
+        upd = FakeUpdate(ADMIN_TG, ADMIN_NAME)
+        await P.cmd_pilot_absent(upd, FakeCtx())
+        rec.message(ADMIN_TG, upd.message.replies[-1][0])
+        return upd.message.replies
 
     try:
         # ── Сцена 2a: счастливый путь ────────────────────────────────
         rec.scene("Сцена 2a. Счастливый путь: «✅ Всё в порядке»",
-                  "Ключевая фраза: «Координатор не тратит ни секунды — система сама разобралась».")
-        upd = FakeUpdate(ADMIN_TG, ADMIN_NAME)
-        await P.cmd_pilot_absent(upd, FakeCtx())
-        rec.command(ADMIN_TG, "/pilot_absent")
-        rec.message(ADMIN_TG, upd.message.replies[-1][0])
-
+                  "Ключевая фраза: «Система справилась сама — "
+                  "координатору остался только информационный апдейт».")
+        await pilot_round()
+        rec.note("⏱ проходит ~10 сек — тикает планировщик, родителю уходит "
+                 "уведомление с кнопками (ALBION_NOTIFY_PARENT_DELAY_MIN)")
         await fast_forward()
-        rec.note("⏱ проходит ~10 сек — тикает планировщик, родителю уходит уведомление с кнопками")
 
         inc_id, _, nonce = await latest_state()
         rec.press(PARENT_TG, "✅ Всё в порядке")
         query = FakeQuery(f"resolve:{inc_id}:{nonce}:ok", FakeUser(PARENT_TG, PARENT_NAME))
         await H.handle_callback(FakeUpdate(PARENT_TG, PARENT_NAME, query=query), FakeCtx())
         if query.edits:
-            rec.edits_to = True
             rec.message(PARENT_TG, query.edits[-1], edited=True)
+        rec.note("📝 исходное сообщение отредактировано (нативный паттерн Telegram): "
+                 "кнопки исчезли, на их месте — результат; новых сообщений в чате нет")
 
         # ── Сцена 2b: «⏰ Опоздаем» ──────────────────────────────────
         rec.scene("Сцена 2b. «⏰ Опоздаем» — координатор в курсе, действий не требуется")
-        upd = FakeUpdate(ADMIN_TG, ADMIN_NAME)
-        await P.cmd_pilot_absent(upd, FakeCtx())
-        rec.command(ADMIN_TG, "/pilot_absent")
-        rec.message(ADMIN_TG, upd.message.replies[-1][0])
-        await fast_forward()
+        await pilot_round()
         rec.note("⏱ родителю снова ушло уведомление о неявке")
+        await fast_forward()
 
         inc_id, _, nonce = await latest_state()
         rec.press(PARENT_TG, "⏰ Опоздаем")
@@ -313,19 +330,17 @@ async def run_demo(workdir: str | None = None) -> str:
         # ── Сцена 2c: свободный текст ────────────────────────────────
         rec.scene(
             "Сцена 2c. Родитель пишет свободным текстом — смысл распознаётся",
-            "С подключённым LLM-ключом понимает любые формулировки; без ключа — "
-            "встроенная ключевая эвристика. «Координатору всегда уходит исходный текст».",
+            "«Родитель не учит команды — пишет как привык». С подключённым LLM-ключом "
+            "понимаются любые формулировки; без ключа — встроенная ключевая эвристика. "
+            "Координатору всегда уходит исходный текст родителя.",
         )
-        upd = FakeUpdate(ADMIN_TG, ADMIN_NAME)
-        await P.cmd_pilot_absent(upd, FakeCtx())
-        rec.command(ADMIN_TG, "/pilot_absent")
-        rec.message(ADMIN_TG, upd.message.replies[-1][0])
-        await fast_forward()
+        await pilot_round()
         rec.note("⏱ родителю ушло уведомление с кнопками")
+        await fast_forward()
 
         parent_text = "Мы опоздаем на 15 минут — пробки"
-        rec.free_text(PARENT_TG, parent_text)
         upd = FakeUpdate(PARENT_TG, PARENT_NAME, text=parent_text)
+        rec.free_text(PARENT_TG, parent_text)
         await H.handle_message(upd, FakeCtx())
         if upd.message.replies:
             rec.message(PARENT_TG, upd.message.replies[-1][0])
@@ -336,25 +351,19 @@ async def run_demo(workdir: str | None = None) -> str:
             "Management by exception: человек подключается ТОЛЬКО когда система "
             "не справилась сама. Уведомление со всеми данными для звонка + кнопки действия.",
         )
-        upd = FakeUpdate(ADMIN_TG, ADMIN_NAME)
-        await P.cmd_pilot_absent(upd, FakeCtx())
-        rec.command(ADMIN_TG, "/pilot_absent")
-        rec.message(ADMIN_TG, upd.message.replies[-1][0])
-        await fast_forward()
+        await pilot_round()
         rec.note("⏱ родителю ушло уведомление… но родитель молчит")
+        await fast_forward()
 
         rec.note("⏱ проходит время эскалации (ALBION_ESCALATE_DELAY_MIN) — "
                  "планировщик сам отправляет эскалацию координаторам")
         await fast_forward()  # вторая перемотка: срабатывает escalate
 
         inc_id, _, _ = await latest_state()
+        rec.note(f"📝 кнопка «👤 Написать родителю» — прямой переход в чат с родителем "
+                 f"(tg://user?id={PARENT_TG}): искать контакт не нужно")
         # Координатор закрывает ситуацию одной кнопкой прямо на эскалации.
         rec.press(COORD_TG, "✅ Закрыть ситуацию")
-        esc_text = ""
-        for block in reversed(rec.blocks):
-            if "🚨 Эскалация" in block:
-                esc_text = block.split(":", 1)[-1].replace("> ", "").replace(">", "").strip()[:300]
-                break
         query = FakeQuery(f"coord_resolve:{inc_id}:ok", FakeUser(COORD_TG, COORD_NAME),
                           message_text=f"🚨 Эскалация: инцидент #{inc_id}\nПричина: no response")
         await H.handle_callback(FakeUpdate(COORD_TG, COORD_NAME, query=query), FakeCtx())
@@ -362,39 +371,39 @@ async def run_demo(workdir: str | None = None) -> str:
             rec.message(COORD_TG, query.edits[-1], edited=True)
         elif query.answers and query.answers[-1][0]:
             rec.message(COORD_TG, query.answers[-1][0])
-        rec.note(f"📝 кнопка «👤 Написать родителю» на эскалации — прямой переход "
-                 f"в чат с родителем (tg://user?id={PARENT_TG}), звонок/поиск контакта не нужен")
 
         # ── Сцена 2e: отмена урока ───────────────────────────────────
         rec.scene(
             "Сцена 2e. /cancel_lesson — мгновенные уведомления",
-            "Репетитор заболел и отменяет урок: все стороны узнают сразу, "
-            "с причиной. Неизвестный ID урока → честный «не найден», а не тишина.",
+            "Репетитор заболел и отменяет урок: репетитор и координатор узнают сразу, "
+            "с причиной. Неизвестный ID → честный «не найден», а не ложное «передано».",
         )
+        rec.command(TUTOR_TG, "/cancel_lesson lesson_1 по болезни")
         upd = FakeUpdate(TUTOR_TG, TUTOR_NAME)
         await H.cmd_cancel_lesson(upd, FakeCtx(["lesson_1", "по", "болезни"]))
-        rec.command(TUTOR_TG, "/cancel_lesson lesson_1 по болезни")
         rec.message(TUTOR_TG, upd.message.replies[-1][0])
 
+        rec.command(TUTOR_TG, "/cancel_lesson unknown_lesson")
         upd = FakeUpdate(TUTOR_TG, TUTOR_NAME)
         await H.cmd_cancel_lesson(upd, FakeCtx(["unknown_lesson"]))
-        rec.command(TUTOR_TG, "/cancel_lesson unknown_lesson")
         rec.message(TUTOR_TG, upd.message.replies[-1][0])
 
         # ── Финал: статистика ────────────────────────────────────────
         rec.scene(
             "Финал. /incidents — метрики для клиента",
-            "Ключевая фраза: «Из пяти ситуаций координатор вручную разбирал только одну».",
+            "Ключевая фраза: «Из четырёх ситуаций три решил сам родитель одной кнопкой, "
+            "а до человека дошла только одна — и та закрыта в один тап».",
         )
+        rec.command(ADMIN_TG, "/incidents")
         upd = FakeUpdate(ADMIN_TG, ADMIN_NAME)
         await P.cmd_incidents(upd, FakeCtx())
-        rec.command(ADMIN_TG, "/incidents")
         rec.message(ADMIN_TG, upd.message.replies[-1][0])
 
         return rec.render()
     finally:
         for etype, fn in subscribed:
             bus.unsubscribe(etype, fn)
+        engine.repo, engine.scheduler = old_engine_repos
         settings.albion_admin_telegram_ids = old_admins
         if tmp:
             import shutil
@@ -405,11 +414,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", metavar="FILE", help="куда сохранить расшифровку (по умолчанию — stdout)")
     args = ap.parse_args()
+    # run_demo() меняет cwd на временную папку — путь резолвим заранее.
+    out_path = os.path.abspath(args.out) if args.out else None
     md = asyncio.run(run_demo())
-    if args.out:
-        with open(args.out, "w", encoding="utf-8") as f:
+    if out_path:
+        with open(out_path, "w", encoding="utf-8") as f:
             f.write(md)
-        print(f"✅ Расшифровка сохранена: {args.out} ({len(md)} символов)")
+        print(f"✅ Расшифровка сохранена: {out_path} ({len(md)} символов)")
     else:
         print(md)
     return 0
