@@ -95,10 +95,40 @@ async def test_p03_cancel_lesson_full_flow(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_p03_cancel_lesson_unknown_lesson_notifies_reporter(tmp_path, monkeypatch):
-    """Неизвестный урок: отправитель получает честный «не найден», а не тишину."""
+    """Неизвестный урок: отправитель получает честный «не найден» НЕМЕДЛЕННО —
+    и никакого противоречивого «🔄 передана координаторам» следом.
+
+    Баг, найденный сухим прогоном (scripts/demo_dry_run.py): команда раньше
+    всегда отвечала «Отмена передана», даже когда workflow не нашёл урок.
+    Теперь проверка урока — ДО публикации события (workflow-фидбэк остаётся
+    как защита от гонки «урок исчез между проверкой и обработкой»)."""
     db = await _init_tmp_db(tmp_path, monkeypatch)
     from src.bot.handlers import cmd_cancel_lesson
+
+    captured = []
+
+    async def cap_cancelled(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.LESSON_CANCELLED, cap_cancelled)
+    try:
+        upd = FakeUpdate(FakeUser(9, full_name="Заказчик"))
+        await cmd_cancel_lesson(upd, FakeContext(["unknown_x"]))
+        replies = [t for t, _ in upd.message.replies]
+        assert any("не найден" in t for t in replies), replies
+        assert not any("передана" in t for t in replies), replies
+        assert not captured, "событие LESSON_CANCELLED не должно публиковаться для неизвестного урока"
+    finally:
+        bus.unsubscribe(EventTypes.LESSON_CANCELLED, cap_cancelled)
+
+
+@pytest.mark.asyncio
+async def test_cancel_lesson_workflow_race_fallback_notifies_reporter(tmp_path, monkeypatch):
+    """Защита от гонки: если урок исчез УЖЕ после проверки командой,
+    workflow всё ещё шлёт отправителю «не найден» через шину."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
     from src.workflows.cancellation import CancellationWorkflow
+    from src.events.types import Event
 
     wf = CancellationWorkflow(db)
     captured = []
@@ -109,9 +139,11 @@ async def test_p03_cancel_lesson_unknown_lesson_notifies_reporter(tmp_path, monk
     bus.subscribe(EventTypes.LESSON_CANCELLED, wf.handle_cancelled)
     bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
     try:
-        upd = FakeUpdate(FakeUser(9, full_name="Заказчик"))
-        # Заменяем mock-уроки: гарантируем, что unknown_x нет нигде.
-        await cmd_cancel_lesson(upd, FakeContext(["unknown_x"]))
+        # Публикуем событие напрямую — как будто команда проверила урок,
+        # а потом он пропал из интеграции.
+        await bus.publish(Event(EventTypes.LESSON_CANCELLED, {
+            "lesson_id": "ghost_lesson", "reason": "тест", "reported_by": "9",
+        }))
         reporter_msgs = [d for d in captured if d.get("telegram_id") == "9"]
         assert reporter_msgs, "отправитель должен получить фидбэк"
         assert "не найден" in reporter_msgs[0]["message"]

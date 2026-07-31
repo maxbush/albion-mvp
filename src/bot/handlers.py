@@ -387,6 +387,21 @@ async def cmd_cancel_lesson(upd: Update, _ctx) -> None:
     lid = _ctx.args[0]
     reason = " ".join(_ctx.args[1:]) or "не указана"
     await _ensure_user(upd, "parent")
+
+    # Проверяем, что урок существует, ДО публикации события: иначе пользователь
+    # получал противоречивую пару «🔄 передана» + «❌ не найден» (баг сухого
+    # прогона). Workflow-фидбэк о «не найден» остаётся как защита от гонки —
+    # на случай, если урок исчезнет между этой проверкой и обработкой события.
+    from src.workflows.cancellation import CancellationWorkflow
+    cwf = CancellationWorkflow()
+    lesson = await cwf.merithub.get_lesson(lid) or await cwf.airtable.get_lesson(lid)
+    if not lesson:
+        await upd.message.reply_text(
+            f"❌ Урок {lid} не найден в расписании. "
+            "Проверьте ID (/today) или напишите координатору."
+        )
+        return
+
     await bus.publish(Event(EventTypes.LESSON_CANCELLED, {
         "lesson_id": lid,
         "reason": reason,
