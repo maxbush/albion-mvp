@@ -166,7 +166,21 @@ class LessonOpsWorkflow:
             }
             start_wid = await self.repo.create("tutor_start_check", "running", start_data)
             await self.scheduler.create(start_wid, _schedule_at(start_dt, 60), "tutor_start_check", {"workflow_id": start_wid})
-            await self.scheduler.create(start_wid, _schedule_at(live_check_dt, 90), "class_live_check", {"workflow_id": start_wid})
+
+            # Live-check — на ОТДЕЛЬНОМ workflow. Иначе ответ репетитора на
+            # start-check (_cancel_future_actions) отменял и live-check, и ветка
+            # «урок не перешёл в live после подтверждённого старта» была недостижима.
+            live_data = {
+                "class_id": class_id,
+                "actor_type": "coordinator_check",
+                "tutor_name": tutor_name,
+                "student_names": student_names,
+                "start_time": start_time,
+                "actor_timezone": tutor_tz,
+                "tutor_start_wid": start_wid,
+            }
+            live_wid = await self.repo.create("class_live_check", "running", live_data)
+            await self.scheduler.create(live_wid, _schedule_at(live_check_dt, 90), "class_live_check", {"workflow_id": live_wid})
 
     async def _load_workflow(self, wid: int) -> tuple[dict | None, dict]:
         wf = await self.repo.get(wid)

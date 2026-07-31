@@ -1,10 +1,13 @@
 """Round 3 (MASTER_PLAN v3) — E2E-проверки P0-фиксов.
 
 P0.1: _format_dual_time — суффикс [+Nч к London] реально считается
+P0.2: class_live_check на отдельном workflow — алерт «не перешёл в live» достижим
 P0.5: naive start_time трактуется как Europe/London (не UTC)
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from src.workflows.lesson_ops import _format_dual_time, _parse_dt, _schedule_at
 
@@ -70,3 +73,120 @@ def test_p05_schedule_at_converts_naive_london_to_utc():
     assert out_dt.tzinfo is not None
     out_utc = out_dt.astimezone(timezone.utc)
     assert out_utc.hour == 14  # BST = UTC+1
+
+
+# ── P0.2: class_live_check живёт на отдельном workflow ──────────────
+
+@pytest.mark.asyncio
+async def test_p02_live_check_survives_tutor_response(tmp_path, monkeypatch):
+    """E2E: tutor нажал «Урок начался» → live-check НЕ отменён →
+    при отсутствии статуса lv координатор получает алерт о не переходе в live.
+    Раньше live-check отменялся вместе с tutor_start_check workflow (мёртвая ветка)."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+
+    from src.db.repository import (
+        ScheduledActionRepository, UserRepository, WorkflowRepository,
+    )
+    from src.events.bus import bus
+    from src.events.types import EventTypes
+    from src.workflows.lesson_ops import LessonOpsWorkflow
+
+    await UserRepository("albion.db").create("coord_1", "coordinator", "Координатор")
+    await UserRepository("albion.db").create("tutor_tg", "tutor", "Репетитор")
+    await UserRepository("albion.db").create("parent_tg", "parent", "Родитель")
+
+    ops = LessonOpsWorkflow("albion.db")
+    start_iso = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    await ops.schedule_class_coordination(
+        class_id="C_TEST",
+        start_time=start_iso,
+        tutor_name="Репетитор",
+        tutor_telegram_id="tutor_tg",
+        student_rows=[{
+            "name": "Ученик", "client_user_id": "s01",
+            "parent_telegram_id": "parent_tg", "timezone": "Europe/London",
+        }],
+    )
+
+    sched = ScheduledActionRepository("albion.db")
+    actions = await sched._fetchall("SELECT * FROM scheduled_actions")
+    by_action = {a["action"]: a for a in actions}
+    # Фикс: live-check на ОТДЕЛЬНОМ workflow (раньше — общий с tutor_start_check).
+    assert by_action["class_live_check"]["workflow_id"] != by_action["tutor_start_check"]["workflow_id"]
+
+    live_wid = by_action["class_live_check"]["workflow_id"]
+    start_wid = by_action["tutor_start_check"]["workflow_id"]
+
+    captured = []
+    async def cap(ev):
+        captured.append(ev.data)
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        # Репетитор отвечает «Урок начался» на start-check.
+        await ops.record_checkin_response(start_wid, actor_tg="tutor_tg", action="class_started")
+
+        # tutor_start workflow завершён, а live-check action остался PENDING
+        start_wf = await WorkflowRepository("albion.db").get(start_wid)
+        assert start_wf["state"] == "completed"
+        live_action = await sched._fetchone(
+            "SELECT * FROM scheduled_actions WHERE id=?", (by_action["class_live_check"]["id"],))
+        assert live_action["status"] == "pending", "live-check не должен отменяться ответом репетитора!"
+
+        captured.clear()
+        # Симулируем тик live-check: статуса lv нет → алерт координатору.
+        await ops._check_class_live(live_wid)
+        alerts = [d for d in captured if "не перешёл в live" in (d.get("message") or "")]
+        assert alerts, "ожидался алерт «урок не перешёл в live»"
+        assert "подтвердил" in alerts[0]["message"]  # контекст: репетитор подтвердил старт
+        assert alerts[0]["telegram_id"] == "coord_1"
+
+        # Live-check workflow завершён после алерта.
+        live_wf = await WorkflowRepository("albion.db").get(live_wid)
+        assert live_wf["state"] == "completed"
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+
+@pytest.mark.asyncio
+async def test_p02_live_check_quiet_when_class_live(tmp_path, monkeypatch):
+    """Если classStatus=lv уже пришёл — live-check завершается тихо, без алерта."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+
+    from src.db.repository import (
+        MeritHubClassStatusRepository, UserRepository, WorkflowRepository,
+    )
+    from src.events.bus import bus
+    from src.events.types import EventTypes
+    from src.workflows.lesson_ops import LessonOpsWorkflow
+
+    await UserRepository("albion.db").create("coord_1", "coordinator", "Координатор")
+    await MeritHubClassStatusRepository("albion.db").upsert("C_LIVE", "lv")
+
+    ops = LessonOpsWorkflow("albion.db")
+    start_iso = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    await ops.schedule_class_coordination(
+        class_id="C_LIVE",
+        start_time=start_iso,
+        tutor_name="Репетитор",
+        tutor_telegram_id="tutor_tg",
+        student_rows=[],
+    )
+    live_row = await WorkflowRepository("albion.db")._fetchone(
+        "SELECT * FROM workflow_instances WHERE workflow_type='class_live_check'")
+    assert live_row, "live workflow должен существовать"
+
+    captured = []
+    async def cap(ev):
+        captured.append(ev.data)
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await ops._check_class_live(live_row["id"])
+        assert not captured, "при lv алерта быть не должно"
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    live_wf = await WorkflowRepository("albion.db").get(live_row["id"])
+    assert live_wf["state"] == "completed"

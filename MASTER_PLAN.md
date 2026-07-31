@@ -25,7 +25,7 @@
   Проверено: `_format_dual_time('2026-07-28T15:00:00+00:00','Asia/Almaty')` → нет суффикса.
   План: считать разницу `utcoffset()` пользователя и London. Тест на off-by-offset.
 
-- [ ] **P0.2** `lesson_ops.schedule_class_coordination` — `class_live_check` планируется на
+- [x] **P0.2** `lesson_ops.schedule_class_coordination` — `class_live_check` планируется на
   **том же workflow** (`start_wid`), что и `tutor_start_check`. Когда репетитор отвечает
   на start-check, `record_checkin_response → _cancel_future_actions(wid)` **отменяет и
   live-check** → ветка «⚠️ урок не перешёл в live, но репетитор подтвердил старт»
