@@ -622,3 +622,86 @@ async def test_u6_cancel_intent_fallback_without_classes(tmp_path, monkeypatch):
     msg = [d for d in captured if d.get("telegram_id") == "555"][-1]
     assert "/cancel_lesson <ID>" in msg["message"]
     assert not msg.get("buttons")
+
+
+# ── U7: первый текст от незнакомца → выбор роли ──────────────────────
+
+@pytest.mark.asyncio
+async def test_u7_first_text_from_stranger_gets_role_choice(tmp_path, monkeypatch):
+    """Новый пользователь пишет текстом → не создаём его молча «родителем»,
+    а показываем выбор роли. Сообщение НЕ классифицируется до выбора."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import handle_message
+    from src.db.repository import UserRepository
+    from src.events.bus import bus
+    from src.events.types import EventTypes
+
+    classified = []
+
+    async def cap(ev):
+        classified.append(ev.data)
+
+    bus.subscribe(EventTypes.MESSAGE_INCOMING, cap)
+    try:
+        upd = FakeUpdate(FakeUser(888))
+        upd.message.text = "мой сын не придёт сегодня"
+        await handle_message(upd, FakeContext())
+    finally:
+        bus.unsubscribe(EventTypes.MESSAGE_INCOMING, cap)
+
+    # Роли-выбор показан, пользователь НЕ создан, текст НЕ классифицирован.
+    text, kw = upd.message.replies[-1]
+    assert "впервые" in text
+    assert kw.get("reply_markup") is not None
+    assert await UserRepository(db).get_by_telegram_id("888") is None
+    assert not classified
+
+
+@pytest.mark.asyncio
+async def test_u7_known_user_text_still_processed(tmp_path, monkeypatch):
+    """Регрессия: зарегистрированный пользователь → обычная обработка текста."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import handle_message
+    from src.db.repository import UserRepository
+    from src.events.bus import bus
+    from src.events.types import EventTypes
+
+    await UserRepository(db).create("889", "parent", "Родитель")
+    incoming = []
+
+    async def cap(ev):
+        incoming.append(ev.data)
+
+    bus.subscribe(EventTypes.MESSAGE_INCOMING, cap)
+    try:
+        upd = FakeUpdate(FakeUser(889))
+        upd.message.text = "обычное сообщение без контекста"
+        await handle_message(upd, FakeContext())
+    finally:
+        bus.unsubscribe(EventTypes.MESSAGE_INCOMING, cap)
+
+    # Как раньше: текст уходит в классификатор.
+    assert incoming, "текст известного пользователя должен попадать в MESSAGE_INCOMING"
+
+
+@pytest.mark.asyncio
+async def test_u7_after_role_choice_user_can_retext(tmp_path, monkeypatch):
+    """Полный путь: текст → выбор роли → выбрал parent → повторное сообщение обрабатывается."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import handle_callback, handle_message
+    from src.db.repository import UserRepository
+
+    upd = FakeUpdate(FakeUser(890))
+    upd.message.text = "привет"
+    await handle_message(upd, FakeContext())
+
+    upd.callback_query = FakeQuery("register_parent", upd.effective_user)
+    await handle_callback(upd, FakeContext())
+    assert (await UserRepository(db).get_by_telegram_id("890"))["role"] == "parent"
+
+    # Повторное сообщение теперь проходит как у обычного родителя —
+    # без инцидента/чекина попадёт в классификатор (ответ «Обрабатываю...»).
+    upd2 = FakeUpdate(FakeUser(890))
+    upd2.message.text = "привет ещё раз"
+    await handle_message(upd2, FakeContext())
+    assert upd2.message.replies, "повторный текст обработан"

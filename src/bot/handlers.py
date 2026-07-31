@@ -873,11 +873,31 @@ async def _show_demo_report(upd: Update, _ctx) -> None:
 # =====================================================================
 
 async def handle_message(upd: Update, _ctx) -> None:
-    user_rec = await _ensure_user(upd, "parent")
     text = upd.message.text or ""
     tg_id = str(upd.effective_user.id)
     if not text.strip():
         return
+
+    # UX U7: незнакомцу — выбор роли, а не тихая регистрация «в родители».
+    # Иначе репетитор, начавший с текста, получал parent-роль, и его ответы
+    # интерпретировались чужой эвристикой (невидимое системное состояние).
+    user_rec = await UserRepository().get_by_telegram_id(tg_id)
+    if not user_rec:
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("👨‍👩‍👦 Я родитель", callback_data="register_parent"),
+                InlineKeyboardButton("🧑‍🏫 Я репетитор", callback_data="register_tutor"),
+            ],
+            [
+                InlineKeyboardButton("👨‍💼 Я координатор", callback_data="register_coordinator"),
+            ],
+        ])
+        await upd.message.reply_text(
+            "👋 Вы здесь впервые! Выберите вашу роль — и повторите сообщение.",
+            reply_markup=kb,
+        )
+        return
+
     logger.info("Msg from %s: %s", upd.effective_user.id, text[:100])
 
     # Parent/tutor pre-lesson check-ins: сначала пытаемся понять, не ответ ли это
