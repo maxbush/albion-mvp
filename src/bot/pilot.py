@@ -831,16 +831,12 @@ async def cmd_today(upd: Update, _ctx) -> None:
 
     lines = ["📅 Обзор системы\n"]
 
-    # Классы — фильтруем сегодня/ближайшие
+    # Классы — фильтруем сегодняшние по локальной дате старта
     today_classes = []
-    future_classes = []
-    now = _dt.now().astimezone()
     for c in classes:
         start_str = c.get("start_time", "")
         if start_str and start_str[:10] == today_str:
             today_classes.append(c)
-        else:
-            future_classes.append(c)
 
     if today_classes:
         lines.append(f"📚 Занятия сегодня ({len(today_classes)}):")

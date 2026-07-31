@@ -34,9 +34,6 @@ _kill_switch_level = 2
 # Храним ID сообщения "Ждём ответ..." для демо-сценария (chat_id -> message_id)
 _demo_waiting_messages: dict[int, int] = {}
 
-# Флаг: был ли уже обработан демо-сценарий (чтобы не закрывать дважды)
-_demo_resolved: set[int] = set()
-
 
 async def can_send_async(telegram_id: str) -> bool:
     """Проверка с доступом к БД и kill switch."""
@@ -183,8 +180,6 @@ async def _demo_solo_absence(upd: Update, _ctx) -> None:
     # Шаг 4 — сохраняем ID сообщения "Ждём ответ..."
     msg = await chat.send_message("⏳ Ждём ответ...")
     _demo_waiting_messages[chat_id] = msg.message_id
-
-    _demo_resolved.discard(chat_id)
 
 
 # =====================================================================
@@ -518,7 +513,6 @@ async def handle_callback(upd: Update, _ctx) -> None:
         await upd.effective_chat.send_message("📚 Уведомляю преподавателя и координатора...")
         await asyncio.sleep(1.0)
         await upd.effective_chat.send_message(f"✅ Ситуация закрыта. Ответ родителя: {parent_answer}.")
-        _demo_resolved.add(chat_id)
         return
 
     # --- Реальный resolve (из уведомления) ---
