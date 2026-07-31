@@ -527,3 +527,98 @@ async def test_u5_resolve_confirmation_names_student(tmp_path, monkeypatch):
     assert "Миша Иванов" in text
     assert "закрыта" in text
     assert "закрыта в " not in text, "серверное время убрано из подтверждения"
+
+
+# ── U6: отмена занятия кнопками ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_u6_cancel_intent_offers_class_buttons(tmp_path, monkeypatch):
+    """Интент «отмена» → кнопки с реальными занятиями (ввод ID не нужен)."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.db.repository import MeritHubClassRepository, UserRepository
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+    from src.workflows.cancellation import CancellationWorkflow
+
+    await UserRepository(db).create("coord_1", "coordinator", "Координатор")
+    await MeritHubClassRepository(db).upsert("C9", title="Math", start_time="2099-07-31T15:00:00+00:00")
+    await MeritHubClassRepository(db).upsert("C10", title="Eng", start_time="2099-08-01T10:00:00+00:00")
+
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await CancellationWorkflow(db).handle_classified(Event(EventTypes.MESSAGE_CLASSIFIED, {
+            "intent": "cancellation", "telegram_id": "555", "text": "отмени урок",
+        }))
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    msg = [d for d in captured if d.get("telegram_id") == "555"][-1]
+    assert "Какое занятие отменяем" in msg["message"]
+    btns = msg["buttons"]
+    assert any(b["callback_data"] == "cancel_class:C9" for b in btns)
+    assert any(b["callback_data"] == "cancel_class:C10" for b in btns)
+    # Кнопка читаема: содержит ID и время
+    assert any("C9" in b["text"] and "15:00" in b["text"] for b in btns)
+
+
+@pytest.mark.asyncio
+async def test_u6_cancel_button_fires_existing_flow(tmp_path, monkeypatch):
+    """Тап по кнопке → тот же LESSON_CANCELLED, что и команда (обвязка, не новая механика)."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import handle_callback
+    from src.db.repository import MeritHubClassRepository
+    from src.events.bus import bus
+    from src.events.types import EventTypes
+
+    await MeritHubClassRepository(db).upsert("C9", title="Math", start_time="2099-07-31T15:00:00+00:00")
+
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.LESSON_CANCELLED, cap)
+    try:
+        upd = FakeUpdate(FakeUser(555))
+        upd.callback_query = FakeQuery("cancel_class:C9", upd.effective_user)
+        await handle_callback(upd, FakeContext())
+    finally:
+        bus.unsubscribe(EventTypes.LESSON_CANCELLED, cap)
+
+    event = captured[-1]
+    assert event["lesson_id"] == "C9"
+    assert event["reported_by"] == "555"
+    edit = upd.callback_query.edits[-1][0]
+    assert "передана репетитору и координаторам" in edit
+    assert "C9" in edit and "15:00" in edit  # человекочитаемый label
+
+
+@pytest.mark.asyncio
+async def test_u6_cancel_intent_fallback_without_classes(tmp_path, monkeypatch):
+    """Нет известных занятий → старая текстовая подсказка."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+    from src.workflows.cancellation import CancellationWorkflow
+
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await CancellationWorkflow(db).handle_classified(Event(EventTypes.MESSAGE_CLASSIFIED, {
+            "intent": "cancellation", "telegram_id": "555",
+        }))
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    msg = [d for d in captured if d.get("telegram_id") == "555"][-1]
+    assert "/cancel_lesson <ID>" in msg["message"]
+    assert not msg.get("buttons")

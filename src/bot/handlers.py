@@ -628,6 +628,27 @@ async def handle_callback(upd: Update, _ctx) -> None:
         await upd.effective_chat.send_message(f"✅ Ситуация закрыта. Ответ родителя: {parent_answer}.")
         return
 
+    # --- Отмена занятия кнопкой со списка (UX U6) ---
+    if data.startswith("cancel_class:"):
+        class_id = data.split(":", 1)[1]
+        if not class_id:
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
+            return
+        await _ensure_user(upd, "parent")
+        await bus.publish(Event(EventTypes.LESSON_CANCELLED, {
+            "lesson_id": class_id,
+            "reason": "не указана (отмена кнопкой)",
+            "reported_by": str(query.from_user.id),
+        }))
+        from src.db.repository import MeritHubClassRepository
+        from src.workflows.lesson_ops import _format_class_label
+        cls = await MeritHubClassRepository().get(class_id)
+        label = _format_class_label(class_id, (cls or {}).get("start_time"))
+        await query.edit_message_text(
+            f"🔄 Отмена {label} передана репетитору и координаторам.")
+        logger.info("Cancel via button: class=%s by=%s", class_id, query.from_user.id)
+        return
+
     # --- Координатор закрывает ситуацию прямо с эскалации (UX U2) ---
     if data.startswith("coord_resolve:"):
         parts = data.split(":")
