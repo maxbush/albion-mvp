@@ -24,7 +24,7 @@ from src.integrations.airtable_mock import MockAirtableService
 from src.workflows.engine import engine
 from src.workflows.absence import AbsenceWorkflow
 from src.workflows.lesson_ops import LessonOpsWorkflow
-from src.bot.roles import register_role_handlers, get_coordinator_ids, is_admin
+from src.bot.roles import register_role_handlers, get_coordinator_ids, is_admin, apply_command_menu
 from src.bot.pilot import register_pilot_handlers
 
 logger = logging.getLogger(__name__)
@@ -221,6 +221,8 @@ async def cmd_start(upd: Update, _ctx) -> None:
         role = existing["role"]
         emoji = {"parent": "👨‍👩‍👦", "tutor": "🧑‍🏫", "coordinator": "👨‍💼", "student": "🎓"}.get(role, "")
         admin_mark = " ★" if is_admin(tg_id) else ""
+        # Меню «/» под роль (UX U1): идемпотентно, обновляем при каждом /start.
+        await apply_command_menu(getattr(_ctx, "bot", None), tg_id, role)
         await upd.message.reply_text(
             f"👋 С возвращением, {user.full_name or '—'}!\n\n"
             f"Ваша роль: {emoji} {role}{admin_mark}\n"
@@ -403,6 +405,8 @@ async def handle_callback(upd: Update, _ctx) -> None:
             await repo.update_role(existing["id"], role)
         else:
             await repo.create(str(user.id), role, user.full_name or str(user.id), username=user.username)
+        # Меню «/» под выбранную роль (UX U1).
+        await apply_command_menu(getattr(_ctx, "bot", None), user.id, role)
         emoji = {"parent": "👨‍👩‍👦", "tutor": "🧑‍🏫", "coordinator": "👨‍💼"}.get(role, "")
         admin_mark = " ★" if is_admin(str(user.id)) else ""
         await query.edit_message_text(
@@ -433,6 +437,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
     # --- Выбор роли в демо-режиме ---
     if data == "role_coordinator":
         await _ensure_role(upd, "coordinator")
+        await apply_command_menu(getattr(_ctx, "bot", None), upd.effective_user.id, "coordinator")
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("🚨 Ученик отсутствует", callback_data="demo_absent"),
             InlineKeyboardButton("📊 Отчёт о сессии", callback_data="demo_report"),
@@ -447,6 +452,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
 
     if data == "role_parent":
         await _ensure_role(upd, "parent")
+        await apply_command_menu(getattr(_ctx, "bot", None), upd.effective_user.id, "parent")
         await query.edit_message_text(
             "👨‍👩‍👦 *Вы в роли родителя.*\n\n"
             "В демо-режиме родительские уведомления симулируются.\n"
