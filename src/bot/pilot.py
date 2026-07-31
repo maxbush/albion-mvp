@@ -886,7 +886,10 @@ async def cmd_today(upd: Update, _ctx) -> None:
         MeritHubEnrollmentRepository, MeritHubClassStatusRepository,
         WorkflowRepository,
     )
-    from datetime import datetime as _dt
+    from datetime import datetime
+
+    # Используем зону организации для определения «сегодня» (P1.1)
+    today_str = datetime.now(settings.org_zone()).strftime("%Y-%m-%d")
 
     # Классы
     classes = await MeritHubClassRepository().list_all()
@@ -903,7 +906,6 @@ async def cmd_today(upd: Update, _ctx) -> None:
     # Инциденты за сегодня
     from src.db.repository import IncidentRepository
     inc_repo = IncidentRepository()
-    today_str = _dt.now().strftime("%Y-%m-%d")
     today_incidents = await inc_repo._fetchall(
         "SELECT * FROM incidents WHERE created_at LIKE ? ORDER BY created_at",
         (f"{today_str}%",),
@@ -911,7 +913,7 @@ async def cmd_today(upd: Update, _ctx) -> None:
 
     lines = ["📅 Обзор системы\n"]
 
-    # Классы — фильтруем сегодняшние по локальной дате старта
+    # Классы — фильтруем сегодняшние по дате старта в зоне организации
     today_classes = []
     for c in classes:
         start_str = c.get("start_time", "")
@@ -985,9 +987,9 @@ async def cmd_morning_digest(upd: Update, _ctx) -> None:
         MeritHubClassRepository, MeritHubEnrollmentRepository,
         MeritHubClassStatusRepository, IncidentRepository,
     )
-    from datetime import datetime as _dt
+    from datetime import datetime
 
-    today_str = _dt.now().strftime("%Y-%m-%d")
+    today_str = datetime.now(settings.org_zone()).strftime("%Y-%m-%d")
     classes = await MeritHubClassRepository().list_all()
 
     # Фильтруем занятия на сегодня

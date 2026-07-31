@@ -225,7 +225,9 @@ async def cmd_role(upd: Update, ctx) -> None:
         f"✅ Роль {ROLE_EMOJI.get(role, '')} {role} {verb} для {name} ({target_clean})."
     )
     # Меню команд обновится у целевого пользователя под новую роль (UX U1).
-    await apply_command_menu(getattr(ctx, "bot", None), target_clean, role)
+    # Для @username используем telegram_id из БД (числовой), а не username-строку
+    menu_chat_id = rec["telegram_id"] if target.startswith("@") else target_clean
+    await apply_command_menu(getattr(ctx, "bot", None), menu_chat_id, role)
     logger.info("Role set: %s -> %s by admin %s", target_clean, role, actor.id)
 
 

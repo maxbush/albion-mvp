@@ -339,6 +339,18 @@ class LessonOpsWorkflow:
                         f"Ученики: {student_name}",
                     ],
                 )
+                # Отменяем class_live_check workflow (отдельный workflow, свой wid)
+                # — чтобы не было лишнего алерта через 5 мин, раз ученик уже отмечен отсутствующим.
+                live_check_wf = await self.repo._fetchone(
+                    "SELECT * FROM workflow_instances "
+                    "WHERE workflow_type='class_live_check' AND state='running' AND data LIKE ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (f'%"class_id": "{class_id}"%',),
+                )
+                if live_check_wf:
+                    await self.scheduler.cancel_by_workflow(live_check_wf["id"])
+                    await self.repo.cancel(live_check_wf["id"])
+                    logger.info("Cancelled class_live_check #%d for class %s (student_absent)", live_check_wf["id"], class_id)
             elif action == "tech":
                 await self.notify_coordinators(
                     "🛠 Проблема на старте урока",

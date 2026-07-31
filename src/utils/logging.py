@@ -1,9 +1,30 @@
 """Structured logging with file output and rotation."""
 
 import logging, sys, json
-from datetime import datetime, timezone, timezone
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from src.config import settings
+
+class SafeStreamHandler(logging.StreamHandler):
+    """StreamHandler, который не падает на UnicodeEncodeError в Windows (cp1251).
+
+    Эмодзи и другие символы вне cp1251 заменяются на '?' вместо краша stderr.
+    """
+    def emit(self, record):
+        try:
+            super().emit(record)
+        except UnicodeEncodeError:
+            # Падаем на форматировании — пробуем заменить неподдерживаемые символы
+            try:
+                msg = self.format(record)
+                stream = self.stream
+                # Заменяем символы вне кодировки потока
+                encoded = msg.encode(stream.encoding or 'utf-8', errors='replace')
+                stream.write(encoded.decode(stream.encoding or 'utf-8'))
+                stream.write(self.terminator)
+                self.flush()
+            except Exception:
+                self.handleError(record)
 
 class JSONFormatter(logging.Formatter):
     """Output logs as JSON lines for machine parsing."""
@@ -23,8 +44,8 @@ def setup_logging():
     root = logging.getLogger()
     root.setLevel(level)
 
-    # Console — human readable
-    console = logging.StreamHandler(sys.stdout)
+    # Console — human readable, safe for Windows cp1251
+    console = SafeStreamHandler(sys.stdout)
     console.setLevel(level)
     console.setFormatter(logging.Formatter(
         "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",

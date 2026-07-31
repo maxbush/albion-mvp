@@ -42,6 +42,30 @@ class CancellationWorkflow:
         if not lesson:
             lesson = await self.airtable.get_lesson(lid)
         if not lesson:
+            # Проверяем локальную БД — классы, созданные через /mh_schedule
+            from src.db.repository import MeritHubClassRepository, MeritHubEnrollmentRepository, MeritHubContactRepository
+            class_row = await MeritHubClassRepository(self.users.db_path).get(lid)
+            if class_row:
+                # Создаём минимальный lesson-like объект из локальных данных
+                from types import SimpleNamespace
+                tutor_cuid = class_row.get("tutor_client_user_id", "")
+                # Ищем имя ученика из enrollments
+                enrollments = await MeritHubEnrollmentRepository(self.users.db_path).list_by_class(lid)
+                student_names = [e.get("student_name") or e.get("client_user_id", "Ученик") for e in enrollments]
+                # Ищем имя репетитора из contacts
+                tutor_name = tutor_cuid
+                if tutor_cuid:
+                    contact = await MeritHubContactRepository(self.users.db_path).get_by_client_id(tutor_cuid)
+                    if contact:
+                        tutor_name = contact.get("name") or tutor_cuid
+                lesson = SimpleNamespace(
+                    student_id=tutor_cuid,
+                    tutor_id=tutor_cuid,
+                    subject=class_row.get("title") or "Занятие",
+                    _student_name=", ".join(student_names) if student_names else "Ученик",
+                    _tutor_name=tutor_name,
+                )
+        if not lesson:
             # Честный фидбэк отправителю: иначе /cancel_lesson выглядит
             # «принятой», но молча ничего не делает.
             reporter = event.data.get("reported_by")
@@ -77,10 +101,15 @@ class CancellationWorkflow:
             await wf_repo.cancel(wf["id"])
             logger.info("Cancelled workflow %d for cancelled lesson %s", wf["id"], lid)
 
-        student = await self.airtable.get_student(lesson.student_id)
-        tutor = await self.airtable.get_tutor(lesson.tutor_id)
-        sn = student.name if student else "Ученик"
-        tn = tutor.name if tutor else "Репетитор"
+        # Для классов из MeritHubClassRepository имена уже получены из enrollments/contacts
+        if hasattr(lesson, '_student_name'):
+            sn = lesson._student_name
+            tn = lesson._tutor_name
+        else:
+            student = await self.airtable.get_student(lesson.student_id)
+            tutor = await self.airtable.get_tutor(lesson.tutor_id)
+            sn = student.name if student else "Ученик"
+            tn = tutor.name if tutor else "Репетитор"
 
         # Уведомляем репетитора (если есть TG)
         tutor_tg = await self._get_tutor_telegram(lesson.tutor_id)
