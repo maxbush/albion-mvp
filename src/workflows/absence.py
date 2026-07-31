@@ -89,6 +89,28 @@ class AbsenceWorkflow:
         await engine.schedule_action(wid, settings.albion_notify_parent_delay_min, "notify_parent", {"incident_id": inc_id})
         logger.info("Absence: lesson=%s inc=%d wf=%d", lid, inc_id, wid)
 
+    async def handle_classified(self, event: Event) -> None:
+        """Свободный текст «ученик не пришёл / не будет» (интент absence_report).
+
+        Раньше такие сообщения уходили в никуда: классификатор ставил интент,
+        но подписчика не было. Теперь — алерт всем координаторам с TG автора
+        и исходным текстом для ручной обработки (management by exception)."""
+        if event.data.get("intent") != "absence_report":
+            return
+        text = (event.data.get("text") or "").strip()
+        tg = event.data.get("telegram_id") or "?"
+        if not text:
+            return
+        from src.bot.roles import notify_all_coordinators
+        msg = (
+            "📣 Сообщение о неявке (из чата)\n"
+            f"От: TG {tg}\n"
+            f"Текст: {text[:300]}"
+        )
+        await notify_all_coordinators(
+            msg, notification_type="absence_report", db_path=self.incidents.db_path)
+        logger.info("absence_report from %s forwarded to coordinators", tg)
+
     async def handle_scheduler_tick(self, event: Event) -> None:
         """Обрабатывает тики шедулера — notify_parent или escalate."""
         action = event.data.get("action")
@@ -359,4 +381,5 @@ async def register_handlers() -> None:
     wf = AbsenceWorkflow()
     bus.subscribe(EventTypes.LESSON_ABSENT, wf.handle_lesson_absent)
     bus.subscribe(EventTypes.SCHEDULER_TICK, wf.handle_scheduler_tick)
+    bus.subscribe(EventTypes.MESSAGE_CLASSIFIED, wf.handle_classified)
     logger.info("Absence workflow registered")

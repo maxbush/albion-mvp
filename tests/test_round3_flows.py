@@ -194,3 +194,58 @@ async def test_p04_seed10_has_parse_mode(tmp_path, monkeypatch):
     assert kw.get("parse_mode") == "Markdown"
     # backticks вокруг команд должны интерпретироваться Telegram, т.к. parse_mode есть
     assert "`/mh_schedule" in text
+
+
+# ── P1.1: absence_report intent → координаторы ───────────────────────
+
+@pytest.mark.asyncio
+async def test_p11_absence_report_reaches_coordinators(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.db.repository import UserRepository
+    from src.events.types import Event
+    from src.workflows.absence import AbsenceWorkflow
+
+    await UserRepository(db).create("coord_1", "coordinator", "Координатор")
+    wf = AbsenceWorkflow(db)
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await wf.handle_classified(Event(EventTypes.MESSAGE_CLASSIFIED, {
+            "intent": "absence_report",
+            "text": "мой сын сегодня не смог прийти на урок",
+            "telegram_id": "555",
+        }))
+        msgs = [d for d in captured if d.get("telegram_id") == "coord_1"]
+        assert msgs, "координатор должен получить репорт о неявке"
+        assert "не смог прийти" in msgs[0]["message"]
+        assert "555" in msgs[0]["message"]
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+
+@pytest.mark.asyncio
+async def test_p11_other_intents_ignored(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.db.repository import UserRepository
+    from src.events.types import Event
+    from src.workflows.absence import AbsenceWorkflow
+
+    await UserRepository(db).create("coord_1", "coordinator", "Координатор")
+    wf = AbsenceWorkflow(db)
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await wf.handle_classified(Event(EventTypes.MESSAGE_CLASSIFIED, {
+            "intent": "question", "text": "а когда урок?", "telegram_id": "555",
+        }))
+        assert not captured, "на другие интенты absence-обработчик не реагирует"
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
