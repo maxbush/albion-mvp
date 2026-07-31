@@ -372,3 +372,49 @@ async def _seed_lesson_student_user(db):
     """Родитель из mock Airtable (student_1 → parent_1) должен быть в users."""
     from src.db.repository import UserRepository
     await UserRepository(db).create("parent_1", "parent", "Родитель Миши")
+
+
+# ── P1.4: scheduler zombie reaper ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_p14_zombie_running_action_marked_failed(tmp_path, monkeypatch):
+    """running + attempts>=3 + просроченный lock → failed, а не вечный зомби."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from datetime import datetime, timedelta, timezone
+    from src.db.repository import ScheduledActionRepository, WorkflowRepository
+
+    repo = ScheduledActionRepository(db)
+    wid = await WorkflowRepository(db).create("test", "running", {})
+    aid = await repo.create(
+        wid, (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(),
+        "notify_parent", {"incident_id": 1})
+    # Симулируем краш после 3-й попытки: running, lock истёк, attempts=3.
+    await repo._execute(
+        "UPDATE scheduled_actions SET status='running', attempts=3, locked_until=? WHERE id=?",
+        ((datetime.now(timezone.utc) - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S"), aid))
+
+    claimed = await repo.claim_pending(limit=10)
+    assert all(t["id"] != aid for t in claimed), "зомби не должен выполняться снова"
+    row = await repo._fetchone("SELECT * FROM scheduled_actions WHERE id=?", (aid,))
+    assert row["status"] == "failed"
+    assert "lock expired" in row["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_p14_expired_lock_with_retries_left_still_reaped(tmp_path, monkeypatch):
+    """Регрессия: running + attempts<3 + истёкший lock → back to pending и claim."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from datetime import datetime, timedelta, timezone
+    from src.db.repository import ScheduledActionRepository, WorkflowRepository
+
+    repo = ScheduledActionRepository(db)
+    wid = await WorkflowRepository(db).create("test", "running", {})
+    aid = await repo.create(
+        wid, (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(),
+        "notify_parent", {"incident_id": 1})
+    await repo._execute(
+        "UPDATE scheduled_actions SET status='running', attempts=2, locked_until=? WHERE id=?",
+        ((datetime.now(timezone.utc) - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S"), aid))
+
+    claimed = await repo.claim_pending(limit=10)
+    assert [t["id"] for t in claimed] == [aid]

@@ -69,7 +69,7 @@
   а юзеру уже отвечено «Зафиксировал отсутствие по ...». План: при неизвестном уроке
   и наличии `reported_by` — TG-уведомление отправителю «урок не найден». Тест.
 
-- [ ] **P1.4** Scheduler reaper: зависшие `running` задачи с `attempts >= 3` и истёкшим
+- [x] **P1.4** Scheduler reaper: зависшие `running` задачи с `attempts >= 3` и истёкшим
   lock **никогда не реанимируются и не помечаются failed** — зомби-строки. План: reaper
   помечает их `failed` с last_error='lock expired after max attempts'. Тест.
 

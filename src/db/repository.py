@@ -193,7 +193,14 @@ class ScheduledActionRepository(Repository):
 
         REAPER: возвращаем зависшие running в pending (защита от падений).
         НЕ увеличиваем attempts — reaper не считается попыткой выполнения.
+        Зомби с исчерпанными попытками (attempts >= 3) добиваем до failed,
+        иначе строка висела бы в running вечно.
         """
+        await self._execute(
+            "UPDATE scheduled_actions "
+            "SET status='failed', last_error='lock expired after max attempts', locked_until=NULL "
+            "WHERE status='running' AND julianday(locked_until) < julianday('now') AND attempts >= 3"
+        )
         await self._execute(
             "UPDATE scheduled_actions "
             "SET status='pending', locked_until=NULL "
