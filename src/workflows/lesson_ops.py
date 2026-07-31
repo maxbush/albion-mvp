@@ -548,9 +548,11 @@ class LessonOpsWorkflow:
                 "Возможные причины: репетитор не подключился / техпроблема / неявка",
             ]
 
-        await self.notify_coordinators(title, [f"Занятие: {_format_class_label(class_id, data.get('start_time'))}", *extra])
-        data["response_status"] = "class_not_live"
+        # Отменяем все связанные workflow (tutor_start_check, prelesson_*)
+        await self._cancel_future_actions(wid)
         await self._save_workflow(wid, "completed", data)
+
+        await self.notify_coordinators(title, [f"Занятие: {_format_class_label(class_id, data.get('start_time'))}", *extra])
 
     async def handle_scheduler_tick(self, event: Event) -> None:
         action = event.data.get("action")

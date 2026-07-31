@@ -25,6 +25,8 @@ from src.db.repository import (
 from src.workflows.engine import engine
 from src.workflows.lesson_ops import LessonOpsWorkflow
 from src.bot.roles import is_admin, ROLE_EMOJI
+from src.events.bus import bus
+from src.events.types import Event, EventTypes
 
 logger = logging.getLogger(__name__)
 
