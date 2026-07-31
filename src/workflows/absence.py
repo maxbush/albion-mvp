@@ -173,6 +173,10 @@ class AbsenceWorkflow:
             pass
         return lesson_ref
 
+    # NOTE (принятое ограничение MVP, MASTER_PLAN H3): поиск по данным workflow
+    # идёт через LIKE по JSON-тексту и зависит от формата json.dumps (пробелы).
+    # Покрыто тестами. При росте: перевести на json_extract или вынести
+    # parent_telegram_id/incident_id в отдельные колонки с индексами.
     async def find_active_incident_for_parent(self, parent_tg: str) -> tuple[int, dict] | None:
         """Находит активный incident для родителя по данным workflow."""
         wf = await WorkflowRepository(self.incidents.db_path)._fetchone(
