@@ -418,3 +418,83 @@ async def test_p14_expired_lock_with_retries_left_still_reaped(tmp_path, monkeyp
 
     claimed = await repo.claim_pending(limit=10)
     assert [t["id"] for t in claimed] == [aid]
+
+
+# ── P1.5: эскалация с полным контекстом ──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_p15_escalation_message_has_context(tmp_path, monkeypatch):
+    """Координаторская эскалация содержит ученика, занятие и TG родителя."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.db.repository import (
+        IncidentRepository, MeritHubClassRepository, UserRepository,
+        WorkflowRepository, ScheduledActionRepository,
+    )
+    from src.workflows.engine import engine
+    from src.workflows.absence import AbsenceWorkflow
+
+    engine.repo = WorkflowRepository(db)
+    engine.scheduler = ScheduledActionRepository(db)
+    await UserRepository(db).create("coord_1", "coordinator", "Координатор")
+    await MeritHubClassRepository(db).upsert(
+        "C9", title="Math", start_time="2026-07-31T15:00:00+00:00")
+
+    inc_id = await IncidentRepository(db).create(
+        lesson_ref="C9", type="absence", status="pending")
+    wid = await engine.start_workflow("absence_notification", {
+        "incident_id": inc_id, "student_name": "Миша Иванов",
+        "parent_telegram_id": "555", "lesson_ref": "C9"})
+
+    wf = AbsenceWorkflow(db)
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await wf._escalate(wid, inc_id, reason="no response")
+        msgs = [d for d in captured if d.get("telegram_id") == "coord_1"]
+        assert msgs, "эскалация должна уйти координатору"
+        m = msgs[0]["message"]
+        assert f"#{inc_id}" in m
+        assert "no response" in m
+        assert "Миша Иванов" in m          # ученик
+        assert "C9" in m                   # занятие
+        assert "31.07" in m                # человекочитаемая дата из метаданных
+        assert "555" in m                  # TG родителя
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+
+@pytest.mark.asyncio
+async def test_p15_escalation_minimal_when_no_context(tmp_path, monkeypatch):
+    """Эскалация по «неизвестному» поводу не падает даже без workflow-данных."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.db.repository import (
+        IncidentRepository, UserRepository, WorkflowRepository, ScheduledActionRepository,
+    )
+    from src.workflows.engine import engine
+    from src.workflows.absence import AbsenceWorkflow
+
+    engine.repo = WorkflowRepository(db)
+    engine.scheduler = ScheduledActionRepository(db)
+    await UserRepository(db).create("coord_1", "coordinator", "Координатор")
+    inc_id = await IncidentRepository(db).create(type="absence", status="pending")
+    wid = await engine.start_workflow("absence_notification", {"incident_id": inc_id})
+
+    wf = AbsenceWorkflow(db)
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await wf._escalate(wid, inc_id, reason="parent not registered")
+        msgs = [d for d in captured if d.get("telegram_id") == "coord_1"]
+        assert msgs
+        assert "parent not registered" in msgs[0]["message"]
+        assert f"#{inc_id}" in msgs[0]["message"]
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)

@@ -158,6 +158,21 @@ class AbsenceWorkflow:
         wf = await WorkflowRepository(self.incidents.db_path).get(wid)
         return json.loads(wf["data"]) if wf and wf.get("data") else {}
 
+    async def _class_label(self, lesson_ref: str | None) -> str:
+        """Человекочитаемое имя занятия: 'C9 (28.07, 15:00)' из метаданных класса."""
+        if not lesson_ref:
+            return "—"
+        try:
+            from src.db.repository import MeritHubClassRepository
+            cls = await MeritHubClassRepository(self.incidents.db_path).get(lesson_ref)
+            if cls and cls.get("start_time"):
+                from src.workflows.lesson_ops import _parse_dt
+                dt = _parse_dt(cls["start_time"])
+                return f"{lesson_ref} ({dt.strftime('%d.%m, %H:%M')})"
+        except Exception:
+            pass
+        return lesson_ref
+
     async def find_active_incident_for_parent(self, parent_tg: str) -> tuple[int, dict] | None:
         """Находит активный incident для родителя по данным workflow."""
         wf = await WorkflowRepository(self.incidents.db_path)._fetchone(
@@ -233,17 +248,7 @@ class AbsenceWorkflow:
         wf_data = json.loads(wf["data"]) if wf and wf.get("data") else {}
         student_name = wf_data.get("student_name") or "Ученик"
         lesson_ref = (inc or {}).get("lesson_ref") or wf_data.get("lesson_ref") or "—"
-        # Пробуем показать человекочитаемое название занятия
-        class_label = lesson_ref
-        try:
-            from src.db.repository import MeritHubClassRepository
-            cls = await MeritHubClassRepository(self.incidents.db_path).get(lesson_ref)
-            if cls and cls.get("start_time"):
-                from src.workflows.lesson_ops import _parse_dt
-                dt = _parse_dt(cls["start_time"])
-                class_label = f"{lesson_ref} ({dt.strftime('%d.%m, %H:%M')})"
-        except Exception:
-            pass
+        class_label = await self._class_label(lesson_ref)
         base = labels.get(outcome, "ℹ️ Родитель обновил статус")
         msg = f"{base}\nИнцидент #{inc_id}\nУченик: {student_name}\nЗанятие: {class_label}"
         if parent_telegram_id:
@@ -289,16 +294,7 @@ class AbsenceWorkflow:
         await WorkflowRepository(self.incidents.db_path).update_data(wid, wf_data)
 
         # Человекочитаемое название занятия
-        lesson_label = inc.get("lesson_ref") or "—"
-        try:
-            from src.db.repository import MeritHubClassRepository
-            cls = await MeritHubClassRepository(self.incidents.db_path).get(inc.get("lesson_ref", ""))
-            if cls and cls.get("start_time"):
-                from src.workflows.lesson_ops import _parse_dt
-                dt = _parse_dt(cls["start_time"])
-                lesson_label = f"{inc['lesson_ref']} ({dt.strftime('%d.%m, %H:%M')})"
-        except Exception:
-            pass
+        lesson_label = await self._class_label(inc.get("lesson_ref"))
 
         msg = (
             f"👋 Здравствуйте!\n\n"
@@ -343,9 +339,26 @@ class AbsenceWorkflow:
 
         await self.incidents.update_status(inc_id, "escalated", reason)
 
-        # Уведомляем ВСЕХ координаторов (реальные TG-аккаунты, назначенные /role).
+        # Уведомляем ВСЕХ координаторов с полным контекстом
+        # (раньше была сухая строка без ученика/занятия/родителя).
+        wf_data_ctx = await self._workflow_data(wid)
+        inc_row = await self.incidents.get(inc_id) or {}
+        student_name = wf_data_ctx.get("student_name") or "—"
+        parent_tg = wf_data_ctx.get("parent_telegram_id")
+        class_label = await self._class_label(
+            inc_row.get("lesson_ref") or wf_data_ctx.get("lesson_ref"))
+        esc_msg = (
+            f"🚨 Эскалация: инцидент #{inc_id}\n"
+            f"Причина: {reason}\n"
+            f"Ученик: {student_name}\n"
+            f"Занятие: {class_label}"
+        )
+        if parent_tg:
+            esc_msg += f"\nParent TG: {parent_tg}"
+        created = (inc_row.get("created_at") or "")[:16]
+        if created:
+            esc_msg += f"\nСоздан: {created} UTC"
         from src.bot.roles import notify_all_coordinators
-        esc_msg = f"🚨 Эскалация: инцидент #{inc_id} (причина: {reason})"
         await notify_all_coordinators(
             esc_msg, notification_type="absence_escalation", db_path=self.incidents.db_path)
 
