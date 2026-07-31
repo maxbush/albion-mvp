@@ -45,7 +45,7 @@
   (backticks буквально), `cmd_seed10` (финальная подсказка с backticks).
   План: добавить `parse_mode="Markdown"` + экранирование где надо; тесты на ответы.
 
-- [ ] **P0.5** Наивный `start_time` без таймзоны трактуется как **UTC** (`_schedule_at`,
+- [x] **P0.5** Наивный `start_time` без таймзоны трактуется как **UTC** (`_schedule_at`,
   `_parse_dt`), хотя каноническая зона расписания в продукте — **Europe/London**
   (см. `/mh_schedule`, `schedule_class timezone="Europe/London"`). Летом (BST) напоминания
   уезжают на час. План: в точке планирования трактовать naive-время как Europe/London

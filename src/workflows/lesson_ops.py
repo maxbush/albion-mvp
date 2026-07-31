@@ -20,13 +20,26 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_dt(v: str) -> datetime:
-    return datetime.fromisoformat(v.replace("Z", "+00:00"))
+    """Парсит RFC3339. Наивное время (без зоны) трактуем как Europe/London —
+    каноническая зона расписания ALBION (см. /mh_schedule), НЕ как UTC:
+    иначе напоминания уезжают на час летом (BST = UTC+1)."""
+    dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        from zoneinfo import ZoneInfo
+        logger.debug("Naive datetime %r assumed Europe/London (canonical schedule TZ)", v)
+        dt = dt.replace(tzinfo=ZoneInfo("Europe/London"))
+    return dt
 
 
 def _schedule_at(target: datetime, fallback_seconds: int = 5) -> str:
+    """Возвращает ВСЕГДА aware UTC ISO-строку для SQLite scheduler.
+
+    Наивное время трактуем как Europe/London (канон расписания), тот же
+    принцип, что в _parse_dt."""
     now = datetime.now(timezone.utc)
     if target.tzinfo is None:
-        target = target.replace(tzinfo=timezone.utc)
+        from zoneinfo import ZoneInfo
+        target = target.replace(tzinfo=ZoneInfo("Europe/London"))
     if target <= now:
         return (now + timedelta(seconds=fallback_seconds)).isoformat()
     return target.astimezone(timezone.utc).isoformat()
