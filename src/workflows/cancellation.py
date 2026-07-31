@@ -63,6 +63,20 @@ class CancellationWorkflow:
                 logger.warning("MeritHub cancel_lesson failed for %s: %s", lid, e)
         await self.airtable.cancel_lesson(lid, reason)
 
+        # Отменяем запланированные действия для этого урока
+        from src.db.repository import ScheduledActionRepository, WorkflowRepository
+        sched = ScheduledActionRepository(self.users.db_path) if self.users.db_path else ScheduledActionRepository()
+        wf_repo = WorkflowRepository(self.users.db_path) if self.users.db_path else WorkflowRepository()
+        # Находим все running workflow для этого class_id
+        active_wfs = await wf_repo._fetchall(
+            "SELECT id FROM workflow_instances WHERE state='running' AND data LIKE ?",
+            (f'%"class_id": "{lid}"%',),
+        )
+        for wf in active_wfs:
+            await sched.cancel_by_workflow(wf["id"])
+            await wf_repo.cancel(wf["id"])
+            logger.info("Cancelled workflow %d for cancelled lesson %s", wf["id"], lid)
+
         student = await self.airtable.get_student(lesson.student_id)
         tutor = await self.airtable.get_tutor(lesson.tutor_id)
         sn = student.name if student else "Ученик"

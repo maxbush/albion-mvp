@@ -508,8 +508,44 @@ async def cmd_mh_schedule(upd: Update, ctx) -> None:
             student_rows.append(s)
             if info["participant_link"]:
                 users.append({"userId": s["merithub_user_id"], "userLink": info["participant_link"], "userType": "su"})
+        user_links = {}
         if users:
-            await client.add_users_to_class(class_id, users)
+            resp_links = await client.add_users_to_class(class_id, users)
+            user_links = client.parse_user_links(resp_links)
+            logger.info("MH_SYNC: add_users_to_class %s (%d users)", class_id, len(users))
+
+        # Отправляем ссылку tutor'у
+        tutor_contact_row = await contact_repo.get(tutor_cuid)
+        tutor_tg = (tutor_contact_row or {}).get("telegram_id")
+        if tutor_tg:
+            tutor_link = user_links.get(tutor.get("merithub_user_id", ""))
+            if tutor_link:
+                tutor_room = client.room_url(tutor_link)
+                await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                    "telegram_id": tutor_tg,
+                    "message": (
+                        f"📎 Ссылка на урок:\n"
+                        f"🕐 {start}\n"
+                        f"👥 Ученики: {', '.join(s.get('name','') for s in student_rows)}\n"
+                        f"🔗 {tutor_room}"
+                    ),
+                }))
+
+        # Отправляем ссылки parent'ам
+        for s in student_rows:
+            parent_tg = s.get("parent_telegram_id")
+            s_link = user_links.get(s.get("merithub_user_id", ""))
+            if parent_tg and s_link:
+                s_room = client.room_url(s_link)
+                await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                    "telegram_id": parent_tg,
+                    "message": (
+                        f"📎 Ссылка для подключения:\n"
+                        f"Ученик: {s.get('name')}\n"
+                        f"🕐 {start}\n"
+                        f"🔗 {s_room}"
+                    ),
+                }))
 
         # Сохраняем зачисление — по нему webhook attendance посчитает неявки.
         await erepo.add(class_id, tutor["merithub_user_id"], client_user_id=tutor_cuid,
