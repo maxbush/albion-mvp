@@ -18,6 +18,11 @@ from src.events.types import Event, EventTypes
 
 logger = logging.getLogger(__name__)
 
+# Чек-ин теряет смысл, когда занятие давно прошло: протухший workflow не должен
+# перехватывать обычные сообщения пользователя (см. find_active_checkin).
+CHECKIN_EXPIRY_AFTER_START_H = 3
+CHECKIN_EXPIRY_NO_START_H = 24  # запасной TTL, если в данных нет start_time
+
 
 def _parse_dt(v: str) -> datetime:
     """Парсит RFC3339. Наивное время (без зоны) трактуем как Europe/London —
@@ -198,6 +203,32 @@ class LessonOpsWorkflow:
     async def _cancel_future_actions(self, wid: int) -> None:
         await self.scheduler.cancel_by_workflow(wid)
 
+    async def _expire_stale_checkin(self, wf: dict, data: dict) -> bool:
+        """Протухший чек-ин (занятие давно прошло) — auto-complete и пропуск.
+
+        Без этого workflow зависал в 'running' навсегда (например, пользователь
+        не был зарегистрирован в момент напоминания), а следующее обычное
+        сообщение от него молча «закрывало» чек-ин недельной давности."""
+        now = datetime.now(timezone.utc)
+        start_raw = data.get("start_time")
+        try:
+            if start_raw:
+                expiry = _parse_dt(start_raw) + timedelta(hours=CHECKIN_EXPIRY_AFTER_START_H)
+            else:
+                created = datetime.fromisoformat(str(wf.get("created_at") or ""))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                expiry = created + timedelta(hours=CHECKIN_EXPIRY_NO_START_H)
+        except Exception:
+            return False  # дата не распарсилась — не рискуем, оставляем как есть
+        if now <= expiry:
+            return False  # ещё живой
+        data["response_status"] = "expired"
+        await self._cancel_future_actions(wf["id"])
+        await self._save_workflow(wf["id"], "completed", data)
+        logger.info("Check-in workflow #%d expired (start=%s)", wf["id"], start_raw)
+        return True
+
     async def find_active_checkin(self, actor_tg: str, actor_types: tuple[str, ...]) -> tuple[int, dict, str] | None:
         for wf_type in ("tutor_start_check", "prelesson_parent", "prelesson_tutor"):
             wf = await self.repo._fetchone(
@@ -210,8 +241,11 @@ class LessonOpsWorkflow:
                 data = json.loads(wf.get("data") or "{}")
             except Exception:
                 data = {}
-            if data.get("actor_type") in actor_types and data.get("nonce"):
-                return wf["id"], data, wf_type
+            if data.get("actor_type") not in actor_types or not data.get("nonce"):
+                continue
+            if await self._expire_stale_checkin(wf, data):
+                continue  # протухший — добили, ищем свежий дальше
+            return wf["id"], data, wf_type
         return None
 
     async def notify_coordinators(self, title: str, lines: list[str]) -> None:

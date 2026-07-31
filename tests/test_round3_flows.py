@@ -249,3 +249,59 @@ async def test_p11_other_intents_ignored(tmp_path, monkeypatch):
         assert not captured, "на другие интенты absence-обработчик не реагирует"
     finally:
         bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+
+# ── P1.2: протухшие check-in workflow'ы ─────────────────────────────
+
+@pytest.mark.asyncio
+async def test_p12_stale_checkin_expired_and_ignored(tmp_path, monkeypatch):
+    """Check-in от занятия 5 часов назад НЕ перехватывает новые сообщения,
+    а сам добивается до completed/expired (с отменой отложенных действий)."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from datetime import datetime, timedelta, timezone
+    from src.db.repository import ScheduledActionRepository, WorkflowRepository
+    from src.workflows.lesson_ops import LessonOpsWorkflow
+
+    repo = WorkflowRepository(db)
+    sched = ScheduledActionRepository(db)
+    start_past = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+    wid = await repo.create("prelesson_parent", "running", {
+        "actor_type": "parent", "actor_telegram_id": "555",
+        "nonce": "abc123", "start_time": start_past, "class_id": "C_STALE",
+    })
+    aid = await sched.create(
+        wid, (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        "parent_prelesson_no_reply", {"workflow_id": wid})
+
+    ops = LessonOpsWorkflow(db)
+    assert await ops.find_active_checkin("555", ("parent",)) is None
+
+    wf = await repo.get(wid)
+    assert wf["state"] == "completed"
+    import json as _json
+    assert _json.loads(wf["data"]).get("response_status") == "expired"
+    act = await sched._fetchone("SELECT * FROM scheduled_actions WHERE id=?", (aid,))
+    assert act["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_p12_fresh_checkin_still_found(tmp_path, monkeypatch):
+    """Свежий check-in (занятие через час) по-прежнему находится."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from datetime import datetime, timedelta, timezone
+    from src.db.repository import WorkflowRepository
+    from src.workflows.lesson_ops import LessonOpsWorkflow
+
+    repo = WorkflowRepository(db)
+    start_future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    wid = await repo.create("prelesson_parent", "running", {
+        "actor_type": "parent", "actor_telegram_id": "555",
+        "nonce": "abc123", "start_time": start_future, "class_id": "C_FRESH",
+    })
+    ops = LessonOpsWorkflow(db)
+    found = await ops.find_active_checkin("555", ("parent",))
+    assert found is not None
+    assert found[0] == wid
+    # И не должен помечаться expired
+    wf = await repo.get(wid)
+    assert wf["state"] == "running"
