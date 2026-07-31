@@ -241,19 +241,6 @@ class LessonOpsWorkflow:
             )
         elif actor_type == "tutor_start":
             if action == "class_started":
-                # Уведомляем родителя что урок начался
-                parent_tg = data.get("parent_telegram_id")
-                if parent_tg:
-                    class_label = _format_class_label(class_id, data.get('start_time'))
-                    await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
-                        "telegram_id": parent_tg,
-                        "message": (
-                            f"🔔 Урок начался!\n"
-                            f"📚 {class_label}\n"
-                            f"🧑‍🏫 Репетитор: {tutor_name}\n"
-                            f"👤 Ученик: {student_name}"
-                        ),
-                    }))
                 await self.notify_coordinators(
                     "👍 Урок начался",
                     [
