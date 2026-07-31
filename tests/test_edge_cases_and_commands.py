@@ -227,6 +227,8 @@ async def test_cmd_seed10_creates_students_and_tutors(tmp_path, monkeypatch):
 
 
 # ── P2.6: cmd_demo_reset ─────────────────────────────────────────────
+# Round 4 / U3: команда больше НЕ сбрасывает мгновенно — показывает превью с
+# подтверждением. Фактический сброс — по кнопке demo_reset:confirm.
 
 @pytest.mark.asyncio
 async def test_cmd_demo_reset_clears_state(tmp_path, monkeypatch):
@@ -241,13 +243,19 @@ async def test_cmd_demo_reset_clears_state(tmp_path, monkeypatch):
     incs = await IncidentRepository("albion.db")._fetchall("SELECT * FROM incidents")
     assert len(incs) == 1
 
+    # Шаг 1: команда показывает превью с кнопками и НИЧЕГО не удаляет.
     from src.bot.pilot import cmd_demo_reset
     upd = FakeUpdate(FakeUser(100, "admin"))
     await cmd_demo_reset(upd, FakeContext([]))
+    assert any("Сбросить демо-данные" in r for r in upd.message.replies)
+    incs = await IncidentRepository("albion.db")._fetchall("SELECT * FROM incidents")
+    assert len(incs) == 1, "превью не должно ничего удалять"
 
+    # Шаг 2: фактический сброс — по подтверждению.
+    from src.bot.pilot import perform_demo_reset
+    await perform_demo_reset()
     incs = await IncidentRepository("albion.db")._fetchall("SELECT * FROM incidents")
     assert len(incs) == 0
-    assert any("Демо-сброс" in r for r in upd.message.replies)
 
 
 # ── P2.7: cmd_incidents ──────────────────────────────────────────────

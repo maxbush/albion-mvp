@@ -18,15 +18,32 @@ from src.events.types import Event, EventTypes
 
 logger = logging.getLogger(__name__)
 
+# Чек-ин теряет смысл, когда занятие давно прошло: протухший workflow не должен
+# перехватывать обычные сообщения пользователя (см. find_active_checkin).
+CHECKIN_EXPIRY_AFTER_START_H = 3
+CHECKIN_EXPIRY_NO_START_H = 24  # запасной TTL, если в данных нет start_time
+
 
 def _parse_dt(v: str) -> datetime:
-    return datetime.fromisoformat(v.replace("Z", "+00:00"))
+    """Парсит RFC3339. Наивное время (без зоны) трактуем в зоне ОРГАНИЗАЦИИ
+    (settings.albion_org_timezone, канон расписания — решение владельца H4),
+    НЕ как UTC: иначе напоминания уезжают на час летом (BST = UTC+1)."""
+    dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        logger.debug("Naive datetime %r assumed %s (org canonical TZ)",
+                     v, settings.albion_org_timezone)
+        dt = dt.replace(tzinfo=settings.org_zone())
+    return dt
 
 
 def _schedule_at(target: datetime, fallback_seconds: int = 5) -> str:
+    """Возвращает ВСЕГДА aware UTC ISO-строку для SQLite scheduler.
+
+    Наивное время трактуем в зоне организации (канон расписания), тот же
+    принцип, что в _parse_dt."""
     now = datetime.now(timezone.utc)
     if target.tzinfo is None:
-        target = target.replace(tzinfo=timezone.utc)
+        target = target.replace(tzinfo=settings.org_zone())
     if target <= now:
         return (now + timedelta(seconds=fallback_seconds)).isoformat()
     return target.astimezone(timezone.utc).isoformat()
@@ -47,26 +64,33 @@ def _format_class_label(class_id: str, start_time: str | None = None) -> str:
 def _format_dual_time(start_time: str, user_tz: str | None = None) -> str:
     """Форматирует время в dual-timezone формате.
 
-    ALBION хранит/создаёт занятия в Europe/London.
+    Опорная зона — зона организации (settings.albion_org_timezone).
     Показываем: '15:00 (London)' или '15:00 (London) / 20:00 (ваше время, Asia/Almaty)'.
     """
     try:
         from zoneinfo import ZoneInfo
+        org_tz_name = settings.albion_org_timezone
+        org_label = org_tz_name.split("/")[-1]  # Europe/London → 'London'
         dt = _parse_dt(start_time)
-        london_tz = ZoneInfo("Europe/London")
+        london_tz = ZoneInfo(org_tz_name)
         london_time = dt.astimezone(london_tz)
-        result = london_time.strftime("%H:%M") + " (London)"
+        result = london_time.strftime("%H:%M") + f" ({org_label})"
 
-        if user_tz and user_tz != "Europe/London":
+        if user_tz and user_tz != org_tz_name:
             try:
                 user_zone = ZoneInfo(user_tz)
                 user_time = dt.astimezone(user_zone)
                 result += f" / {user_time.strftime('%H:%M')} (ваше время, {user_tz})"
-                # Добавляем "через N часов" если есть разница
-                diff_hours = int((user_time - london_time).total_seconds() / 3600)
-                if abs(diff_hours) > 0:
+                # Разница в ЧАСОВЫХ ПОЯСАХ (не в инстантах!): вычитание aware-datetime
+                # одного и того же момента даёт 0. Сравниваем utcoffset().
+                london_off = london_time.utcoffset() or timedelta(0)
+                user_off = user_time.utcoffset() or timedelta(0)
+                diff_hours = (user_off - london_off).total_seconds() / 3600
+                if diff_hours != 0:
                     sign = "+" if diff_hours > 0 else ""
-                    result += f" [{sign}{diff_hours}ч к London]"
+                    # Целые часы показываем как int, дробные (5:45 и т.п.) — с 1 знаком
+                    shown = int(diff_hours) if diff_hours == int(diff_hours) else round(diff_hours, 1)
+                    result += f" [{sign}{shown}ч к {org_label}]"
             except Exception:
                 pass
         return result
@@ -109,8 +133,9 @@ class LessonOpsWorkflow:
                 "student_client_user_id": student.get("client_user_id"),
                 "tutor_name": tutor_name,
                 "start_time": start_time,
-                # Timezone ученика — для dual-time display в напоминаниях
-                "actor_timezone": student.get("timezone") or "Europe/London",
+                # Timezone ученика — только для dual-time display в напоминаниях
+                # (на создание класса не влияет — канон = зона организации, H4/P4.1).
+                "actor_timezone": student.get("timezone") or settings.albion_org_timezone,
             }
             wid = await self.repo.create("prelesson_parent", "running", data)
             await self.scheduler.create(wid, _schedule_at(reminder_dt), "parent_prelesson_reminder", {"workflow_id": wid})
@@ -119,7 +144,7 @@ class LessonOpsWorkflow:
         # Tutor-side prelesson reminder.
         if tutor_telegram_id:
             student_names = [s.get("name") or s.get("student_name") or s.get("client_user_id") or "Ученик" for s in student_rows]
-            tutor_tz = tutor_timezone or "Europe/London"
+            tutor_tz = tutor_timezone or settings.albion_org_timezone
             tutor_data = {
                 "class_id": class_id,
                 "actor_type": "tutor",
@@ -148,7 +173,21 @@ class LessonOpsWorkflow:
             }
             start_wid = await self.repo.create("tutor_start_check", "running", start_data)
             await self.scheduler.create(start_wid, _schedule_at(start_dt, 60), "tutor_start_check", {"workflow_id": start_wid})
-            await self.scheduler.create(start_wid, _schedule_at(live_check_dt, 90), "class_live_check", {"workflow_id": start_wid})
+
+            # Live-check — на ОТДЕЛЬНОМ workflow. Иначе ответ репетитора на
+            # start-check (_cancel_future_actions) отменял и live-check, и ветка
+            # «урок не перешёл в live после подтверждённого старта» была недостижима.
+            live_data = {
+                "class_id": class_id,
+                "actor_type": "coordinator_check",
+                "tutor_name": tutor_name,
+                "student_names": student_names,
+                "start_time": start_time,
+                "actor_timezone": tutor_tz,
+                "tutor_start_wid": start_wid,
+            }
+            live_wid = await self.repo.create("class_live_check", "running", live_data)
+            await self.scheduler.create(live_wid, _schedule_at(live_check_dt, 90), "class_live_check", {"workflow_id": live_wid})
 
     async def _load_workflow(self, wid: int) -> tuple[dict | None, dict]:
         wf = await self.repo.get(wid)
@@ -166,6 +205,32 @@ class LessonOpsWorkflow:
     async def _cancel_future_actions(self, wid: int) -> None:
         await self.scheduler.cancel_by_workflow(wid)
 
+    async def _expire_stale_checkin(self, wf: dict, data: dict) -> bool:
+        """Протухший чек-ин (занятие давно прошло) — auto-complete и пропуск.
+
+        Без этого workflow зависал в 'running' навсегда (например, пользователь
+        не был зарегистрирован в момент напоминания), а следующее обычное
+        сообщение от него молча «закрывало» чек-ин недельной давности."""
+        now = datetime.now(timezone.utc)
+        start_raw = data.get("start_time")
+        try:
+            if start_raw:
+                expiry = _parse_dt(start_raw) + timedelta(hours=CHECKIN_EXPIRY_AFTER_START_H)
+            else:
+                created = datetime.fromisoformat(str(wf.get("created_at") or ""))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                expiry = created + timedelta(hours=CHECKIN_EXPIRY_NO_START_H)
+        except Exception:
+            return False  # дата не распарсилась — не рискуем, оставляем как есть
+        if now <= expiry:
+            return False  # ещё живой
+        data["response_status"] = "expired"
+        await self._cancel_future_actions(wf["id"])
+        await self._save_workflow(wf["id"], "completed", data)
+        logger.info("Check-in workflow #%d expired (start=%s)", wf["id"], start_raw)
+        return True
+
     async def find_active_checkin(self, actor_tg: str, actor_types: tuple[str, ...]) -> tuple[int, dict, str] | None:
         for wf_type in ("tutor_start_check", "prelesson_parent", "prelesson_tutor"):
             wf = await self.repo._fetchone(
@@ -178,8 +243,11 @@ class LessonOpsWorkflow:
                 data = json.loads(wf.get("data") or "{}")
             except Exception:
                 data = {}
-            if data.get("actor_type") in actor_types and data.get("nonce"):
-                return wf["id"], data, wf_type
+            if data.get("actor_type") not in actor_types or not data.get("nonce"):
+                continue
+            if await self._expire_stale_checkin(wf, data):
+                continue  # протухший — добили, ищем свежий дальше
+            return wf["id"], data, wf_type
         return None
 
     async def notify_coordinators(self, title: str, lines: list[str]) -> None:

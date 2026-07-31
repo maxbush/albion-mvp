@@ -24,7 +24,7 @@ from src.integrations.airtable_mock import MockAirtableService
 from src.workflows.engine import engine
 from src.workflows.absence import AbsenceWorkflow
 from src.workflows.lesson_ops import LessonOpsWorkflow
-from src.bot.roles import register_role_handlers, get_coordinator_ids, is_admin
+from src.bot.roles import register_role_handlers, get_coordinator_ids, is_admin, apply_command_menu
 from src.bot.pilot import register_pilot_handlers
 
 logger = logging.getLogger(__name__)
@@ -33,9 +33,6 @@ _kill_switch_level = 2
 
 # Храним ID сообщения "Ждём ответ..." для демо-сценария (chat_id -> message_id)
 _demo_waiting_messages: dict[int, int] = {}
-
-# Флаг: был ли уже обработан демо-сценарий (чтобы не закрывать дважды)
-_demo_resolved: set[int] = set()
 
 
 async def can_send_async(telegram_id: str) -> bool:
@@ -184,12 +181,61 @@ async def _demo_solo_absence(upd: Update, _ctx) -> None:
     msg = await chat.send_message("⏳ Ждём ответ...")
     _demo_waiting_messages[chat_id] = msg.message_id
 
-    _demo_resolved.discard(chat_id)
-
 
 # =====================================================================
 # COMMAND HANDLERS
 # =====================================================================
+
+def _coordinator_help_text() -> str:
+    """Единый список команд координатора (было два расходящихся списка —
+    в /start и в регистрации по кнопке). Underscore в командах экранируем
+    для Markdown V1, иначе парные '_' ломают отображение."""
+    return (
+        "📋 *Ваши команды:*\n\n"
+        "*Обзор:*\n"
+        "/today — занятия сегодня\n"
+        "/morning — утренняя сводка\n"
+        "/incidents — инциденты и статистика\n"
+        "/status — состояние системы\n\n"
+        "*Управление:*\n"
+        "/pilot\\_absent — тест: сценарий неявки\n"
+        "/demo\\_reset — сброс между прогонами\n"
+        "/cancel\\_lesson <ID> — отмена урока\n"
+        "/ok <ID> — закрыть инцидент\n\n"
+        "*MeritHub:*\n"
+        "/seed10 <parentTG> — создать 10 учеников\n"
+        "/mh\\_schedule <tutor> <start> <min> <students...>\n"
+        "/mh\\_tutor <cuid> <tg> <имя>\n"
+        "/mh\\_students — список учеников\n"
+        "/mh\\_events — последние webhook'и"
+    )
+
+
+def _role_expectations(role: str) -> str:
+    """Честные ожидания по роли — только то, что бот реально умеет (UX U4).
+
+    Никаких обещаний AI-магии и несуществующих механик: для родителя/репетитора
+    бот в первую очередь реактивный (напоминания и вопросы придут сами)."""
+    if role == "coordinator":
+        return (
+            "Я присылаю эскалации и алерты — обычно реакция занимает одну кнопку.\n"
+            "Все инструменты — по кнопке «Команды» ниже или в меню «/»."
+        )
+    if role == "tutor":
+        return (
+            "Как это работает:\n"
+            "• перед уроком напомню и попрошу подтвердить готовность;\n"
+            "• в начале урока попрошу отметить старт.\n\n"
+            "Отменить урок: /cancel_lesson"
+        )
+    # parent (и дефолт)
+    return (
+        "Дальше ничего настраивать не нужно:\n"
+        "• перед занятием напомню и уточню статус;\n"
+        "• если ученик не придёт — спрошу у вас.\n\n"
+        "Отменить занятие: /cancel_lesson"
+    )
+
 
 async def cmd_start(upd: Update, _ctx) -> None:
     user = upd.effective_user
@@ -201,28 +247,21 @@ async def cmd_start(upd: Update, _ctx) -> None:
         role = existing["role"]
         emoji = {"parent": "👨‍👩‍👦", "tutor": "🧑‍🏫", "coordinator": "👨‍💼", "student": "🎓"}.get(role, "")
         admin_mark = " ★" if is_admin(tg_id) else ""
+        # Меню «/» под роль (UX U1): идемпотентно, обновляем при каждом /start.
+        await apply_command_menu(getattr(_ctx, "bot", None), tg_id, role)
+        # Одно сообщение вместо двух (UX U4): помощь открывается по кнопке,
+        # а не дублируется в чат при каждом /start.
+        buttons = [InlineKeyboardButton("🔄 Сменить роль", callback_data="change_role")]
+        if role == "coordinator":
+            buttons.insert(0, InlineKeyboardButton("📋 Команды", callback_data="help_commands"))
         await upd.message.reply_text(
             f"👋 С возвращением, {user.full_name or '—'}!\n\n"
             f"Ваша роль: {emoji} {role}{admin_mark}\n"
             f"TG ID: `{tg_id}`\n\n"
-            f"Хотите сменить роль? Нажмите кнопку ниже.",
+            f"{_role_expectations(role)}",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔄 Сменить роль", callback_data="change_role"),
-            ]]),
+            reply_markup=InlineKeyboardMarkup([buttons]),
         )
-        if role == "coordinator":
-            await upd.message.reply_text(
-                "📋 *Ваши команды:*\n\n"
-                "/today — занятия сегодня\n"
-                "/morning — утренняя сводка\n"
-                "/incidents — инциденты\n"
-                "/demo\\_reset — сброс\n"
-                "/seed10 — создать учеников\n"
-                "/mh\\_schedule — создать занятие\n"
-                "/mh\\_students — список учеников",
-                parse_mode="Markdown",
-            )
         return
 
     # Новый пользователь — показываем выбор роли
@@ -308,7 +347,19 @@ async def cmd_kill_switch(upd: Update, _ctx) -> None:
         await upd.message.reply_text("⛔ Только владелец/админ может менять kill switch.")
         return
     if not _ctx.args:
-        await upd.message.reply_text("/kill_switch 0|1|2")
+        # UX U3: уровни кнопками вместо запоминания 0|1|2 (recognition, не recall).
+        labels = {0: "ВСЁ ВЫКЛ", 1: "Только координаторам", 2: "Полностью"}
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔴 Всё выкл", callback_data="killswitch:0"),
+        ], [
+            InlineKeyboardButton("🟡 Только координаторам", callback_data="killswitch:1"),
+        ], [
+            InlineKeyboardButton("🟢 Полностью", callback_data="killswitch:2"),
+        ]])
+        await upd.message.reply_text(
+            f"🔌 Kill Switch. Сейчас: *{labels.get(_kill_switch_level, '?')}*",
+            parse_mode="Markdown", reply_markup=kb,
+        )
         return
     try:
         lvl = int(_ctx.args[0])
@@ -322,6 +373,44 @@ async def cmd_kill_switch(upd: Update, _ctx) -> None:
     await upd.message.reply_text(f"🔌 Kill Switch: {labels[lvl]}")
     logger.info("Kill switch set to %d", lvl)
     await bus.publish(Event(EventTypes.SYSTEM_KILL_SWITCH, {"level": lvl}))
+
+
+async def cmd_cancel_lesson(upd: Update, _ctx) -> None:
+    """Отмена урока: /cancel_lesson <ID урока> [причина...]
+
+    Команда, на которую ссылается подсказка бота при интенте «отмена»
+    (cancellation.handle_classified). Раньше отсылала в никуда — команды не было.
+    """
+    if not _ctx.args:
+        await upd.message.reply_text("Используйте: /cancel_lesson <ID урока> [причина...]")
+        return
+    lid = _ctx.args[0]
+    reason = " ".join(_ctx.args[1:]) or "не указана"
+    await _ensure_user(upd, "parent")
+
+    # Проверяем, что урок существует, ДО публикации события: иначе пользователь
+    # получал противоречивую пару «🔄 передана» + «❌ не найден» (баг сухого
+    # прогона). Workflow-фидбэк о «не найден» остаётся как защита от гонки —
+    # на случай, если урок исчезнет между этой проверкой и обработкой события.
+    from src.workflows.cancellation import CancellationWorkflow
+    cwf = CancellationWorkflow()
+    lesson = await cwf.merithub.get_lesson(lid) or await cwf.airtable.get_lesson(lid)
+    if not lesson:
+        await upd.message.reply_text(
+            f"❌ Урок {lid} не найден в расписании. "
+            "Проверьте ID (/today) или напишите координатору."
+        )
+        return
+
+    await bus.publish(Event(EventTypes.LESSON_CANCELLED, {
+        "lesson_id": lid,
+        "reason": reason,
+        "reported_by": str(upd.effective_user.id),
+    }))
+    await upd.message.reply_text(
+        f"🔄 Отмена урока `{lid}` передана репетитору и координаторам.",
+        parse_mode="Markdown",
+    )
 
 
 async def cmd_ok(upd: Update, _ctx) -> None:
@@ -370,36 +459,25 @@ async def handle_callback(upd: Update, _ctx) -> None:
             await repo.update_role(existing["id"], role)
         else:
             await repo.create(str(user.id), role, user.full_name or str(user.id), username=user.username)
+        # Меню «/» под выбранную роль (UX U1).
+        await apply_command_menu(getattr(_ctx, "bot", None), user.id, role)
         emoji = {"parent": "👨‍👩‍👦", "tutor": "🧑‍🏫", "coordinator": "👨‍💼"}.get(role, "")
         admin_mark = " ★" if is_admin(str(user.id)) else ""
+        # Честные ожидания по роли (UX U4) — вместо «напишите что-нибудь» в пустоту.
+        markup = None
+        if role == "coordinator":
+            markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📋 Команды", callback_data="help_commands"),
+                InlineKeyboardButton("🔄 Сменить роль", callback_data="change_role"),
+            ]])
         await query.edit_message_text(
-            f"✅ Отлично! Вы зарегистрированы как {emoji} *{role}*{admin_mark}.\n\n"
-            f"TG ID: `{user.id}`\n"
-            f"Имя: {user.full_name or '—'}\n\n"
-            f"Напишите что-нибудь — я разберусь!",
+            f"✅ Вы зарегистрированы как {emoji} *{role}*{admin_mark}.\n\n"
+            f"{_role_expectations(role)}\n\n"
+            f"TG ID: `{user.id}` · Имя: {user.full_name or '—'}",
             parse_mode="Markdown",
+            reply_markup=markup,
         )
         logger.info("User %s registered as %s", user.id, role)
-        if role == "coordinator":
-            await upd.effective_chat.send_message(
-                "📋 *Ваши команды:*\n\n"
-                "*Обзор:*\n"
-                "/today — занятия сегодня\n"
-                "/morning — утренняя сводка\n"
-                "/incidents — инциденты и статистика\n"
-                "/status — состояние системы\n\n"
-                "*Управление:*\n"
-                "/pilot_absent — тест: сценарий неявки\n"
-                "/demo_reset — сброс между прогонами\n"
-                "/ok <ID> — закрыть инцидент\n\n"
-                "*MeritHub:*\n"
-                "/seed10 <parentTG> — создать 10 учеников\n"
-                "/mh_schedule <tutor> <start> <min> <students...>\n"
-                "/mh_tutor <cuid> <tg> <имя>\n"
-                "/mh_students — список учеников\n"
-                "/mh_events — последние webhook'и",
-                parse_mode="Markdown",
-            )
         return
 
     if data == "change_role":
@@ -415,9 +493,76 @@ async def handle_callback(upd: Update, _ctx) -> None:
         await query.edit_message_text("Выберите новую роль:", reply_markup=kb)
         return
 
+    # --- Помощь «📋 Команды» по требованию (UX U4) ---
+    if data in ("help_commands", "help_back"):
+        user_rec = await UserRepository().get_by_telegram_id(str(query.from_user.id))
+        role = (user_rec or {}).get("role", "parent")
+        back_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("« Назад", callback_data="help_back"),
+        ]])
+        if data == "help_commands":
+            if role == "coordinator":
+                await query.edit_message_text(
+                    _coordinator_help_text(), parse_mode="Markdown", reply_markup=back_kb)
+            else:
+                await query.edit_message_text(
+                    f"Ваши возможности:\n\n{_role_expectations(role)}\n\n"
+                    "Команды также доступны в меню «/» слева от поля ввода.",
+                    reply_markup=back_kb,
+                )
+            return
+        # help_back — возвращаем приветствие
+        user = query.from_user
+        emoji = {"parent": "👨‍👩‍👦", "tutor": "🧑‍🏫", "coordinator": "👨‍💼", "student": "🎓"}.get(role, "")
+        admin_mark = " ★" if is_admin(user.id) else ""
+        buttons = [InlineKeyboardButton("🔄 Сменить роль", callback_data="change_role")]
+        if role == "coordinator":
+            buttons.insert(0, InlineKeyboardButton("📋 Команды", callback_data="help_commands"))
+        await query.edit_message_text(
+            f"👋 С возвращением, {user.full_name or '—'}!\n\n"
+            f"Ваша роль: {emoji} {role}{admin_mark}\n"
+            f"TG ID: `{user.id}`\n\n"
+            f"{_role_expectations(role)}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([buttons]),
+        )
+        return
+
+    # --- Подтверждение опасных действий (UX U3) ---
+    if data in ("demo_reset:confirm", "demo_reset:cancel"):
+        if not is_admin(query.from_user.id):
+            await query.answer("⛔ Только владелец/админ", show_alert=True)
+            return
+        if data.endswith(":cancel"):
+            await query.edit_message_text("✖️ Сброс отменён — данные на месте.")
+            return
+        from src.bot.pilot import perform_demo_reset, format_demo_reset_result
+        counts = await perform_demo_reset()
+        await query.edit_message_text(format_demo_reset_result(counts))
+        return
+
+    if data.startswith("killswitch:"):
+        if not is_admin(query.from_user.id):
+            await query.answer("⛔ Только владелец/админ", show_alert=True)
+            return
+        try:
+            lvl = int(data.split(":", 1)[1])
+            if lvl not in (0, 1, 2):
+                raise ValueError
+        except ValueError:
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
+            return
+        set_kill_switch_level(lvl)
+        labels = {0: "🔴 ВСЁ ВЫКЛ", 1: "🟡 Только координаторам", 2: "🟢 Полностью"}
+        await query.edit_message_text(f"🔌 Kill Switch: {labels[lvl]}")
+        logger.info("Kill switch set to %d via button by %s", lvl, query.from_user.id)
+        await bus.publish(Event(EventTypes.SYSTEM_KILL_SWITCH, {"level": lvl}))
+        return
+
     # --- Выбор роли в демо-режиме ---
     if data == "role_coordinator":
         await _ensure_role(upd, "coordinator")
+        await apply_command_menu(getattr(_ctx, "bot", None), upd.effective_user.id, "coordinator")
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("🚨 Ученик отсутствует", callback_data="demo_absent"),
             InlineKeyboardButton("📊 Отчёт о сессии", callback_data="demo_report"),
@@ -432,6 +577,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
 
     if data == "role_parent":
         await _ensure_role(upd, "parent")
+        await apply_command_menu(getattr(_ctx, "bot", None), upd.effective_user.id, "parent")
         await query.edit_message_text(
             "👨‍👩‍👦 *Вы в роли родителя.*\n\n"
             "В демо-режиме родительские уведомления симулируются.\n"
@@ -455,13 +601,13 @@ async def handle_callback(upd: Update, _ctx) -> None:
     if data.startswith("demo_resolve:"):
         parts = data.split(":")
         if len(parts) < 4:
-            await query.edit_message_text("Ошибка: некорректные данные.")
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз или напишите текстом.")
             return
         try:
             inc_id = int(parts[1])
             wid = int(parts[2])
         except (IndexError, ValueError):
-            await query.edit_message_text("Ошибка: некорректные данные.")
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз или напишите текстом.")
             return
         action = parts[3]
         demo_labels = {
@@ -495,7 +641,65 @@ async def handle_callback(upd: Update, _ctx) -> None:
         await upd.effective_chat.send_message("📚 Уведомляю преподавателя и координатора...")
         await asyncio.sleep(1.0)
         await upd.effective_chat.send_message(f"✅ Ситуация закрыта. Ответ родителя: {parent_answer}.")
-        _demo_resolved.add(chat_id)
+        return
+
+    # --- Отмена занятия кнопкой со списка (UX U6) ---
+    if data.startswith("cancel_class:"):
+        class_id = data.split(":", 1)[1]
+        if not class_id:
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
+            return
+        await _ensure_user(upd, "parent")
+        await bus.publish(Event(EventTypes.LESSON_CANCELLED, {
+            "lesson_id": class_id,
+            "reason": "не указана (отмена кнопкой)",
+            "reported_by": str(query.from_user.id),
+        }))
+        from src.db.repository import MeritHubClassRepository
+        from src.workflows.lesson_ops import _format_class_label
+        cls = await MeritHubClassRepository().get(class_id)
+        label = _format_class_label(class_id, (cls or {}).get("start_time"))
+        await query.edit_message_text(
+            f"🔄 Отмена {label} передана репетитору и координаторам.")
+        logger.info("Cancel via button: class=%s by=%s", class_id, query.from_user.id)
+        return
+
+    # --- Координатор закрывает ситуацию прямо с эскалации (UX U2) ---
+    if data.startswith("coord_resolve:"):
+        parts = data.split(":")
+        try:
+            inc_id = int(parts[1])
+        except (IndexError, ValueError):
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз или напишите текстом.")
+            return
+        # Guard: закрывать может только координатор (callback_data виден всем,
+        # кто перешлёт сообщение — проверяем роль из БД, а не доверяем кнопке).
+        user_rec = await UserRepository().get_by_telegram_id(str(query.from_user.id))
+        if not user_rec or user_rec.get("role") != "coordinator":
+            await query.answer("⛔ Закрывать ситуации может только координатор", show_alert=True)
+            return
+        inc_repo = IncidentRepository()
+        inc = await inc_repo.get(inc_id)
+        if not inc:
+            await query.answer("Ситуация не найдена", show_alert=True)
+            return
+        if inc["status"] == "resolved":
+            await query.answer("ℹ️ Уже закрыта", show_alert=False)
+            try:
+                await query.edit_message_reply_markup(None)
+            except Exception:
+                pass
+            return
+        wf = AbsenceWorkflow()
+        await wf.resolve_absence(inc_id, str(query.from_user.id), resolution="coordinator_closed")
+        # Редактируем исходное сообщение, сохраняя контекст + отметку кто закрыл.
+        base_text = getattr(getattr(query, "message", None), "text", "") or ""
+        suffix = f"\n\n✅ Закрыто ({query.from_user.full_name or query.from_user.id})"
+        try:
+            await query.edit_message_text((base_text + suffix)[:4000])
+        except Exception:
+            await query.answer("✅ Закрыто", show_alert=False)
+        logger.info("Incident %d closed by coordinator %s via escalation button", inc_id, query.from_user.id)
         return
 
     # --- Реальный resolve (из уведомления) ---
@@ -505,7 +709,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
             inc_id = int(parts[1])
             nonce = parts[2]
         except (IndexError, ValueError):
-            await query.edit_message_text("Ошибка: некорректные данные.")
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз или напишите текстом.")
             return
         action = parts[3] if len(parts) > 3 else "ok"
 
@@ -578,7 +782,10 @@ async def handle_callback(upd: Update, _ctx) -> None:
                 other_key = f"tg_callback:resolve:{inc_id}:{nonce}:{other_action}"
                 await idem.save(other_key, "telegram_callback_blocked", response="blocked_by_resolve")
 
-        await query.edit_message_text(f"{parent_ack}\nСитуация #{inc_id} закрыта в {datetime.now():%H:%M}.")
+        # UX U5: имя ученика вместо голого номера + без серверного времени
+        # (родителю важно ЧТО он подтвердил, а не id инцидента и чужой часовой пояс).
+        student_label = wf_data.get("student_name") or "Ученик"
+        await query.edit_message_text(f"{parent_ack}\nОтметили: {student_label} · ситуация #{inc_id} закрыта.")
         logger.info("Incident %d resolved via button action=%s (was_escalated=%s)", inc_id, action, was_escalated)
         return
 
@@ -589,7 +796,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
             nonce = parts[2]
             action = parts[3]
         except (IndexError, ValueError):
-            await query.edit_message_text("Ошибка: некорректные данные.")
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз или напишите текстом.")
             return
         idem_key = f"tg_callback:{data}"
         idem = IdempotencyRepository()
@@ -625,7 +832,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
         await query.edit_message_text(ack_map.get(action, "✅ Ответ принят."))
         return
 
-    await query.edit_message_text("Неизвестная команда.")
+    await query.edit_message_text("Не понял действие — попробуйте ещё раз или напишите текстом.")
 
 
 # =====================================================================
@@ -681,11 +888,31 @@ async def _show_demo_report(upd: Update, _ctx) -> None:
 # =====================================================================
 
 async def handle_message(upd: Update, _ctx) -> None:
-    user_rec = await _ensure_user(upd, "parent")
     text = upd.message.text or ""
     tg_id = str(upd.effective_user.id)
     if not text.strip():
         return
+
+    # UX U7: незнакомцу — выбор роли, а не тихая регистрация «в родители».
+    # Иначе репетитор, начавший с текста, получал parent-роль, и его ответы
+    # интерпретировались чужой эвристикой (невидимое системное состояние).
+    user_rec = await UserRepository().get_by_telegram_id(tg_id)
+    if not user_rec:
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("👨‍👩‍👦 Я родитель", callback_data="register_parent"),
+                InlineKeyboardButton("🧑‍🏫 Я репетитор", callback_data="register_tutor"),
+            ],
+            [
+                InlineKeyboardButton("👨‍💼 Я координатор", callback_data="register_coordinator"),
+            ],
+        ])
+        await upd.message.reply_text(
+            "👋 Вы здесь впервые! Выберите вашу роль — и повторите сообщение.",
+            reply_markup=kb,
+        )
+        return
+
     logger.info("Msg from %s: %s", upd.effective_user.id, text[:100])
 
     # Parent/tutor pre-lesson check-ins: сначала пытаемся понять, не ответ ли это
@@ -815,6 +1042,7 @@ def setup_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("mock_absent", cmd_mock_absent))
     app.add_handler(CommandHandler("mock_demo", cmd_mock_demo))
     app.add_handler(CommandHandler("kill_switch", cmd_kill_switch))
+    app.add_handler(CommandHandler("cancel_lesson", cmd_cancel_lesson))
     app.add_handler(CommandHandler("ok", cmd_ok))
     register_role_handlers(app)  # /whoami /role /roles — раздача ролей владельцами
     register_pilot_handlers(app)  # /pilot_seed /pilot_absent — прогон сценария на живых аккаунтах
@@ -836,8 +1064,14 @@ def setup_handlers(app: Application) -> None:
             try:
                 reply_markup = None
                 if buttons:
+                    # Кнопка бывает двух видов: callback (действие) и url (ссылка,
+                    # например tg://user?id= «написать родителю»). Ровно одно из двух.
                     reply_markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton(btn["text"], callback_data=btn["callback_data"])] for btn in buttons
+                        [InlineKeyboardButton(
+                            btn["text"],
+                            callback_data=btn.get("callback_data"),
+                            url=btn.get("url"),
+                        )] for btn in buttons
                     ])
                 elif cb_data:
                     reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Всё в порядке", callback_data=cb_data)]])

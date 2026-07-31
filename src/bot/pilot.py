@@ -28,6 +28,20 @@ from src.bot.roles import is_admin, ROLE_EMOJI
 
 logger = logging.getLogger(__name__)
 
+
+def _esc_md(text) -> str:
+    """Экранирует спецсимволы Telegram Markdown V1 в динамических данных
+    (имена, email, phone) перед вставкой в сообщения с parse_mode="Markdown".
+    Без этого имя вида 'Anna_Maria' ломает отправку всего сообщения
+    (BadRequest: can't parse entities)."""
+    if text is None:
+        return ""
+    s = str(text)
+    for ch in ("_", "*", "`", "["):
+        s = s.replace(ch, "\\" + ch)
+    return s
+
+
 PILOT_LESSON_REF = "pilot_lesson_1"
 PILOT_STUDENT_ID = "pilot_student_1"
 NOTIFY_DELAY_SECONDS = 10  # быстрое уведомление для живого демо
@@ -275,13 +289,13 @@ async def cmd_mh_user(upd: Update, ctx) -> None:
         )
         parts = []
         if extra_phone:
-            parts.append(f"📱 {extra_phone}")
+            parts.append(f"📱 {_esc_md(extra_phone)}")
         if extra_email:
-            parts.append(f"📧 {extra_email}")
+            parts.append(f"📧 {_esc_md(extra_email)}")
         contact_note = f"\nКонтакты родителя: {' | '.join(parts)}"
 
     await upd.message.reply_text(
-        f"✅ Ученик привязан: `{cuid}` → родитель `{parent_tg}` ({name}).{api_note}{contact_note}\n"
+        f"✅ Ученик привязан: `{cuid}` → родитель `{parent_tg}` ({_esc_md(name)}).{api_note}{contact_note}\n"
         f"Зачислите в класс: `/mh_enroll <classId> {cuid}`",
         parse_mode="Markdown",
     )
@@ -459,12 +473,12 @@ async def cmd_mh_schedule(upd: Update, ctx) -> None:
     from src.integrations.merithub_client import MeritHubClient
     client = get_merithub_service()
     try:
-        # ALBION always schedules in Europe/London (per client requirement).
-        # Students/tutors see dual-time display in their local timezone.
+        # Канон расписания — зона ОРГАНИЗАЦИИ (решение владельца, H4/P4.1).
+        # Ученики/репетиторы видят dual-time display в своей зоне.
         sched = await client.schedule_class(
             tutor["merithub_user_id"], title=f"Занятие {start}",
             start_time=start, duration=int(duration),
-            timezone="Europe/London")
+            timezone=settings.albion_org_timezone)
         info = MeritHubClient.parse_schedule(sched)
         class_id = info["class_id"]
         if not class_id:
@@ -540,31 +554,31 @@ async def cmd_mh_students(upd: Update, _ctx) -> None:
     contact_repo = MeritHubContactRepository()
     lines = [f"🔗 Ученики MeritHub ({len(rows)}):\n"]
     for r in rows:
-        tz = r.get("timezone") or "—"
-        country = r.get("country") or ""
+        tz = _esc_md(r.get("timezone") or "—")
+        country = _esc_md(r.get("country") or "")
         tz_info = f"🕐 {tz}" + (f" ({country})" if country else "")
         base = (
-            f"• *{r['name']}* `{r['client_user_id'][:12]}...` ({r['role']})\n"
+            f"• *{_esc_md(r['name'])}* `{r['client_user_id'][:12]}...` ({r['role']})\n"
             f"  {tz_info}"
         )
         if r.get("parent_telegram_id"):
             base += f" | parent TG: `{r['parent_telegram_id']}`"
         if r.get("email"):
-            base += f" | 📧 {r['email']}"
+            base += f" | 📧 {_esc_md(r['email'])}"
         # Добавляем контакты родителя если есть
         contact = await contact_repo.get(r["client_user_id"])
         if contact:
             extras = []
             if contact.get("phone"):
-                extras.append(f"📱 {contact['phone']}")
+                extras.append(f"📱 {_esc_md(contact['phone'])}")
             if contact.get("email"):
-                extras.append(f"📧 {contact['email']}")
+                extras.append(f"📧 {_esc_md(contact['email'])}")
             if contact.get("name"):
-                extras.append(f"👤 {contact['name']}")
+                extras.append(f"👤 {_esc_md(contact['name'])}")
             if extras:
                 base += f"\n  Parent: {' | '.join(extras)}"
         lines.append(base)
-    await upd.message.reply_text("\n".join(lines))
+    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 # =====================================================================
@@ -686,39 +700,81 @@ async def cmd_seed10(upd: Update, ctx) -> None:
     lines.append("")
     lines.append("Далее: `/mh_schedule t01 <start> 60 s01 s02 s04`")
 
-    await upd.message.reply_text("\n".join(lines))
+    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-async def cmd_demo_reset(upd: Update, _ctx) -> None:
-    """Сбрасывает инциденты, workflow'ы и scheduled actions для чистого демо-прогона."""
-    if not is_admin(upd.effective_user.id):
-        await upd.message.reply_text("⛔ Только владелец/админ.")
-        return
+_DEMO_RESET_TABLES = [
+    "dead_letter_queue",
+    "scheduled_actions",
+    "notifications",
+    "incidents",
+    "workflow_instances",
+    "merithub_class_status",
+]
 
+
+async def _demo_reset_counts() -> dict:
+    """Считает записи в таблицах демо-сброса (если таблицы нет — 0)."""
     import aiosqlite
-    tables = [
-        "dead_letter_queue",
-        "scheduled_actions",
-        "notifications",
-        "incidents",
-        "workflow_instances",
-        "merithub_class_status",
-    ]
     counts = {}
     async with aiosqlite.connect(settings.database_path) as db:
-        for t in tables:
-            row = await (await db.execute(f"SELECT COUNT(*) FROM {t}")).fetchone()
-            counts[t] = row[0] if row else 0
-            await db.execute(f"DELETE FROM {t}")
-        await db.commit()
+        for t in _DEMO_RESET_TABLES:
+            try:
+                row = await (await db.execute(f"SELECT COUNT(*) FROM {t}")).fetchone()
+                counts[t] = row[0] if row else 0
+            except Exception:
+                counts[t] = 0
+    return counts
 
+
+async def perform_demo_reset() -> dict:
+    """Фактический сброс; возвращает {таблица: сколько было до удаления}."""
+    import aiosqlite
+    counts = await _demo_reset_counts()
+    async with aiosqlite.connect(settings.database_path) as db:
+        for t in _DEMO_RESET_TABLES:
+            try:
+                await db.execute(f"DELETE FROM {t}")
+            except Exception:
+                pass
+        await db.commit()
+    logger.info("Demo reset performed: %s", counts)
+    return counts
+
+
+def format_demo_reset_result(counts: dict) -> str:
     lines = ["🗑 Демо-сброс выполнен:\n"]
     for t, c in counts.items():
         lines.append(f"  {t}: удалено {c} записей")
     lines.append("\nПользователи, ученики MeritHub и зачисления сохранены.")
     lines.append("Готово к чистому прогону: `/pilot_absent` или `/mh_schedule ...`")
+    return "\n".join(lines)
 
-    await upd.message.reply_text("\n".join(lines))
+
+async def cmd_demo_reset(upd: Update, _ctx) -> None:
+    """Сброс демо-данных — только с подтверждением (UX U3: опасное действие).
+
+    Раньше команда мгновенно стирала 6 таблиц — один случайный ввод на живом
+    демо = потеря состояния. Теперь: превью последствий + confirm-кнопки."""
+    if not is_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только владелец/админ.")
+        return
+
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    counts = await _demo_reset_counts()
+    lines = ["🗑 *Сбросить демо-данные?*\n"]
+    nonempty = {t: c for t, c in counts.items() if c}
+    if nonempty:
+        for t, c in nonempty.items():
+            lines.append(f"  {t}: {c} записей")
+    else:
+        lines.append("  (таблицы уже пустые)")
+    lines.append("\nПользователи, ученики MeritHub и зачисления *сохранятся*.")
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Да, сбросить", callback_data="demo_reset:confirm"),
+        InlineKeyboardButton("✖️ Отмена", callback_data="demo_reset:cancel"),
+    ]])
+    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=kb)
 
 
 async def cmd_incidents(upd: Update, _ctx) -> None:
@@ -817,16 +873,12 @@ async def cmd_today(upd: Update, _ctx) -> None:
 
     lines = ["📅 Обзор системы\n"]
 
-    # Классы — фильтруем сегодня/ближайшие
+    # Классы — фильтруем сегодняшние по локальной дате старта
     today_classes = []
-    future_classes = []
-    now = _dt.now().astimezone()
     for c in classes:
         start_str = c.get("start_time", "")
         if start_str and start_str[:10] == today_str:
             today_classes.append(c)
-        else:
-            future_classes.append(c)
 
     if today_classes:
         lines.append(f"📚 Занятия сегодня ({len(today_classes)}):")
@@ -1028,14 +1080,14 @@ async def cmd_mh_contact(upd: Update, ctx) -> None:
 
     parts = []
     if phone:
-        parts.append(f"📱 {phone}")
+        parts.append(f"📱 {_esc_md(phone)}")
     if email:
-        parts.append(f"📧 {email}")
+        parts.append(f"📧 {_esc_md(email)}")
     if tg:
         parts.append(f"💬 TG `{tg}`")
 
     await upd.message.reply_text(
-        f"✅ Контакт `{cuid}` ({name}) обновлён:\n" + "\n".join(parts),
+        f"✅ Контакт `{cuid}` ({_esc_md(name)}) обновлён:\n" + "\n".join(parts),
         parse_mode="Markdown",
     )
 
@@ -1052,15 +1104,15 @@ async def cmd_mh_contacts(upd: Update, _ctx) -> None:
         return
     lines = ["📇 Контакты:\n"]
     for r in rows:
-        parts = [f"• `{r['client_user_id']}` ({r['name'] or '—'}) [{r['role']}]"]
+        parts = [f"• `{r['client_user_id']}` ({_esc_md(r['name'] or '—')}) [{r['role']}]"]
         if r.get("telegram_id"):
             parts.append(f"TG: `{r['telegram_id']}`")
         if r.get("phone"):
-            parts.append(f"📱 {r['phone']}")
+            parts.append(f"📱 {_esc_md(r['phone'])}")
         if r.get("email"):
-            parts.append(f"📧 {r['email']}")
+            parts.append(f"📧 {_esc_md(r['email'])}")
         lines.append(" | ".join(parts))
-    await upd.message.reply_text("\n".join(lines))
+    await upd.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_import_learners(upd: Update, ctx) -> None:

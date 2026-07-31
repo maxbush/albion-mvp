@@ -193,7 +193,14 @@ class ScheduledActionRepository(Repository):
 
         REAPER: возвращаем зависшие running в pending (защита от падений).
         НЕ увеличиваем attempts — reaper не считается попыткой выполнения.
+        Зомби с исчерпанными попытками (attempts >= 3) добиваем до failed,
+        иначе строка висела бы в running вечно.
         """
+        await self._execute(
+            "UPDATE scheduled_actions "
+            "SET status='failed', last_error='lock expired after max attempts', locked_until=NULL "
+            "WHERE status='running' AND julianday(locked_until) < julianday('now') AND attempts >= 3"
+        )
         await self._execute(
             "UPDATE scheduled_actions "
             "SET status='pending', locked_until=NULL "
@@ -345,8 +352,9 @@ class MeritHubStudentRepository(Repository):
                 "INSERT INTO merithub_students "
                 "(client_user_id, merithub_user_id, name, email, parent_telegram_id, timezone, country, role) "
                 "VALUES (?,?,?,?,?,?,?,?)",
+                # Дефолт зоны для display — зона организации (H4/P4.1), не хардкод.
                 (client_user_id, merithub_user_id, name or client_user_id, email, parent_telegram_id,
-                 timezone or "Europe/London", country, role),
+                 timezone or settings.albion_org_timezone, country, role),
             )
 
     async def get_by_client_id(self, cuid: str) -> dict | None:

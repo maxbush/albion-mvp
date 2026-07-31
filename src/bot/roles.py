@@ -16,7 +16,7 @@
 
 import logging
 
-from telegram import Update
+from telegram import BotCommand, BotCommandScopeChat, Update
 from telegram.ext import Application, CommandHandler
 
 from src.config import settings
@@ -31,6 +31,56 @@ ROLE_EMOJI = {
     "parent": "👨‍👩‍👦",
     "student": "🎓",
 }
+
+# Меню команд «/» по ролям (UX U1): Telegram-нативный канал обнаружения функций.
+# Показываем только то, что роли реально нужно и доступно — меньше шума (Hick's Law).
+ROLE_COMMAND_MENUS: dict[str, list[tuple[str, str]]] = {
+    "parent": [
+        ("start", "Главная"),
+        ("status", "Состояние системы"),
+        ("cancel_lesson", "Отменить занятие"),
+        ("whoami", "Мой профиль"),
+    ],
+    "student": [
+        ("start", "Главная"),
+        ("status", "Состояние системы"),
+        ("whoami", "Мой профиль"),
+    ],
+    "tutor": [
+        ("start", "Главная"),
+        ("status", "Состояние системы"),
+        ("cancel_lesson", "Отменить урок"),
+        ("whoami", "Мой профиль"),
+    ],
+    "coordinator": [
+        ("start", "Главная"),
+        ("today", "Занятия сегодня"),
+        ("morning", "Утренняя сводка"),
+        ("incidents", "Инциденты"),
+        ("cancel_lesson", "Отмена урока"),
+        ("ok", "Закрыть ситуацию"),
+        ("status", "Состояние системы"),
+        ("whoami", "Мой профиль"),
+    ],
+}
+
+
+async def apply_command_menu(bot, chat_id, role: str) -> None:
+    """Выставляет меню «/» конкретному чату под его роль.
+
+    Идемпотентно и fail-safe: ошибка Telegram API не должна ломать основной сценарий
+    (регистрацию, /role и т.п.) — меню просто обновится при следующем вызове."""
+    if bot is None:
+        return
+    try:
+        items = ROLE_COMMAND_MENUS.get(role) or ROLE_COMMAND_MENUS["parent"]
+        await bot.set_my_commands(
+            [BotCommand(cmd, desc) for cmd, desc in items],
+            scope=BotCommandScopeChat(chat_id=int(chat_id)),
+        )
+        logger.info("Command menu applied: chat=%s role=%s (%d items)", chat_id, role, len(items))
+    except Exception as e:
+        logger.warning("set_my_commands failed for chat=%s role=%s: %s", chat_id, role, e)
 
 
 # =====================================================================
@@ -65,11 +115,13 @@ async def notify_all_coordinators(
     *,
     notification_type: str = "ops_alert",
     db_path: str | None = None,
+    buttons: list[dict] | None = None,
 ) -> None:
     """Отправляет уведомление всем координаторам через event bus.
 
     Единый helper для всех workflow'ов, которым нужно уведомить координаторов.
-    Убирает дублирование логики list_by_role → fallback → loop create+publish."""
+    Убирает дублирование логики list_by_role → fallback → loop create+publish.
+    `buttons` — опциональные inline-кнопки (см. формат NOTIFICATION_REQUESTED)."""
     from src.db.repository import NotificationRepository
     from src.events.bus import bus
     from src.events.types import Event, EventTypes
@@ -86,6 +138,7 @@ async def notify_all_coordinators(
             "notification_id": nid,
             "telegram_id": tg,
             "message": message,
+            **({"buttons": buttons} if buttons else {}),
         }))
 
 
@@ -171,6 +224,8 @@ async def cmd_role(upd: Update, ctx) -> None:
     await upd.message.reply_text(
         f"✅ Роль {ROLE_EMOJI.get(role, '')} {role} {verb} для {name} ({target_clean})."
     )
+    # Меню команд обновится у целевого пользователя под новую роль (UX U1).
+    await apply_command_menu(getattr(ctx, "bot", None), target_clean, role)
     logger.info("Role set: %s -> %s by admin %s", target_clean, role, actor.id)
 
 

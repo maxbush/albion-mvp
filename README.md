@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-MVP-yellow" alt="Status">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python">
-  <img src="https://img.shields.io/badge/tests-75/75-green" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-155%2F155-green" alt="Tests">
   <img src="https://img.shields.io/badge/LLM-Claude%20%7C%20GPT%20%7C%20any-orange" alt="LLM">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
@@ -36,6 +36,19 @@ ALBION автоматизирует **повторяющиеся задачи к
 | 📨 **Честные статусы уведомлений** | `requested → delivered / failed` |
 | 🗄 **WAL-mode SQLite** | Нет ошибок `database is locked` при конкурентном доступе |
 | ❌ **Отмена эскалаций** | При закрытии ситуации будущие уведомления отменяются |
+
+**Что нового в v2.4 (Round 4 UX, 2026-07-31):**
+меню «/» по роли · кнопки действий прямо на эскалации (`✅ Закрыть` / `👤 Написать
+родителю`) · подтверждение `/demo_reset` · `/kill_switch` кнопками · честный
+онбординг по ролям · отмена урока кнопками с реальным списком занятий ·
+чистые тексты уведомлений.
+
+**Что было в v2.3 (Round 3, 2026-07-31):**
+🕐 dual-time с **реальной** разницей поясов (`[+4ч к London]`) · 🛰 class-live-check
+работает всегда (отдельный workflow) · 🔄 команда `/cancel_lesson` · 📝 naive-time →
+Europe/London (а не UTC) · 📣 интент `absence_report` доходит до координаторов ·
+🚨 эскалации с полным контекстом (ученик/занятие/TG родителя) · 🧹 reaper добивает
+зомби-задачи scheduler'а.
 
 ---
 
@@ -118,7 +131,8 @@ python -m src.main
 | `/mh_students` | 🔗 Список привязок MeritHub ↔ родитель (владельцы) | — |
 | `/mh_events` | 🛰 Последние вебхуки MeritHub (владельцы) | — |
 | `/status` | Состояние системы (AI, БД, Kill Switch) | — |
-| `/absent ID` | Отметить отсутствие ученика | `/absent lesson_1` |
+| `/absent ID` | Отметить отсутствие ученика (неизвестный урок → честный ответ отправителю) | `/absent lesson_1` |
+| `/cancel_lesson <ID> [причина]` | 🔄 Отмена урока: уведомляет репетитора и координаторов | `/cancel_lesson lesson_1 болезнь` |
 | `/mock_absent` | 🎬 Демо: absent через 10 секунд | — |
 | `/ok ID` | Закрыть инцидент и отменить будущие эскалации (если нет кнопки) | `/ok 1` |
 | `/kill_switch 0\|1\|2` | 🔌 Режим отправки сообщений (только admin/owner) | `/kill_switch 1` |
@@ -195,13 +209,28 @@ albion-mvp/
 │   │   ├── repository.py    # 📦 Repository Pattern
 │   │   └── migrations.py    # 📦 Инициализация
 │   └── scheduler/           # ⏰ SQLite-based scheduler
-├── tests/                   # 🧪 75 тестов
-├── scripts/                 # 🚀 run.sh (Linux) + run.bat (Windows)
+├── tests/                   # 🧪 155 тестов (pytest, без Playwright — интерфейс = Telegram)
+├── scripts/                 # 🚀 run.sh/bat/ps1 + demo_dry_run.py (сухой прогон демо)
 ├── docker-compose.yml       # 🐳 Для прода
 ├── Dockerfile               # 🐳 Для прода
+├── OWNER_GUIDE.md           # 👑 Инструкция для владельцев (основа для презентации/брошюры)
+├── DEMO_RUNBOOK.md          # 🎬 Живое демо клиенту за 15–20 минут
+├── DEMO_TRANSCRIPT.md       # 📖 Авто-расшифровка демо (генерируется сухим прогоном)
+├── ALBION_GUIDE.md          # 📖 Технический гайд (команды, payload'ы, настройки)
+├── PILOT.md                 # 🧪 Гайд по пилоту
 ├── ARCHITECTURE.md          # 📖 Для LLM-разработчиков
+├── MASTER_PLAN.md           # ✅ План доработок и журнал раундов
 └── README.md                # 📖 Этот файл
 ```
+
+## 📚 Документация по аудиториям
+
+| Кто вы | Что читать |
+|--------|-----------|
+| 👑 Владелец / клиент | [OWNER_GUIDE.md](OWNER_GUIDE.md) — как пользоваться системой, без технического жаргона |
+| 🎬 Ведёте демо | [DEMO_RUNBOOK.md](DEMO_RUNBOOK.md) + свежая расшифровка [DEMO_TRANSCRIPT.md](DEMO_TRANSCRIPT.md) (`python scripts/demo_dry_run.py --out DEMO_TRANSCRIPT.md`) |
+| 🧪 Запускаете пилот | [PILOT.md](PILOT.md) |
+| 🛠 Разработчик / LLM | [ARCHITECTURE.md](ARCHITECTURE.md), [ALBION_GUIDE.md](ALBION_GUIDE.md), [MASTER_PLAN.md](MASTER_PLAN.md) |
 
 ## 🐳 Для прода
 

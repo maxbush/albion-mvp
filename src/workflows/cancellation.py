@@ -35,6 +35,17 @@ class CancellationWorkflow:
             return
         lesson = await self.merithub.get_lesson(lid) or await self.airtable.get_lesson(lid)
         if not lesson:
+            # Честный фидбэк отправителю: иначе /cancel_lesson выглядит
+            # «принятой», но молча ничего не делает.
+            reporter = event.data.get("reported_by")
+            if reporter:
+                await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                    "telegram_id": reporter,
+                    "message": (
+                        f"❌ Урок {lid} не найден в расписании. "
+                        "Проверьте ID (/today) или напишите координатору."
+                    ),
+                }))
             return
         reason = event.data.get("reason", "Не указана")
         await self.merithub.cancel_lesson(lid, reason)
@@ -64,9 +75,27 @@ class CancellationWorkflow:
     async def handle_classified(self, event):
         if event.data.get("intent") not in ("cancellation", "reschedule"):
             return
+        tg = event.data.get("telegram_id")
+
+        # UX U6: вместо ручного ввода ID — кнопки с реальными занятиями
+        # (recognition over recall; меньше опечаток). Fallback — текстовая подсказка.
+        from src.db.repository import MeritHubClassRepository
+        classes = await MeritHubClassRepository(self.users.db_path).list_all()
+        buttons = []
+        for c in classes[:5]:  # 5 кнопок — предел комфортного выбора на мобильном
+            from src.workflows.lesson_ops import _format_class_label
+            buttons.append({
+                "text": _format_class_label(c["class_id"], c.get("start_time"))[:40],
+                "callback_data": f"cancel_class:{c['class_id']}",
+            })
+        if buttons:
+            msg = "Какое занятие отменяем?\n\nЕсли его нет в списке — введите вручную: /cancel_lesson <ID>"
+        else:
+            msg = "Укажите ID урока:\n/cancel_lesson <ID>"
         await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
-            "telegram_id": event.data.get("telegram_id"),
-            "message": "Укажите ID урока:\n/cancel_lesson <ID>",
+            "telegram_id": tg,
+            "message": msg,
+            **({"buttons": buttons} if buttons else {}),
         }))
 
 
