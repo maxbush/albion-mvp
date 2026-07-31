@@ -1,7 +1,10 @@
+import logging
 from pathlib import Path
 from urllib.parse import urlparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -64,10 +67,31 @@ class Settings(BaseSettings):
     # В проде выключить: ALBION_DEMO_MODE=false
     albion_demo_mode: bool = False
 
+    # Каноническая зона расписания ОРГАНИЗАЦИИ (решение владельца, H4 / P4.1):
+    # schedule_class создаётся в этой зоне; наивные даты без offset трактуются
+    # в ней же. Зоны учеников/репетиторов — только для dual-time display,
+    # на создание класса они не влияют. Единая точка правды — НЕ хардкодить.
+    albion_org_timezone: str = "Europe/London"
+
     @property
     def merithub_use_real(self) -> bool:
         """True, если заданы MeritHub CLIENT_ID + CLIENT_SECRET (Vendor Agnostic switch)."""
         return bool(self.merithub_client_id and self.merithub_client_secret)
+
+    def org_zone(self):
+        """ZoneInfo канонической зоны организации.
+
+        При невалидном ALBION_ORG_TIMEZONE — fallback на Europe/London с warning
+        (лучше деградировать предсказуемо, чем уронить планирование занятий)."""
+        from zoneinfo import ZoneInfo
+        try:
+            return ZoneInfo(self.albion_org_timezone)
+        except Exception:
+            logger.warning(
+                "Invalid ALBION_ORG_TIMEZONE=%r — falling back to Europe/London",
+                self.albion_org_timezone,
+            )
+            return ZoneInfo("Europe/London")
 
     @property
     def database_path(self) -> str:

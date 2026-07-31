@@ -473,12 +473,12 @@ async def cmd_mh_schedule(upd: Update, ctx) -> None:
     from src.integrations.merithub_client import MeritHubClient
     client = get_merithub_service()
     try:
-        # ALBION always schedules in Europe/London (per client requirement).
-        # Students/tutors see dual-time display in their local timezone.
+        # Канон расписания — зона ОРГАНИЗАЦИИ (решение владельца, H4/P4.1).
+        # Ученики/репетиторы видят dual-time display в своей зоне.
         sched = await client.schedule_class(
             tutor["merithub_user_id"], title=f"Занятие {start}",
             start_time=start, duration=int(duration),
-            timezone="Europe/London")
+            timezone=settings.albion_org_timezone)
         info = MeritHubClient.parse_schedule(sched)
         class_id = info["class_id"]
         if not class_id:

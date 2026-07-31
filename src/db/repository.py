@@ -352,8 +352,9 @@ class MeritHubStudentRepository(Repository):
                 "INSERT INTO merithub_students "
                 "(client_user_id, merithub_user_id, name, email, parent_telegram_id, timezone, country, role) "
                 "VALUES (?,?,?,?,?,?,?,?)",
+                # Дефолт зоны для display — зона организации (H4/P4.1), не хардкод.
                 (client_user_id, merithub_user_id, name or client_user_id, email, parent_telegram_id,
-                 timezone or "Europe/London", country, role),
+                 timezone or settings.albion_org_timezone, country, role),
             )
 
     async def get_by_client_id(self, cuid: str) -> dict | None:

@@ -25,26 +25,25 @@ CHECKIN_EXPIRY_NO_START_H = 24  # запасной TTL, если в данных
 
 
 def _parse_dt(v: str) -> datetime:
-    """Парсит RFC3339. Наивное время (без зоны) трактуем как Europe/London —
-    каноническая зона расписания ALBION (см. /mh_schedule), НЕ как UTC:
-    иначе напоминания уезжают на час летом (BST = UTC+1)."""
+    """Парсит RFC3339. Наивное время (без зоны) трактуем в зоне ОРГАНИЗАЦИИ
+    (settings.albion_org_timezone, канон расписания — решение владельца H4),
+    НЕ как UTC: иначе напоминания уезжают на час летом (BST = UTC+1)."""
     dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
     if dt.tzinfo is None:
-        from zoneinfo import ZoneInfo
-        logger.debug("Naive datetime %r assumed Europe/London (canonical schedule TZ)", v)
-        dt = dt.replace(tzinfo=ZoneInfo("Europe/London"))
+        logger.debug("Naive datetime %r assumed %s (org canonical TZ)",
+                     v, settings.albion_org_timezone)
+        dt = dt.replace(tzinfo=settings.org_zone())
     return dt
 
 
 def _schedule_at(target: datetime, fallback_seconds: int = 5) -> str:
     """Возвращает ВСЕГДА aware UTC ISO-строку для SQLite scheduler.
 
-    Наивное время трактуем как Europe/London (канон расписания), тот же
+    Наивное время трактуем в зоне организации (канон расписания), тот же
     принцип, что в _parse_dt."""
     now = datetime.now(timezone.utc)
     if target.tzinfo is None:
-        from zoneinfo import ZoneInfo
-        target = target.replace(tzinfo=ZoneInfo("Europe/London"))
+        target = target.replace(tzinfo=settings.org_zone())
     if target <= now:
         return (now + timedelta(seconds=fallback_seconds)).isoformat()
     return target.astimezone(timezone.utc).isoformat()
@@ -65,17 +64,19 @@ def _format_class_label(class_id: str, start_time: str | None = None) -> str:
 def _format_dual_time(start_time: str, user_tz: str | None = None) -> str:
     """Форматирует время в dual-timezone формате.
 
-    ALBION хранит/создаёт занятия в Europe/London.
+    Опорная зона — зона организации (settings.albion_org_timezone).
     Показываем: '15:00 (London)' или '15:00 (London) / 20:00 (ваше время, Asia/Almaty)'.
     """
     try:
         from zoneinfo import ZoneInfo
+        org_tz_name = settings.albion_org_timezone
+        org_label = org_tz_name.split("/")[-1]  # Europe/London → 'London'
         dt = _parse_dt(start_time)
-        london_tz = ZoneInfo("Europe/London")
+        london_tz = ZoneInfo(org_tz_name)
         london_time = dt.astimezone(london_tz)
-        result = london_time.strftime("%H:%M") + " (London)"
+        result = london_time.strftime("%H:%M") + f" ({org_label})"
 
-        if user_tz and user_tz != "Europe/London":
+        if user_tz and user_tz != org_tz_name:
             try:
                 user_zone = ZoneInfo(user_tz)
                 user_time = dt.astimezone(user_zone)
@@ -89,7 +90,7 @@ def _format_dual_time(start_time: str, user_tz: str | None = None) -> str:
                     sign = "+" if diff_hours > 0 else ""
                     # Целые часы показываем как int, дробные (5:45 и т.п.) — с 1 знаком
                     shown = int(diff_hours) if diff_hours == int(diff_hours) else round(diff_hours, 1)
-                    result += f" [{sign}{shown}ч к London]"
+                    result += f" [{sign}{shown}ч к {org_label}]"
             except Exception:
                 pass
         return result
@@ -132,8 +133,9 @@ class LessonOpsWorkflow:
                 "student_client_user_id": student.get("client_user_id"),
                 "tutor_name": tutor_name,
                 "start_time": start_time,
-                # Timezone ученика — для dual-time display в напоминаниях
-                "actor_timezone": student.get("timezone") or "Europe/London",
+                # Timezone ученика — только для dual-time display в напоминаниях
+                # (на создание класса не влияет — канон = зона организации, H4/P4.1).
+                "actor_timezone": student.get("timezone") or settings.albion_org_timezone,
             }
             wid = await self.repo.create("prelesson_parent", "running", data)
             await self.scheduler.create(wid, _schedule_at(reminder_dt), "parent_prelesson_reminder", {"workflow_id": wid})
@@ -142,7 +144,7 @@ class LessonOpsWorkflow:
         # Tutor-side prelesson reminder.
         if tutor_telegram_id:
             student_names = [s.get("name") or s.get("student_name") or s.get("client_user_id") or "Ученик" for s in student_rows]
-            tutor_tz = tutor_timezone or "Europe/London"
+            tutor_tz = tutor_timezone or settings.albion_org_timezone
             tutor_data = {
                 "class_id": class_id,
                 "actor_type": "tutor",
