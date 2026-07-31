@@ -8,7 +8,6 @@ logger = logging.getLogger(__name__)
 class MockMeritHubService:
     def __init__(self):
         self._lessons = {}
-        self._balances = {}
         self._classes = {}
         self._users = {}
         self._seed()
@@ -18,8 +17,11 @@ class MockMeritHubService:
             "mh_lesson_1", "student_1", "tutor_1", "mathematics",
             datetime(2026, 7, 4, 15, 0), datetime(2026, 7, 4, 16, 0),
         )
-        self._balances["student_1"] = 150.0
-        self._balances["student_2"] = 20.0
+        # ОТКЛЮЧЕНО (Round 3, решение владельца 2026-07-31): баланс не используется
+        # продуктовым кодом (PAYMENT_* события нигде не публикуются). Оставлено
+        # закомментированным — в дальнейшем здесь будет интеграция с Xero.
+        # self._balances["student_1"] = 150.0
+        # self._balances["student_2"] = 20.0
 
     async def get_lesson(self, lid):
         return self._lessons.get(lid)
@@ -36,11 +38,12 @@ class MockMeritHubService:
             return True
         return False
 
-    async def get_balance(self, sid):
-        return self._balances.get(sid, 0.0)
-
-    async def check_low_balance(self, sid, threshold=60.0):
-        return (await self.get_balance(sid)) < threshold
+    # ОТКЛЮЧЕНО (Round 3): см. пометку в _seed — ждём интеграцию с Xero.
+    # async def get_balance(self, sid):
+    #     return self._balances.get(sid, 0.0)
+    #
+    # async def check_low_balance(self, sid, threshold=60.0):
+    #     return (await self.get_balance(sid)) < threshold
 
     async def add_user(self, **kw):
         cuid = kw.get("client_user_id", "")

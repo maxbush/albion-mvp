@@ -79,13 +79,13 @@
 
 ## 🔵 P2 — Мёртвый код / оптимизация
 
-- [~] **P2.1** `_demo_resolved: set` в `handlers.py` — только `.discard()`/`.add()`,
+- [x] **P2.1** `_demo_resolved: set` в `handlers.py` — только `.discard()`/`.add()`,
   **никогда не читается**. Удалить.
-- [ ] **P2.2** `MockMeritHubService.get_balance / check_low_balance` — не используются
+- [x] **P2.2** `MockMeritHubService.get_balance / check_low_balance` — не используются
   ничем, кроме собственного теста (`PAYMENT_*` события нигде не публикуются).
   **РЕШЕНИЕ ВЛАДЕЛЬЦА: закомментировать (НЕ удалять)** — в дальнейшем будет интеграция
   с Xero. Комментарий ссылается на это решение; тест-assert'ы тоже комментируются.
-- [~] **P2.3** `cmd_today`: `now = _dt.now().astimezone()` — неиспользуемая переменная.
+- [x] **P2.3** `cmd_today`: `now = _dt.now().astimezone()` (+ мёртвый список `future_classes`) — удалены.
 - [ ] **P2.4** Дублирующиеся помощники «Ваши команды» в `cmd_start` и `handle_callback`
   (два разных списка команд, расходятся). Вынести в одну функцию `_coordinator_help()`.
 - [ ] **P2.5** LIKE-поиск по JSON (`%"incident_id": N%`) — хрупко к формату json.dumps.
