@@ -752,3 +752,17 @@ async def test_r7_16_notify_parent_idempotent_on_requeue(tmp_path, monkeypatch):
     import json as _json
     data = _json.loads((await WorkflowRepository(db).get(wid))["data"])
     assert data.get("notify_parent_sent") is True
+
+
+# ── R7-17: .env.example покрывает ВСЕ поля Settings ──────────────────
+
+def test_r7_17_env_example_covers_all_settings():
+    """Документация = запускаемость: каждое поле Settings должно иметь
+    ключ в .env.example, иначе оператор не узнает о ручке настройки."""
+    from pathlib import Path
+    from src.config import Settings
+    example = (Path(__file__).resolve().parent.parent / ".env.example").read_text(
+        encoding="utf-8")
+    missing = [name.upper() for name in Settings.model_fields
+               if f"\n{name.upper()}=" not in f"\n{example}"]
+    assert not missing, f"в .env.example нет ключей: {missing}"
