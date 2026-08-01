@@ -184,6 +184,22 @@ class LeadRepository(Repository):
             row["extracted_data"] = json.loads(row["extracted_data"])
         return row
 
+    async def list_recent(self, limit: int = 10) -> list[dict]:
+        """R7-18: поверхность просмотра для /leads."""
+        rows = await self._fetchall(
+            "SELECT * FROM leads ORDER BY id DESC LIMIT ?", (limit,))
+        for r in rows:
+            if r.get("extracted_data"):
+                try:
+                    r["extracted_data"] = json.loads(r["extracted_data"])
+                except Exception:
+                    pass
+        return rows
+
+    async def count(self) -> int:
+        row = await self._fetchone("SELECT COUNT(*) as cnt FROM leads")
+        return row["cnt"] if row else 0
+
 
 SCHEDULED_LOCK_MINUTES = 5  # сколько минут даём на выполнение action
 

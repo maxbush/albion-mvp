@@ -914,6 +914,43 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
     await upd.message.reply_text("\n".join(lines))
 
 
+async def cmd_leads(upd: Update, _ctx) -> None:
+    """R7-18: лиды — backend писался всегда, поверхности просмотра не было.
+
+    Последние 10 со статусом + общий счётчик; время — в зоне организации,
+    формулировки человеческие (тот же стандарт, что /incidents в R7-3)."""
+    if not is_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только владелец/админ.")
+        return
+
+    from src.db.repository import LeadRepository
+    from src.utils.recurrence import fmt_dt_org, org_zone_label
+
+    repo = LeadRepository()
+    total = await repo.count()
+    recent = await repo.list_recent(10)
+
+    lines = ["🎯 Лиды\n",
+             f"Всего: {total}  |  Ниже — последние {len(recent)} "
+             f"(время — {org_zone_label()}):\n"]
+    if not recent:
+        lines.append("Пока пусто. Лид создаётся автоматически, когда "
+                     "незнакомец пишет боту «хочу занятия» и т.п.")
+    _STATUS_RU = {"new": "новый", "contacted": "в работе",
+                  "converted": "стал учеником", "closed": "закрыт"}
+    for r in recent:
+        ex = r.get("extracted_data") or {}
+        name = ex.get("name") or ex.get("student") or "—"
+        status_ru = _STATUS_RU.get(r.get("status") or "", r.get("status") or "новый")
+        src = r.get("source") or "telegram"
+        when = fmt_dt_org(r.get("created_at"))
+        text = (r.get("raw_message") or "").replace("\n", " ").strip()
+        lines.append(f"• #{r['id']} · {when} · {name} · {status_ru}")
+        if text:
+            lines.append(f"  «{text[:80]}{'…' if len(text) > 80 else ''}» ({src})")
+    await upd.message.reply_text("\n".join(lines))
+
+
 async def cmd_today(upd: Update, _ctx) -> None:
     """Обзор на сегодня: занятия и инциденты.
 
@@ -1326,6 +1363,7 @@ def register_pilot_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("seed10", cmd_seed10))
     app.add_handler(CommandHandler("demo_reset", cmd_demo_reset))
     app.add_handler(CommandHandler("incidents", cmd_incidents))
+    app.add_handler(CommandHandler("leads", cmd_leads))
     app.add_handler(CommandHandler("today", cmd_today))
     app.add_handler(CommandHandler("morning", cmd_morning_digest))
     logger.info("Pilot handlers registered (/pilot_* /mh_* /seed10 /demo_reset /incidents /today /morning)")

@@ -766,3 +766,50 @@ def test_r7_17_env_example_covers_all_settings():
     missing = [name.upper() for name in Settings.model_fields
                if f"\n{name.upper()}=" not in f"\n{example}"]
     assert not missing, f"в .env.example нет ключей: {missing}"
+
+
+# ── R7-18: /leads — поверхность просмотра лидов ──────────────────────
+
+@pytest.mark.asyncio
+async def test_r7_18_cmd_leads_lists_recent_with_status_and_counter(tmp_path, monkeypatch):
+    """Admin: последние 10 со статусом словом + счётчик; не-admin — отказ."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.config import settings
+    from src.db.repository import LeadRepository
+
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    leads = LeadRepository(db)
+    for i in range(12):
+        await leads.create(f"Хочу пробное занятие #{i + 1}",
+                           {"name": f"Ученик {i + 1}"}, source="telegram")
+    await leads._execute("UPDATE leads SET status='contacted' WHERE id=12")
+
+    from src.bot.pilot import cmd_leads
+
+    # не-admin
+    upd = FakeUpdate(FakeUser(777, "stranger"))
+    await cmd_leads(upd, FakeContext([]))
+    assert any("⛔" in t for t, _ in upd.message.replies)
+
+    # admin
+    upd = FakeUpdate(FakeUser(100, "admin"))
+    await cmd_leads(upd, FakeContext([]))
+    text = upd.message.replies[0][0]
+    assert "Лиды" in text and "Всего: 12" in text
+    assert "последние 10" in text                      # лимит отражён в выдаче
+    assert "#12 " in text and "#3 " in text            # свежие сверху, 11+1... ждём 12..3
+    assert "#2 " not in text                           # 11-я с конца не влезла
+    assert "в работе" in text and "новый" in text      # статусы словами
+    assert "🎯" in text
+
+
+@pytest.mark.asyncio
+async def test_r7_18_cmd_leads_empty_hint(tmp_path, monkeypatch):
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.config import settings
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    from src.bot.pilot import cmd_leads
+    upd = FakeUpdate(FakeUser(100, "admin"))
+    await cmd_leads(upd, FakeContext([]))
+    text = upd.message.replies[0][0]
+    assert "Всего: 0" in text and "Пока пусто" in text
