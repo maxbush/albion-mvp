@@ -118,7 +118,11 @@
   План: дополнить словарики EN-словами (ready/all set, sorry, can’t/cannot,
   no-show, connection, wifi). Тесты на «ready» → ready, «can’t make it» → no_show.
 
-- [ ] **R7-10. Паритет mock/real MeritHub: mock-only методы создают ложный интерфейс.**
+- [x] **R7-10. Паритет mock/real MeritHub: mock-only методы создают ложный интерфейс.**
+  ✅ 2026-08-01. Mock приведён к реальному интерфейсу (+контракт-тест);
+  handle_cancelled: источник правды airtable/локальная БД — заодно починена
+  отмена DB-классов (попадала в мёртвую mock-ветку → ложное «не найден»).
+  test_cancellation.py переписан (3 кейса), 194/194.
   `MockMeritHubService.{get_lesson, cancel_lesson, mark_absent}` не существуют у
   `MeritHubClient`; workflows вызывают их через `getattr`-guards
   (`cancellation.py:37-44,53-58`, `absence.py:67-72`) — API притворяется

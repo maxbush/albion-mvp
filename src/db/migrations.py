@@ -25,6 +25,10 @@ MIGRATIONS = [
 ]
 
 
+# Мёртвые таблицы: удалить из существующих БД (идемпотентно, R7-11).
+DEAD_TABLES = ["conversations"]
+
+
 async def init_db(db_path: str = "albion.db") -> None:
     async with aiosqlite.connect(db_path) as db:
         await db.executescript(SCHEMA_SQL)
@@ -38,4 +42,6 @@ async def init_db(db_path: str = "albion.db") -> None:
                         await db.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
             except Exception:
                 pass  # таблица может ещё не существовать при первом запуске
+        for dead in DEAD_TABLES:
+            await db.execute(f"DROP TABLE IF EXISTS {dead}")
         await db.commit()

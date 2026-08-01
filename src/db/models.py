@@ -16,14 +16,8 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS conversations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER REFERENCES users(id),
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    metadata TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+-- Таблица conversations УДАЛЕНА (R7-11): 0 ссылок в коде — история чата не
+-- реализована как фича; существующие БД очищаются DROP'ом в init_db.
 
 CREATE TABLE IF NOT EXISTS workflow_instances (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
