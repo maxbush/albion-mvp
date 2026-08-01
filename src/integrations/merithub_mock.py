@@ -82,6 +82,19 @@ class MockMeritHubService:
         }
 
     @staticmethod
+    def _extract_id(resp: dict, *keys: str) -> str | None:
+        """Зеркалит MeritHubClient._extract_id — нужен для _person_create в wizard.py."""
+        for k in keys:
+            if resp.get(k):
+                return str(resp[k])
+        data = resp.get("data")
+        if isinstance(data, dict):
+            for k in keys:
+                if data.get(k):
+                    return str(data[k])
+        return None
+
+    @staticmethod
     def attended_user_ids(p):
         return {
             str(a["userId"])

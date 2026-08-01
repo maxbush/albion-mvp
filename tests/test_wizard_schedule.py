@@ -94,6 +94,9 @@ class FakeContext:
 @pytest.fixture(autouse=True)
 def _admin(monkeypatch):
     monkeypatch.setattr(settings, "albion_admin_telegram_ids", "999")
+    # Force mock MeritHub for all wizard tests (real API rejects mock user IDs)
+    from src.integrations.merithub_mock import MockMeritHubService
+    monkeypatch.setattr("src.bot.wizard.get_merithub_service", lambda: MockMeritHubService())
     yield
 
 
