@@ -516,21 +516,20 @@ async def cmd_mh_schedule(upd: Update, ctx) -> None:
             user_links = client.parse_user_links(resp_links)
             logger.info("MH_SYNC: add_users_to_class %s (%d users)", class_id, len(users))
 
-        # Отправляем ссылку tutor'у
+        # Отправляем ссылку tutor'у — на его языке (i18n, R7-8; визард уже так делает)
         tutor_contact_row = await contact_repo.get(tutor_cuid)
         tutor_tg = (tutor_contact_row or {}).get("telegram_id")
         if tutor_tg:
             tutor_link = user_links.get(tutor.get("merithub_user_id", ""))
             if tutor_link:
                 tutor_room = client.room_url(tutor_link)
+                from src.utils.i18n import lang_of, tr
                 await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
                     "telegram_id": tutor_tg,
-                    "message": (
-                        f"📎 Ссылка на урок:\n"
-                        f"🕐 {start}\n"
-                        f"👥 Ученики: {', '.join(s.get('name','') for s in student_rows)}\n"
-                        f"🔗 {tutor_room}"
-                    ),
+                    "message": tr("tutor_link", await lang_of(tutor_tg),
+                                  time=start,
+                                  students=", ".join(s.get("name", "") for s in student_rows),
+                                  url=tutor_room),
                 }))
 
         # Отправляем ссылки parent'ам

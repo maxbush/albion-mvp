@@ -476,3 +476,69 @@ def test_r7_7_help_card_covers_owner_commands():
     for cmd in ("/add\\_student", "/add\\_tutor", "/today", "/morning",
                 "/incidents", "/lessons", "/status", "/ok"):
         assert cmd in text, cmd
+
+
+# ── R7-8: /mh_schedule — ссылка тьютору на его языке ─────────────────
+
+class _StubMeritHub:
+    """Та же заглушка, что в test_pilot (не переизобретаем конвенцию)."""
+
+    def __init__(self):
+        self.last_add = None
+
+    async def schedule_class(self, instructor, **kw):
+        return {"classId": "C9", "hostLink": "HL",
+                "commonLinks": {"commonHostLink": "HL", "commonParticipantLink": "PL"}}
+
+    async def add_users_to_class(self, class_id, users):
+        self.last_add = (class_id, users)
+        return {"users": [{"userId": u["userId"], "userLink": "u_" + u["userId"]} for u in users]}
+
+    from src.integrations.merithub_client import MeritHubClient as _MC
+    parse_schedule = staticmethod(_MC.parse_schedule)
+    parse_user_links = staticmethod(_MC.parse_user_links)
+
+    def room_url(self, link, device_test=False):
+        return f"ROOM/{link}"
+
+
+@pytest.mark.asyncio
+async def test_r7_8_mh_schedule_tutor_link_localized(tmp_path, monkeypatch):
+    """Тьютор с language=en получает EN-ссылку (как из визарда), а не RU хардкод."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.config import settings
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    monkeypatch.setattr("src.integrations.factory.get_merithub_service", lambda: _StubMeritHub())
+    from src.db.repository import (
+        MeritHubContactRepository, MeritHubStudentRepository, UserRepository,
+    )
+    from src.events.bus import bus
+    from src.events.types import EventTypes
+
+    await UserRepository(db).create("100", "coordinator", "Админ")
+    await UserRepository(db).create("555", "tutor", "Anna", language="en")
+    srepo = MeritHubStudentRepository(db)
+    await srepo.upsert("t1", merithub_user_id="mh_t1", name="Anna", role="tutor")
+    await MeritHubContactRepository(db).upsert("t1", "555", "tutor", name="Anna")
+    await srepo.upsert("s1", merithub_user_id="mh_s1", name="Миша",
+                       parent_telegram_id="777", role="student")
+
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        from src.bot.pilot import cmd_mh_schedule
+        upd = FakeUpdate(FakeUser(100))
+        await cmd_mh_schedule(upd, FakeContext(["t1", "2099-07-20T15:00:00+01:00", "60", "s1"]))
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    tutor_msgs = [d for d in captured if d.get("telegram_id") == "555"]
+    assert tutor_msgs, "тьютор должен получить ссылку"
+    msg = tutor_msgs[0]["message"]
+    assert "Lesson link" in msg and "Students" in msg      # EN (язык тьютора)
+    assert "Ссылка на урок" not in msg                      # не RU хардкод
+    assert "ROOM/u_mh_t1" in msg
