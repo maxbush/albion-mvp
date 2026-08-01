@@ -853,13 +853,58 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
             f"Всего: {stats['total']}\n"
         )
 
+    # Живые подписи вместо техстрок (R7-3): статус/тип словом, время в org-зоне.
+    import json as _json
+    from src.utils.recurrence import org_zone_label
+    from src.workflows.lesson_ops import _format_class_label
+
+    _TYPE_RU = {"absence": "неявка", "late": "опоздание",
+                "cancellation": "отмена", "other": "прочее"}
+    _STATUS_RU = {"pending": "ожидает ответа", "escalated": "ЭСКАЛАЦИЯ", "open": "открыт"}
+
+    def _fmt_ts(raw: str | None) -> str:
+        """'2026-08-01 08:12:33' (UTC, CURRENT_TIMESTAMP) → '01.08, 10:12 (London)'."""
+        if not raw:
+            return "—"
+        try:
+            dt = datetime.fromisoformat(str(raw).replace(" ", "T"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(settings.org_zone()).strftime("%d.%m, %H:%M") \
+                + f" ({org_zone_label()})"
+        except Exception:
+            return str(raw)[:16]
+
+    async def _student_name(inc_id: int) -> str | None:
+        """Имя ученика из данных workflow инцидента (если сценарий его знал)."""
+        row = await repo._fetchone(
+            "SELECT data FROM workflow_instances WHERE data LIKE ? ORDER BY id DESC LIMIT 1",
+            (f'%"incident_id": {inc_id}%',),
+        )
+        if not row:
+            return None
+        try:
+            return _json.loads(row["data"]).get("student_name")
+        except Exception:
+            return None
+
     if active:
         lines.append("─── Активные ───")
         for inc in active:
             status_emoji = {"pending": "⏳", "escalated": "🚨", "open": "📌"}.get(inc["status"], "❓")
+            label = _format_class_label(
+                inc.get("lesson_ref") or "—", None)
+            # Уточняем время занятия из карточки класса, если знаем ID
+            if inc.get("lesson_ref"):
+                cls = await MeritHubClassRepository().get(inc["lesson_ref"])
+                if cls:
+                    label = _format_class_label(inc["lesson_ref"], cls.get("start_time"))
+            who = await _student_name(inc["id"])
+            who_part = f" · {who}" if who else ""
             lines.append(
-                f"{status_emoji} #{inc['id']} [{inc['type']}] урок: `{inc.get('lesson_ref') or '—'}` "
-                f"| статус: {inc['status']} | {inc.get('created_at', '')[:16]}"
+                f"{status_emoji} #{inc['id']} {_TYPE_RU.get(inc['type'], inc['type'])}"
+                f"{who_part} · {label}\n"
+                f"   {_STATUS_RU.get(inc['status'], inc['status'])} · создан {_fmt_ts(inc.get('created_at'))}"
             )
     else:
         lines.append("✅ Активных инцидентов нет.")
@@ -867,9 +912,17 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
     if closed:
         lines.append("\n─── Последние закрытые ───")
         for inc in closed:
+            who = await _student_name(inc["id"])
+            who_part = f" · {who}" if who else ""
+            resolution = {
+                "parent_ok": "всё в порядке", "parent_not_coming": "не пришли",
+                "parent_late": "опоздали", "parent_text_reply": "ответ текстом",
+                "parent_confirmed": "подтверждено родителем",
+                "coordinator": "закрыто координатором",
+                "coordinator_closed": "закрыто координатором",
+            }.get(inc.get("resolution") or "", None) or (inc.get("resolution") or "—")
             lines.append(
-                f"✅ #{inc['id']} | `{inc.get('lesson_ref') or '—'}` "
-                f"| {inc.get('resolution') or '—'} | {(inc.get('resolved_at') or '')[:16]}"
+                f"✅ #{inc['id']}{who_part} · {resolution} · {_fmt_ts(inc.get('resolved_at'))}"
             )
 
     await upd.message.reply_text("\n".join(lines))

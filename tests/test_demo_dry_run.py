@@ -57,7 +57,9 @@ async def test_dry_run_covers_all_scenes(tmp_path):
     assert "❌ Урок unknown_lesson не найден" in md
     assert md.count("передана репетитору и координаторам") == 1
 
-    # Финал: статистика сходится — 3 решил родитель, 1 координатор
+    # Финал: статистика сходится — 3 решил родитель, 1 координатор.
+    # Резолюции — человекочитаемые (R7-3), а не сырые коды.
     assert "✅ Закрыто: 4" in md
-    assert "coordinator_closed" in md
-    assert "parent_late" in md
+    assert md.count("закрыто координатором") == 1
+    assert md.count("опоздали") == 2
+    assert "parent_late" not in md and "coordinator_closed" not in md

@@ -243,3 +243,47 @@ async def test_r7_2_absence_report_sender_gets_ack(tmp_path, monkeypatch):
     coord = [d for d in captured if d.get("telegram_id") == "coord_1"]
     assert sender and "передали координатору" in sender[0]["message"]
     assert coord and "неявке" in coord[0]["message"]
+
+
+# ── R7-3: /incidents человеком ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_r7_3_incidents_human_readable(tmp_path, monkeypatch):
+    """Статус/тип словом, ученик по имени, время в org-зоне; счётчики прежние."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.config import settings
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    from src.db.repository import IncidentRepository, UserRepository, WorkflowRepository
+    from src.db.repository import MeritHubClassRepository
+
+    await UserRepository(db).create("100", "coordinator", "Admin")
+    irepo = IncidentRepository(db)
+    inc_a = await irepo.create(lesson_ref="C9", type="absence", status="escalated",
+                               resolution="no response")
+    inc_r = await irepo.create(lesson_ref=None, type="absence", status="resolved",
+                               resolution="parent_late")
+    await MeritHubClassRepository(db).upsert(
+        "C9", title="Math", start_time="2099-07-31T15:00:00+00:00")
+    wrepo = WorkflowRepository(db)
+    await wrepo.create("absence_notification", "running",
+                       {"incident_id": inc_a, "student_name": "Sofia"})
+    await wrepo.create("absence_notification", "completed",
+                       {"incident_id": inc_r, "student_name": "Max"})
+
+    from src.bot.pilot import cmd_incidents
+    upd = FakeUpdate(FakeUser(100))
+    await cmd_incidents(upd, FakeContext([]))
+
+    text = upd.message.replies[-1][0]
+    # счётчики — как раньше (регрессионная защита)
+    assert "Ожидают: 0" in text and "Эскалации: 1" in text and "Закрыто: 1" in text
+    # живой вид активного
+    assert "неявка" in text and "Sofia" in text
+    assert "ЭСКАЛАЦИЯ" in text
+    assert "C9" in text and "31.07, 15:00" in text          # человекочитаемый label
+    # ни сырых статусов, ни обрезанных ISO-после́довательностей
+    assert "статус:" not in text and "[absence]" not in text
+    # закрытый: резолюция словом, имя ученика
+    assert "Max" in text and "опоздали" in text
+    # время — с подписью зоны, а не голый UTC-naive обрубок
+    assert "(London)" in text
