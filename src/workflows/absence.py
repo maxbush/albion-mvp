@@ -113,13 +113,18 @@ class AbsenceWorkflow:
         if not text:
             return
         from src.bot.roles import notify_all_coordinators
+        # Автор — по имени из карточки (П9/R7-4), TG только в url-кнопке ответа.
+        user = await self.users.get_by_telegram_id(str(tg))
+        author = (user or {}).get("name") or "—"
+        role = (user or {}).get("role") or "?"
         msg = (
             "📣 Сообщение о неявке (из чата)\n"
-            f"От: TG {tg}\n"
+            f"От: {author} ({role})\n"
             f"Текст: {text[:300]}"
         )
         await notify_all_coordinators(
-            msg, notification_type="absence_report", db_path=self.incidents.db_path)
+            msg, notification_type="absence_report", db_path=self.incidents.db_path,
+            buttons=[{"text": "👤 Написать пользователю", "url": f"tg://user?id={tg}"}])
         # Отправителю — ack (R7-2): иначе репорт уходил в молчание.
         from src.utils.i18n import lang_of, tr
         await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
@@ -261,13 +266,17 @@ class AbsenceWorkflow:
         class_label = await self._class_label(lesson_ref)
         base = labels.get(outcome, "ℹ️ Родитель обновил статус")
         msg = f"{base}\nИнцидент #{inc_id}\nУченик: {student_name}\nЗанятие: {class_label}"
-        if parent_telegram_id:
-            msg += f"\nParent TG: {parent_telegram_id}"
         if parent_text:
             msg += f"\nОтвет: {parent_text[:300]}"
         from src.bot.roles import notify_all_coordinators
+        # Сырой TG в текст не пишем (П9/R7-4): действие — url-кнопкой.
+        buttons = None
+        if parent_telegram_id:
+            buttons = [{"text": "👤 Написать родителю",
+                        "url": f"tg://user?id={parent_telegram_id}"}]
         await notify_all_coordinators(
-            msg, notification_type="parent_reply", db_path=self.incidents.db_path)
+            msg, notification_type="parent_reply",
+            db_path=self.incidents.db_path, buttons=buttons)
 
     async def _notify_parent(self, wid: int, inc_id: int | None) -> None:
         """Уведомить родителя. С проверкой статуса инцидента."""
@@ -361,11 +370,11 @@ class AbsenceWorkflow:
             f"Ученик: {student_name}\n"
             f"Занятие: {class_label}"
         )
-        if parent_tg:
-            esc_msg += f"\nParent TG: {parent_tg}"
-        created = (inc_row.get("created_at") or "")[:16]
+        # Сырой TG в тексте не нужен — ниже url-кнопка «Написать родителю» (R7-4).
+        created = inc_row.get("created_at")
         if created:
-            esc_msg += f"\nСоздан: {created} UTC"
+            from src.utils.recurrence import fmt_dt_org
+            esc_msg += f"\nСоздан: {fmt_dt_org(created)}"
 
         # UX U2: действия прямо на эскалации — без ручного ввода /ok <ID>
         # (management by exception должен решаться в один тап).

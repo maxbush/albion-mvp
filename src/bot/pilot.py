@@ -855,25 +855,12 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
 
     # Живые подписи вместо техстрок (R7-3): статус/тип словом, время в org-зоне.
     import json as _json
-    from src.utils.recurrence import org_zone_label
+    from src.utils.recurrence import fmt_dt_org as _fmt_ts
     from src.workflows.lesson_ops import _format_class_label
 
     _TYPE_RU = {"absence": "неявка", "late": "опоздание",
                 "cancellation": "отмена", "other": "прочее"}
     _STATUS_RU = {"pending": "ожидает ответа", "escalated": "ЭСКАЛАЦИЯ", "open": "открыт"}
-
-    def _fmt_ts(raw: str | None) -> str:
-        """'2026-08-01 08:12:33' (UTC, CURRENT_TIMESTAMP) → '01.08, 10:12 (London)'."""
-        if not raw:
-            return "—"
-        try:
-            dt = datetime.fromisoformat(str(raw).replace(" ", "T"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(settings.org_zone()).strftime("%d.%m, %H:%M") \
-                + f" ({org_zone_label()})"
-        except Exception:
-            return str(raw)[:16]
 
     async def _student_name(inc_id: int) -> str | None:
         """Имя ученика из данных workflow инцидента (если сценарий его знал)."""

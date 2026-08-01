@@ -7,7 +7,7 @@ MeritHub кодирует дни недели как: 0=вс, 1=пн, 2=вт, 3=
 """
 
 import json
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 
 from src.config import settings
 
@@ -26,6 +26,24 @@ def org_now() -> datetime:
 def org_zone_label() -> str:
     """'Europe/London' → 'London' — короткая подпись канонической зоны."""
     return settings.albion_org_timezone.split("/")[-1]
+
+
+def fmt_dt_org(raw) -> str:
+    """ISO-строку времени → '01.08, 10:12 (London)' в org-зоне.
+
+    Naive-вход считаем UTC (формат SQLite CURRENT_TIMESTAMP).
+    Единая точка форматирования времени для всех карточек координатора
+    (никаких голых 'UTC'-обрубков — решение R7-4)."""
+    if not raw:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(str(raw).replace(" ", "T"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (dt.astimezone(settings.org_zone()).strftime("%d.%m, %H:%M")
+                + f" ({org_zone_label()})")
+    except Exception:
+        return str(raw)[:16]
 
 
 def mh_weekday(d: date) -> int:

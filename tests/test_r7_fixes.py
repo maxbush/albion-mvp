@@ -287,3 +287,79 @@ async def test_r7_3_incidents_human_readable(tmp_path, monkeypatch):
     assert "Max" in text and "опоздали" in text
     # время — с подписью зоны, а не голый UTC-naive обрубок
     assert "(London)" in text
+
+
+# ── R7-4: хвосты эскалации (П9) ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_r7_4_escalation_no_raw_tg_no_utc_tail(tmp_path, monkeypatch):
+    """Эскалация: нет «Parent TG:» и «UTC» текста; есть tg://-кнопка и время London."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.db.repository import IncidentRepository, UserRepository, WorkflowRepository
+    from src.events.bus import bus
+    from src.events.types import EventTypes
+    from src.workflows.absence import AbsenceWorkflow
+
+    await UserRepository(db).create("555", "parent", "Анна")
+    await UserRepository(db).create("coord_1", "coordinator", "Координатор")
+    irepo = IncidentRepository(db)
+    inc_id = await irepo.create(lesson_ref="C9", type="absence", status="pending")
+    wid = await WorkflowRepository(db).create("absence_notification", "running", {
+        "incident_id": inc_id, "student_name": "Sofia", "parent_telegram_id": "555",
+    })
+
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await AbsenceWorkflow(db)._escalate(wid, inc_id, reason="no response")
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    coord = [d for d in captured if d.get("telegram_id") == "coord_1"]
+    assert coord, "эскалация должна дойти до координатора"
+    text = coord[0]["message"]
+    assert "Эскалация" in text and "Sofia" in text
+    assert "Parent TG" not in text and "555" not in text   # сырого TG нет
+    assert "UTC" not in text                                # никакого теххвоста
+    assert "(London)" in text and "Создан:" in text         # время в org-зоне
+    btns = coord[0].get("buttons") or []
+    assert any(b.get("url") == "tg://user?id=555" for b in btns)  # действие — кнопкой
+
+
+@pytest.mark.asyncio
+async def test_r7_4_parent_reply_notification_has_button_not_raw_tg(tmp_path, monkeypatch):
+    """notify_coordinators_parent_reply: «Parent TG: 555» → url-кнопка."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.db.repository import IncidentRepository, UserRepository, WorkflowRepository
+    from src.events.bus import bus
+    from src.events.types import EventTypes
+    from src.workflows.absence import AbsenceWorkflow
+
+    await UserRepository(db).create("coord_1", "coordinator", "Координатор")
+    irepo = IncidentRepository(db)
+    inc_id = await irepo.create(lesson_ref="C9", type="absence", status="pending")
+    await WorkflowRepository(db).create("absence_notification", "running", {
+        "incident_id": inc_id, "student_name": "Sofia", "parent_telegram_id": "555",
+    })
+
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await AbsenceWorkflow(db).notify_coordinators_parent_reply(
+            inc_id, "late", parent_text="опоздаем", parent_telegram_id="555")
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    coord = [d for d in captured if d.get("telegram_id") == "coord_1"][0]
+    assert "Parent TG" not in coord["message"]
+    assert "опоздаем" in coord["message"]
+    btns = coord.get("buttons") or []
+    assert any(b.get("url") == "tg://user?id=555" for b in btns)
