@@ -60,6 +60,7 @@ ROLE_COMMAND_MENUS: dict[str, list[tuple[str, str]]] = {
         ("add_student", "Новый ученик"),
         ("add_tutor", "Новый репетитор"),
         ("today", "Занятия сегодня"),
+        ("lessons", "Занятия и ссылки"),
         ("morning", "Утренняя сводка"),
         ("incidents", "Инциденты"),
         ("cancel_lesson", "Отмена урока"),

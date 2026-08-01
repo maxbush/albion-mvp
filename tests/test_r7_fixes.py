@@ -406,3 +406,58 @@ async def test_r7_5_no_reply_alert_human_with_contact_button(tmp_path, monkeypat
     btns = coord[0].get("buttons") or []
     assert any(b.get("url") == "tg://user?id=42" for b in btns)
     assert any("репетитору" in (b.get("text") or "") for b in btns)
+
+
+# ── R7-6: /lessons — ветка координатора + пункт меню ─────────────────
+
+@pytest.mark.asyncio
+async def test_r7_6_coordinator_menu_includes_lessons():
+    """UI/Backend синк: help обещает /lessons — меню «/» обязано его иметь."""
+    from src.bot.roles import ROLE_COMMAND_MENUS
+    coord_cmds = {c for c, _ in ROLE_COMMAND_MENUS["coordinator"]}
+    assert "lessons" in coord_cmds
+    parent_cmds = {c for c, _ in ROLE_COMMAND_MENUS["parent"]}
+    tutor_cmds = {c for c, _ in ROLE_COMMAND_MENUS["tutor"]}
+    assert "lessons" in parent_cmds and "lessons" in tutor_cmds
+
+
+@pytest.mark.asyncio
+async def test_r7_6_coordinator_lessons_org_wide_view(tmp_path, monkeypatch):
+    """Координатор видит занятия ВСЕЙ организации со ссылками (не «вас не добавили»)."""
+    import json
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.bot.handlers import cmd_lessons
+    from src.db.repository import (
+        MeritHubClassRepository, MeritHubEnrollmentRepository, UserRepository,
+    )
+    from src.utils.recurrence import mh_weekday, org_now
+    from datetime import timedelta
+
+    await UserRepository(db).create("100", "coordinator", "Босс")
+    tomorrow = org_now().date() + timedelta(days=1)
+    crepo = MeritHubClassRepository(db)
+    await crepo.upsert("C60", title="Sofia — Physics", class_type="perma",
+                       schedule_days=json.dumps([mh_weekday(tomorrow)]),
+                       start_time=f"{tomorrow.isoformat()}T15:00:00+00:00",
+                       participant_link="pl60")
+    await crepo.upsert("C61", title="Max — Maths", class_type="perma",
+                       schedule_days=json.dumps([mh_weekday(tomorrow)]),
+                       start_time=f"{tomorrow.isoformat()}T17:00:00+00:00",
+                       participant_link="pl61")
+    await MeritHubEnrollmentRepository(db).add(
+        "C60", "mh_s01", client_user_id="s01", student_name="Sofia")
+
+    upd = FakeUpdate(FakeUser(100))
+    await cmd_lessons(upd, FakeContext([]))
+
+    text, kw = upd.message.replies[-1]
+    assert "организации" in text
+    assert "Sofia — Physics" in text and "Max — Maths" in text
+    assert "не вижу" not in text                      # нет ложного empty-state
+    btns = [b for row in (kw["reply_markup"].inline_keyboard or []) for b in row]
+    assert any("pl60" in (b.url or "") for b in btns)
+    # пустая база → честное пустое состояние с вектором на /schedule
+    await MeritHubClassRepository(db)._execute("DELETE FROM merithub_classes", ())
+    upd2 = FakeUpdate(FakeUser(100))
+    await cmd_lessons(upd2, FakeContext([]))
+    assert "/schedule" in upd2.message.replies[-1][0]

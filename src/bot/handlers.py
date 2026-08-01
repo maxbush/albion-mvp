@@ -333,6 +333,24 @@ async def cmd_status(upd: Update, _ctx) -> None:
     await upd.message.reply_text(text, parse_mode="Markdown")
 
 
+def _next_occurrence_in_days(class_row: dict, days: int, now) -> tuple | None:
+    """Ближайший occurrence класса в окне `days` дней → (date, 'HH:MM') или None.
+
+    Общий сканер для веток /lessons (tutor/coordinator): учитывает, что
+    сегодняшнее занятие, которое уже началось, пропускается."""
+    from src.utils.recurrence import class_occurs_on
+    hhmm = (class_row.get("start_time") or "")[11:16] or "00:00"
+    today = now.date()
+    for i in range(days):
+        d = today + timedelta(days=i)
+        if not class_occurs_on(class_row, d):
+            continue
+        if i == 0 and hhmm <= now.strftime("%H:%M"):
+            continue
+        return d, hhmm
+    return None
+
+
 async def cmd_lessons(upd: Update, _ctx) -> None:
     """«Мои занятия»: ближайшие занятия + постоянные ссылки на комнату (П4 аудита).
 
@@ -348,9 +366,8 @@ async def cmd_lessons(upd: Update, _ctx) -> None:
     )
     from src.integrations.factory import get_merithub_service
     from src.utils.i18n import lang_of, tr
-    from src.utils.recurrence import class_occurs_on, org_now, org_zone_label
+    from src.utils.recurrence import org_now, org_zone_label
     from src.workflows.cancellation import upcoming_lessons_for_parent
-    from datetime import timedelta as _td
 
     client = get_merithub_service()
     lang = await lang_of(tg) if role == "tutor" else "ru"
@@ -364,18 +381,12 @@ async def cmd_lessons(upd: Update, _ctx) -> None:
         classes = await crepo._fetchall(
             "SELECT * FROM merithub_classes WHERE tutor_client_user_id=?",
             (contact["client_user_id"],))
-        now, today = org_now(), org_now().date()
+        now = org_now()
         items = []
         for c in classes:
-            hhmm = (c.get("start_time") or "")[11:16] or "00:00"
-            for i in range(14):
-                d = today + _td(days=i)
-                if not class_occurs_on(c, d):
-                    continue
-                if i == 0 and hhmm <= now.strftime("%H:%M"):
-                    continue
-                items.append((d, hhmm, c))
-                break
+            occ = _next_occurrence_in_days(c, 14, now)
+            if occ:
+                items.append((occ[0], occ[1], c))
         items.sort(key=lambda x: (x[0], x[1]))
         if not items:
             await upd.message.reply_text(tr("lessons_empty", lang))
@@ -396,6 +407,43 @@ async def cmd_lessons(upd: Update, _ctx) -> None:
                     f"🔗 {wd} {d:%d.%m}, {hhmm}"[:64], url=client.room_url(link))])
         lines.append("")
         lines.append(tr("lessons_link_hint", lang))
+        await upd.message.reply_text(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
+        return
+
+    if role == "coordinator" or is_admin(upd.effective_user.id):
+        # Координатору — вся организация (его «личных» зачислений нет:
+        # parent-ветка вводила бы в заблуждение «вас не добавили»).
+        from src.utils.recurrence import WD_RU, mh_weekday
+        crepo = MeritHubClassRepository()
+        now = org_now()
+        items = []
+        for c in await crepo.list_all():
+            occ = _next_occurrence_in_days(c, 7, now)
+            if occ:
+                items.append((occ[0], occ[1], c))
+        items.sort(key=lambda x: (x[0], x[1]))
+        if not items:
+            await upd.message.reply_text(
+                "📚 Ближайших занятий нет (7 дней). Создать: /schedule")
+            return
+        erepo = MeritHubEnrollmentRepository()
+        lines = [f"📚 Ближайшие занятия организации (7 дней, время — {org_zone_label()}):"]
+        buttons = []
+        for d, hhmm, c in items[:12]:
+            enr = [e for e in await erepo.list_by_class(c["class_id"])
+                   if (e.get("role") or "student") == "student"]
+            names = ", ".join(e.get("student_name") or "" for e in enr[:3]) or "—"
+            wd = WD_RU[mh_weekday(d)]
+            title = c.get("title") or c["class_id"]
+            lines.append(f"• {wd} {d:%d.%m}, {hhmm} — {title} · 👥 {names}")
+            link = c.get("participant_link")
+            if link:
+                buttons.append([InlineKeyboardButton(
+                    f"🔗 {wd} {d:%d.%m}, {hhmm} — {title}"[:64], url=client.room_url(link))])
+        lines.append("")
+        lines.append("Ссылки — участнические (для пересылки родителям при потере).")
         await upd.message.reply_text(
             "\n".join(lines),
             reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
