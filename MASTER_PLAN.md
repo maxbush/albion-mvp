@@ -102,7 +102,9 @@
   План: секция «Владельцу» в `_coordinator_help_text`: /kill\\_switch, /roles.
   Тест help-текста (подстроки).
 
-- [ ] **R7-8. `/mh_schedule`: ссылка тьютору хардкодом RU (i18n-рассинхрон).**
+- [x] **R7-8. `/mh_schedule`: ссылка тьютору хардкодом RU (i18n-рассинхрон).**
+  ✅ 2026-08-01. Переведено на `tr("tutor_link", lang_of(...))` — паритет с
+  визардом. 1 новый тест (EN-тьютор → EN-ссылка), 191/191.
   `src/bot/pilot.py:524-535` — в визарде уже `tr("tutor_link", ...)`, тут нет.
   План: `tr("tutor_link", await lang_of(tutor_tg), ...)`. E2E: tutor(en) → EN-текст.
 

@@ -542,3 +542,40 @@ async def test_r7_8_mh_schedule_tutor_link_localized(tmp_path, monkeypatch):
     assert "Lesson link" in msg and "Students" in msg      # EN (язык тьютора)
     assert "Ссылка на урок" not in msg                      # не RU хардкод
     assert "ROOM/u_mh_t1" in msg
+
+
+# ── R7-9: EN-слова в эвристиках tutor-reply + mock сканирует текст, не промпт ──
+
+@pytest.mark.asyncio
+async def test_r7_9_english_tutor_replies_understood():
+    """EN-формулировки тьютора распознаются (и эвристика, и mock-ветка)."""
+    from src.ai.client import LLMClient, llm_client
+
+    cases = {
+        "I'm ready, all set": "ready",
+        "Confirmed, on track": "ready",
+        "Sorry, running late, stuck in traffic": "late",
+        "I can't make it today": "no_show",
+        "Cannot conduct the lesson, sick": "no_show",
+        "WiFi connection issues": "tech",
+        "My laptop camera is broken": "tech",
+    }
+    for text, expected in cases.items():
+        # эвристика (fallback-путь)
+        assert LLMClient()._heuristic_tutor_reply(text)["status"] == expected, text
+        # mock-ветка chat_cheap (как в демо без API-ключа)
+        got = await llm_client.interpret_tutor_reply(text)
+        assert got["status"] == expected, f"{text} -> {got}"
+
+
+@pytest.mark.asyncio
+async def test_r7_9_mock_scans_user_text_not_prompt_template():
+    """Регрессия латентного бага: шаблон промпта не должен определять статус."""
+    from src.ai.client import llm_client
+
+    # В шаблоне есть «late»/«ready»/«cannot» — если сканировать весь промпт,
+    # любые слова схлопнутся в no_show/late. Русский «всё ок» бывало «late».
+    got = await llm_client.interpret_parent_reply("всё в порядке, спасибо")
+    assert got["status"] == "ok", got
+    got = await llm_client.interpret_parent_reply("сын не придёт сегодня")
+    assert got["status"] == "no_show", got
