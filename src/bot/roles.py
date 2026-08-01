@@ -37,8 +37,9 @@ ROLE_EMOJI = {
 ROLE_COMMAND_MENUS: dict[str, list[tuple[str, str]]] = {
     "parent": [
         ("start", "Главная"),
-        ("status", "Состояние системы"),
+        ("lessons", "Мои занятия"),
         ("cancel_lesson", "Отменить занятие"),
+        ("status", "Состояние системы"),
         ("whoami", "Мой профиль"),
     ],
     "student": [
@@ -48,12 +49,16 @@ ROLE_COMMAND_MENUS: dict[str, list[tuple[str, str]]] = {
     ],
     "tutor": [
         ("start", "Главная"),
-        ("status", "Состояние системы"),
+        ("lessons", "Мои занятия"),
         ("cancel_lesson", "Отменить урок"),
+        ("status", "Состояние системы"),
         ("whoami", "Мой профиль"),
     ],
     "coordinator": [
         ("start", "Главная"),
+        ("schedule", "Новое занятие"),
+        ("add_student", "Новый ученик"),
+        ("add_tutor", "Новый репетитор"),
         ("today", "Занятия сегодня"),
         ("morning", "Утренняя сводка"),
         ("incidents", "Инциденты"),

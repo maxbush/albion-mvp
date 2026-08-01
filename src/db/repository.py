@@ -67,6 +67,15 @@ class UserRepository(Repository):
             (role, datetime.now(timezone.utc).isoformat(), uid),
         )
 
+    async def set_language(self, telegram_id: str, lang: str) -> None:
+        """Язык интерфейса пользователя (ru/en). Иное значение игнорируется."""
+        if lang not in ("ru", "en"):
+            return
+        await self._execute(
+            "UPDATE users SET language=?, updated_at=? WHERE telegram_id=?",
+            (lang, datetime.now(timezone.utc).isoformat(), str(telegram_id)),
+        )
+
     async def set_role_by_telegram(
         self,
         tg: str,
@@ -366,6 +375,11 @@ class MeritHubStudentRepository(Repository):
     async def list_all(self) -> list[dict]:
         return await self._fetchall("SELECT * FROM merithub_students ORDER BY name")
 
+    async def list_by_role(self, role: str) -> list[dict]:
+        """Ученики ('student') или репетиторы ('tutor') по имени — для пикеров визарда."""
+        return await self._fetchall(
+            "SELECT * FROM merithub_students WHERE role=? ORDER BY name", (role,))
+
 
 class MeritHubClassRepository(Repository):
     """Метаданные классов MeritHub, созданных через ALBION.
@@ -385,6 +399,11 @@ class MeritHubClassRepository(Repository):
         start_time: str | None = None,
         tutor_client_user_id: str | None = None,
         tutor_merithub_user_id: str | None = None,
+        class_type: str | None = None,
+        schedule_days: str | None = None,
+        duration: int | None = None,
+        timezone: str | None = None,
+        end_date: str | None = None,
     ) -> None:
         existing = await self._fetchone("SELECT 1 FROM merithub_classes WHERE class_id=?", (class_id,))
         if existing:
@@ -392,7 +411,10 @@ class MeritHubClassRepository(Repository):
                 "UPDATE merithub_classes SET host_link=COALESCE(?,host_link), "
                 "participant_link=COALESCE(?,participant_link), title=COALESCE(?,title), "
                 "start_time=COALESCE(?,start_time), tutor_client_user_id=COALESCE(?,tutor_client_user_id), "
-                "tutor_merithub_user_id=COALESCE(?,tutor_merithub_user_id) WHERE class_id=?",
+                "tutor_merithub_user_id=COALESCE(?,tutor_merithub_user_id), "
+                "class_type=COALESCE(?,class_type), schedule_days=COALESCE(?,schedule_days), "
+                "duration=COALESCE(?,duration), timezone=COALESCE(?,timezone), "
+                "end_date=COALESCE(?,end_date) WHERE class_id=?",
                 (
                     host_link,
                     participant_link,
@@ -400,14 +422,20 @@ class MeritHubClassRepository(Repository):
                     start_time,
                     tutor_client_user_id,
                     tutor_merithub_user_id,
+                    class_type,
+                    schedule_days,
+                    duration,
+                    timezone,
+                    end_date,
                     class_id,
                 ),
             )
         else:
             await self._execute(
                 "INSERT INTO merithub_classes "
-                "(class_id, host_link, participant_link, title, start_time, tutor_client_user_id, tutor_merithub_user_id) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "(class_id, host_link, participant_link, title, start_time, tutor_client_user_id, "
+                "tutor_merithub_user_id, class_type, schedule_days, duration, timezone, end_date) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     class_id,
                     host_link,
@@ -416,6 +444,11 @@ class MeritHubClassRepository(Repository):
                     start_time,
                     tutor_client_user_id,
                     tutor_merithub_user_id,
+                    class_type or "oneTime",
+                    schedule_days,
+                    duration,
+                    timezone,
+                    end_date,
                 ),
             )
 
@@ -464,6 +497,10 @@ class MeritHubContactRepository(Repository):
 
     async def get(self, client_user_id: str) -> dict | None:
         return await self._fetchone("SELECT * FROM merithub_contacts WHERE client_user_id=?", (client_user_id,))
+
+    async def get_by_telegram(self, telegram_id: str) -> dict | None:
+        return await self._fetchone(
+            "SELECT * FROM merithub_contacts WHERE telegram_id=?", (str(telegram_id),))
 
     async def list_all(self) -> list[dict]:
         return await self._fetchall("SELECT * FROM merithub_contacts ORDER BY role, name")
@@ -536,3 +573,40 @@ class IdempotencyRepository(Repository):
 
     async def cleanup_old(self, hours: int = 24) -> None:
         await self._execute(f"DELETE FROM idempotency_keys WHERE created_at < datetime('now', '-{hours} hours')")
+
+
+class WizardStateRepository(Repository):
+    """Состояние кнопочных сценариев (визардов) координатора.
+
+    В SQLite (не в памяти процесса): перезапуск бота не убивает сценарий молча —
+    тот же принцип, что и у scheduler'а. expires_at — TTL неактивности (UTC iso).
+    """
+
+    async def get(self, chat_id: str) -> dict | None:
+        return await self._fetchone("SELECT * FROM wizard_state WHERE chat_id=?", (str(chat_id),))
+
+    async def save(self, chat_id: str, flow: str, step: str, data: dict, expires_at: str) -> None:
+        import json as _json
+        from datetime import datetime as _dt, timezone as _tz
+        payload = _json.dumps(data, ensure_ascii=False)
+        now = _dt.now(_tz.utc).isoformat()
+        existing = await self.get(chat_id)
+        if existing:
+            await self._execute(
+                "UPDATE wizard_state SET flow=?, step=?, data=?, expires_at=?, updated_at=? "
+                "WHERE chat_id=?",
+                (flow, step, payload, expires_at, now, str(chat_id)),
+            )
+        else:
+            await self._execute(
+                "INSERT INTO wizard_state (chat_id, flow, step, data, expires_at, updated_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (str(chat_id), flow, step, payload, expires_at, now),
+            )
+
+    async def delete(self, chat_id: str) -> None:
+        await self._execute("DELETE FROM wizard_state WHERE chat_id=?", (str(chat_id),))
+
+    async def list_expired(self, now_iso: str) -> list[dict]:
+        return await self._fetchall(
+            "SELECT * FROM wizard_state WHERE expires_at < ?", (now_iso,))

@@ -154,7 +154,10 @@ async def test_cancel_lesson_workflow_race_fallback_notifies_reporter(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_p03_cancel_lesson_usage_hint(tmp_path, monkeypatch):
-    """Без аргументов — подсказка, события нет."""
+    """Без аргументов и личных занятий — честное пустое состояние, события нет.
+
+    (Round 6: вместо техподсказки «<ID>» — персональный список кнопками;
+    если занятий нет — просим написать координатору.)"""
     await _init_tmp_db(tmp_path, monkeypatch)
     from src.bot.handlers import cmd_cancel_lesson
 
@@ -166,7 +169,7 @@ async def test_p03_cancel_lesson_usage_hint(tmp_path, monkeypatch):
         upd = FakeUpdate(FakeUser(9))
         await cmd_cancel_lesson(upd, FakeContext([]))
         texts = [t for t, _ in upd.message.replies]
-        assert any("/cancel_lesson" in t for t in texts)
+        assert any("координатору" in t for t in texts)
     finally:
         bus.unsubscribe(EventTypes.LESSON_CANCELLED, boom)
 

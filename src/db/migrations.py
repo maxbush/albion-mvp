@@ -14,6 +14,14 @@ MIGRATIONS = [
         ("country", "TEXT"),
         ("city", "TEXT"),
     ]),
+    # Round 5: регулярные серии занятий (perma) — существующие БД получают колонки.
+    ("merithub_classes", [
+        ("class_type", "TEXT NOT NULL DEFAULT 'oneTime'"),
+        ("schedule_days", "TEXT"),
+        ("duration", "INTEGER"),
+        ("timezone", "TEXT DEFAULT 'Europe/London'"),
+        ("end_date", "TEXT"),
+    ]),
 ]
 
 

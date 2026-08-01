@@ -122,7 +122,7 @@ async def test_u1_menu_parent_is_minimal(tmp_path, monkeypatch):
     names = {c for c, _ in items}
     # Родителю — минимум (Hick's Law), без координаторских команд.
     assert "today" not in names and "incidents" not in names
-    assert {"start", "status", "cancel_lesson", "whoami"} == names
+    assert {"start", "lessons", "status", "cancel_lesson", "whoami"} == names
 
 
 @pytest.mark.asyncio
@@ -533,16 +533,41 @@ async def test_u5_resolve_confirmation_names_student(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_u6_cancel_intent_offers_class_buttons(tmp_path, monkeypatch):
-    """Интент «отмена» → кнопки с реальными занятиями (ввод ID не нужен)."""
+    """Интент «отмена» → кнопки ТОЛЬКО с занятиями этого родителя (ввод ID не нужен).
+
+    П1 аудита: раньше показывались первые 5 классов всей организации — родитель
+    мог отменить чужое занятие."""
+    import json as _json
     db = await _init_tmp_db(tmp_path, monkeypatch)
-    from src.db.repository import MeritHubClassRepository, UserRepository
+    from src.db.repository import (
+        MeritHubClassRepository, MeritHubEnrollmentRepository, UserRepository,
+    )
     from src.events.bus import bus
     from src.events.types import Event, EventTypes
+    from src.utils.recurrence import mh_weekday, org_now
     from src.workflows.cancellation import CancellationWorkflow
 
     await UserRepository(db).create("coord_1", "coordinator", "Координатор")
-    await MeritHubClassRepository(db).upsert("C9", title="Math", start_time="2099-07-31T15:00:00+00:00")
-    await MeritHubClassRepository(db).upsert("C10", title="Eng", start_time="2099-08-01T10:00:00+00:00")
+    today = org_now().date()
+    wd = mh_weekday(today)
+    crepo = MeritHubClassRepository(db)
+    await crepo.upsert("C9", title="Math", class_type="perma",
+                       schedule_days=_json.dumps([wd]),
+                       start_time=f"{today.isoformat()}T23:59:00+00:00")
+    await crepo.upsert("C10", title="Eng", class_type="perma",
+                       schedule_days=_json.dumps([wd]),
+                       start_time=f"{today.isoformat()}T23:58:00+00:00")
+    # Чужой класс — не должен попасть в кнопки родителя
+    await crepo.upsert("C11", title="Foreign", class_type="perma",
+                       schedule_days=_json.dumps([wd]),
+                       start_time=f"{today.isoformat()}T23:57:00+00:00")
+    erepo = MeritHubEnrollmentRepository(db)
+    await erepo.add("C9", "mh_s01", client_user_id="s01",
+                    parent_telegram_id="555", student_name="Sofia")
+    await erepo.add("C10", "mh_s02", client_user_id="s02",
+                    parent_telegram_id="555", student_name="Max")
+    await erepo.add("C11", "mh_s03", client_user_id="s03",
+                    parent_telegram_id="777", student_name="Чужой")
 
     captured = []
 
@@ -559,16 +584,20 @@ async def test_u6_cancel_intent_offers_class_buttons(tmp_path, monkeypatch):
 
     msg = [d for d in captured if d.get("telegram_id") == "555"][-1]
     assert "Какое занятие отменяем" in msg["message"]
+    assert "напишите координатору" in msg["message"]  # подстраховка вместо ввода ID
     btns = msg["buttons"]
-    assert any(b["callback_data"] == "cancel_class:C9" for b in btns)
-    assert any(b["callback_data"] == "cancel_class:C10" for b in btns)
-    # Кнопка читаема: содержит ID и время
-    assert any("C9" in b["text"] and "15:00" in b["text"] for b in btns)
+    assert any(b["callback_data"].startswith("cancel_class:C9:") for b in btns)
+    assert any(b["callback_data"].startswith("cancel_class:C10:") for b in btns)
+    assert not any("C11" in b["callback_data"] for b in btns)  # чужое — недоступно
+    # Кнопка читаема: имя ученика и время
+    assert any("Sofia" in b["text"] and "23:59" in b["text"] for b in btns)
 
 
 @pytest.mark.asyncio
 async def test_u6_cancel_button_fires_existing_flow(tmp_path, monkeypatch):
-    """Тап по кнопке → тот же LESSON_CANCELLED, что и команда (обвязка, не новая механика)."""
+    """Тап по кнопке → подтверждение → тот же LESSON_CANCELLED, что и команда.
+
+    Два тапа (аудит П1): случайное нажатие не должно отменять занятие."""
     db = await _init_tmp_db(tmp_path, monkeypatch)
     from src.bot.handlers import handle_callback
     from src.db.repository import MeritHubClassRepository
@@ -585,7 +614,17 @@ async def test_u6_cancel_button_fires_existing_flow(tmp_path, monkeypatch):
     bus.subscribe(EventTypes.LESSON_CANCELLED, cap)
     try:
         upd = FakeUpdate(FakeUser(555))
-        upd.callback_query = FakeQuery("cancel_class:C9", upd.effective_user)
+        # Шаг 1: выбор занятия → НЕ отменяет, показывает подтверждение
+        upd.callback_query = FakeQuery("cancel_class:C9:2099-07-31", upd.effective_user)
+        await handle_callback(upd, FakeContext())
+        assert not captured  # события отмены ещё нет
+        edit, kw = upd.callback_query.edits[-1]
+        assert "Отменяем занятие" in edit and "2099-07-31" in edit
+        kb = kw["reply_markup"]
+        yes = kb.inline_keyboard[0][0]
+        assert yes.callback_data == "cancel_yes:C9:2099-07-31"
+        # Шаг 2: подтверждение → LESSON_CANCELLED (та же механика, что у команды)
+        upd.callback_query = FakeQuery(yes.callback_data, upd.effective_user)
         await handle_callback(upd, FakeContext())
     finally:
         bus.unsubscribe(EventTypes.LESSON_CANCELLED, cap)
@@ -593,14 +632,16 @@ async def test_u6_cancel_button_fires_existing_flow(tmp_path, monkeypatch):
     event = captured[-1]
     assert event["lesson_id"] == "C9"
     assert event["reported_by"] == "555"
+    assert event["occurrence_date"] == "2099-07-31"
+    assert "2099-07-31" in event["reason"]
     edit = upd.callback_query.edits[-1][0]
     assert "передана репетитору и координаторам" in edit
-    assert "C9" in edit and "15:00" in edit  # человекочитаемый label
+    assert "C9" in edit and "2099-07-31" in edit  # человекочитаемый label + дата
 
 
 @pytest.mark.asyncio
 async def test_u6_cancel_intent_fallback_without_classes(tmp_path, monkeypatch):
-    """Нет известных занятий → старая текстовая подсказка."""
+    """Нет личных занятий → честная подсказка написать координатору (без ID-команд)."""
     db = await _init_tmp_db(tmp_path, monkeypatch)
     from src.events.bus import bus
     from src.events.types import Event, EventTypes
@@ -620,7 +661,7 @@ async def test_u6_cancel_intent_fallback_without_classes(tmp_path, monkeypatch):
         bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
 
     msg = [d for d in captured if d.get("telegram_id") == "555"][-1]
-    assert "/cancel_lesson <ID>" in msg["message"]
+    assert "напишите координатору" in msg["message"]
     assert not msg.get("buttons")
 
 

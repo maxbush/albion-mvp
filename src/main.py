@@ -16,9 +16,10 @@ from src.workflows.dlq_handler import register_handlers as rdq
 from src.workflows.absence import register_handlers as ra
 from src.workflows.lead_capture import register_handlers as rl
 from src.workflows.cancellation import register_handlers as rc
-from src.workflows.lesson_ops import register_handlers as rops
+from src.workflows.lesson_ops import register_handlers as rops, ensure_morning_digest
 from src.ai.classifier import register_handlers as rx
 from src.bot.handlers import setup_handlers, seed_demo_data
+from src.bot.wizard import wizard_expiry_loop
 from src.scheduler.scheduler import scheduler_loop
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,12 @@ async def main(webhook: bool = False):
 
     await init_db()
     await register_all()
+    # Авто-утренняя сводка координаторам (07:30 по зоне организации).
+    # Идемпотентно: создаёт задачу в SQLite scheduler только если её ещё нет.
+    try:
+        await ensure_morning_digest()
+    except Exception as e:
+        logger.error("ensure_morning_digest failed: %s", e)
     if settings.albion_demo_mode:
         await seed_demo_data()
     else:
@@ -85,14 +92,16 @@ async def main(webhook: bool = False):
                 logger.error("WEBHOOK_URL required"); sys.exit(1)
             await app.bot.set_webhook(url=url, secret_token=settings.telegram_webhook_secret)
             logger.info("Webhook: %s", url)
-            await asyncio.gather(scheduler_wrapper(), cleanup_idempotency())
+            await asyncio.gather(scheduler_wrapper(), cleanup_idempotency(),
+                                 wizard_expiry_loop(app.bot))
         else:
             await app.updater.start_polling(
                 allowed_updates=["message", "callback_query"],
                 drop_pending_updates=True,
             )
             logger.info("Polling started")
-            await asyncio.gather(scheduler_wrapper(), cleanup_idempotency())
+            await asyncio.gather(scheduler_wrapper(), cleanup_idempotency(),
+                                 wizard_expiry_loop(app.bot))
 
 
 if __name__ == "__main__":
