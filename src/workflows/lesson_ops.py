@@ -662,6 +662,10 @@ async def build_morning_digest_text(db_path: str | None = None) -> str:
     erepo = MeritHubEnrollmentRepository(db_path)
     srepo = MeritHubStudentRepository(db_path)
     org = org_zone_label()
+    # R7-15: батчи вместо N+1 (enrollments + tutor rows одним запросом каждый).
+    by_cid = await erepo.list_by_classes([c["class_id"] for c in classes])
+    tutor_map = await srepo.get_by_client_ids(
+        [c["tutor_client_user_id"] for c in classes if c.get("tutor_client_user_id")])
     lines = [f"☀️ Доброе утро!\n\n📅 Занятия сегодня ({len(classes)}):"]
     tutors: set[str] = set()
     students_total = 0
@@ -670,14 +674,14 @@ async def build_morning_digest_text(db_path: str | None = None) -> str:
         hhmm = (c.get("start_time") or "—")[11:16]
         time_part = f"{hhmm} ({org})" if hhmm else "—"
         enr = [
-            e for e in await erepo.list_by_class(c["class_id"])
+            e for e in by_cid.get(c["class_id"], [])
             if (e.get("role") or "student") not in ("tutor", "teacher", "C", "host")
         ]
         students_total += len(enr)
         names = ", ".join(e.get("student_name") or "" for e in enr[:3]) or "—"
         tutor_name = ""
         if c.get("tutor_client_user_id"):
-            trow = await srepo.get_by_client_id(c["tutor_client_user_id"])
+            trow = tutor_map.get(c["tutor_client_user_id"])
             tutor_name = (trow or {}).get("name") or c["tutor_client_user_id"]
             tutors.add(tutor_name)
         suffix = f" · {names}" + (f" · {tutor_name}" if tutor_name else "")

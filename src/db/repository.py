@@ -369,6 +369,16 @@ class MeritHubStudentRepository(Repository):
     async def get_by_client_id(self, cuid: str) -> dict | None:
         return await self._fetchone("SELECT * FROM merithub_students WHERE client_user_id=?", (cuid,))
 
+    async def get_by_client_ids(self, cuids: list[str]) -> dict[str, dict]:
+        """Батч (R7-15): client_user_id → строка. Один запрос вместо N+1 в циклах."""
+        ids = [str(c) for c in dict.fromkeys(cuids) if c]
+        if not ids:
+            return {}
+        ph = ",".join("?" for _ in ids)
+        rows = await self._fetchall(
+            f"SELECT * FROM merithub_students WHERE client_user_id IN ({ph})", tuple(ids))
+        return {r["client_user_id"]: r for r in rows}
+
     async def get_by_merithub_id(self, mh_id: str) -> dict | None:
         return await self._fetchone("SELECT * FROM merithub_students WHERE merithub_user_id=?", (mh_id,))
 
@@ -455,6 +465,16 @@ class MeritHubClassRepository(Repository):
     async def get(self, class_id: str) -> dict | None:
         return await self._fetchone("SELECT * FROM merithub_classes WHERE class_id=?", (class_id,))
 
+    async def get_many(self, class_ids: list[str]) -> dict[str, dict]:
+        """Батч (R7-15): class_id → строка. Один запрос вместо N+1 в циклах."""
+        ids = [str(c) for c in dict.fromkeys(class_ids) if c]
+        if not ids:
+            return {}
+        ph = ",".join("?" for _ in ids)
+        rows = await self._fetchall(
+            f"SELECT * FROM merithub_classes WHERE class_id IN ({ph})", tuple(ids))
+        return {r["class_id"]: r for r in rows}
+
     async def list_all(self) -> list[dict]:
         return await self._fetchall("SELECT * FROM merithub_classes ORDER BY created_at DESC")
 
@@ -532,6 +552,17 @@ class MeritHubClassStatusRepository(Repository):
                 pass
         return row
 
+    async def get_map(self, class_ids: list[str]) -> dict[str, dict]:
+        """Батч (R7-15): class_id → row lightweight (без payload) для статусов в циклах."""
+        ids = [str(c) for c in dict.fromkeys(class_ids) if c]
+        if not ids:
+            return {}
+        ph = ",".join("?" for _ in ids)
+        rows = await self._fetchall(
+            f"SELECT class_id, last_status, last_event_at, updated_at "
+            f"FROM merithub_class_status WHERE class_id IN ({ph})", tuple(ids))
+        return {r["class_id"]: r for r in rows}
+
 
 class MeritHubEnrollmentRepository(Repository):
     """Зачисление в класс (для вычисления неявок по webhook attendance)."""
@@ -555,6 +586,19 @@ class MeritHubEnrollmentRepository(Repository):
 
     async def list_by_class(self, class_id: str) -> list[dict]:
         return await self._fetchall("SELECT * FROM merithub_enrollments WHERE class_id=?", (class_id,))
+
+    async def list_by_classes(self, class_ids: list[str]) -> dict[str, list[dict]]:
+        """Батч (R7-15): class_id → [зачисления]. Один запрос вместо N+1 на карточках."""
+        ids = [str(c) for c in dict.fromkeys(class_ids) if c]
+        if not ids:
+            return {}
+        ph = ",".join("?" for _ in ids)
+        rows = await self._fetchall(
+            f"SELECT * FROM merithub_enrollments WHERE class_id IN ({ph})", tuple(ids))
+        out: dict[str, list[dict]] = {cid: [] for cid in ids}
+        for r in rows:
+            out.setdefault(r["class_id"], []).append(r)
+        return out
 
 
 class IdempotencyRepository(Repository):

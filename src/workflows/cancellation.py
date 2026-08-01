@@ -166,8 +166,12 @@ async def upcoming_lessons_for_parent(parent_tg: str, limit: int = 5, days: int 
     today = now.date()
     now_hhmm = now.strftime("%H:%M")
     out = []
+    # R7-15: батчи вместо N+1 — классы и tz-маппинги одним запросом каждый.
+    class_map = await crepo.get_many([e["class_id"] for e in enrollments])
+    tz_map = await srepo.get_by_client_ids(
+        [e["client_user_id"] for e in enrollments if e.get("client_user_id")])
     for class_id in sorted({e["class_id"] for e in enrollments}):
-        c = await crepo.get(class_id)
+        c = class_map.get(class_id)
         if not c:
             continue
         hhmm = (c.get("start_time") or "")[11:16] or "00:00"
@@ -181,7 +185,7 @@ async def upcoming_lessons_for_parent(parent_tg: str, limit: int = 5, days: int 
             name = enr.get("student_name") or enr.get("client_user_id") or "Ученик"
             tz = None
             if enr.get("client_user_id"):
-                srow = await srepo.get_by_client_id(enr["client_user_id"])
+                srow = tz_map.get(enr["client_user_id"])
                 tz = (srow or {}).get("timezone")
             out.append({
                 "class_id": class_id,

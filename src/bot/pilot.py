@@ -927,6 +927,7 @@ async def cmd_today(upd: Update, _ctx) -> None:
         MeritHubClassRepository,
         MeritHubEnrollmentRepository, MeritHubClassStatusRepository,
     )
+    from src.workflows.lesson_ops import _format_class_label
     from datetime import datetime as _dt
 
     # Классы
@@ -952,17 +953,27 @@ async def cmd_today(upd: Update, _ctx) -> None:
 
     if today_classes:
         lines.append(f"📚 Занятия сегодня ({len(today_classes)}), время — {org_zone_label()}:")
+        # R7-15: батчи вместо N+1 — статусы и зачисления одним запросом каждый.
+        _cids = [c["class_id"] for c in today_classes]
+        status_map = await MeritHubClassStatusRepository().get_map(_cids)
+        enr_map = await MeritHubEnrollmentRepository().list_by_classes(_cids)
+        now_hhmm = org_now().strftime("%H:%M")
         for c in today_classes:
-            status_row = await MeritHubClassStatusRepository().get(c["class_id"])
+            status_row = status_map.get(c["class_id"])
             live_status = status_row["last_status"] if status_row else "—"
             live_emoji = {"lv": "🟢", "cp": "✅", "cl": "❌", "ex": "⌛"}.get(live_status, "⚪")
             marker = "🔁" if (c.get("class_type") or "oneTime") == "perma" else "1️⃣"
-            enr = await MeritHubEnrollmentRepository().list_by_class(c["class_id"])
+            enr = enr_map.get(c["class_id"], [])
             student_count = sum(1 for e in enr if (e.get("role") or "student") == "student")
             student_names = [e.get("student_name") or e.get("client_user_id") for e in enr
                             if (e.get("role") or "student") == "student"]
+            hhmm = (c.get("start_time") or "")[11:16] or "00:00"
+            # P1 аудита: вместо голого `C9` — название курса или человекочитаемый
+            # label с датой («C9 — 09.08, 15:00»), плюс сколько осталось до урока.
+            label = c.get("title") or _format_class_label(c["class_id"], c.get("start_time"))
+            mins_left = max(0, (int(hhmm[:2]) * 60 + int(hhmm[3:5])) - (int(now_hhmm[:2]) * 60 + int(now_hhmm[3:5])))
             lines.append(
-                f"  {live_emoji}{marker} `{c['class_id']}` | {c.get('start_time', '—')[11:16]} "
+                f"  {live_emoji}{marker} {label} | {hhmm} | До урока {mins_left} мин "
                 f"| 👥 {student_count}: {', '.join(str(n) for n in student_names[:3])}"
                 + (f" +{len(student_names)-3}" if len(student_names) > 3 else "")
             )

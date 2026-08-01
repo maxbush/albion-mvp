@@ -396,10 +396,11 @@ async def cmd_lessons(upd: Update, _ctx) -> None:
             return
         from src.utils.recurrence import WD_EN
         erepo = MeritHubEnrollmentRepository()
+        by_cid = await erepo.list_by_classes([c["class_id"] for _, _, c in items[:10]])
         lines = [tr("lessons_header_tutor", lang, org=org_zone_label())]
         buttons = []
         for d, hhmm, c in items[:10]:
-            enr = [e for e in await erepo.list_by_class(c["class_id"])
+            enr = [e for e in by_cid.get(c["class_id"], [])
                    if (e.get("role") or "student") == "student"]
             names = ", ".join(e.get("student_name") or "" for e in enr[:3]) or "—"
             wd = WD_EN[(d.weekday() + 1) % 7]
@@ -432,10 +433,11 @@ async def cmd_lessons(upd: Update, _ctx) -> None:
                 "📚 Ближайших занятий нет (7 дней). Создать: /schedule")
             return
         erepo = MeritHubEnrollmentRepository()
+        by_cid = await erepo.list_by_classes([c["class_id"] for _, _, c in items[:12]])
         lines = [f"📚 Ближайшие занятия организации (7 дней, время — {org_zone_label()}):"]
         buttons = []
         for d, hhmm, c in items[:12]:
-            enr = [e for e in await erepo.list_by_class(c["class_id"])
+            enr = [e for e in by_cid.get(c["class_id"], [])
                    if (e.get("role") or "student") == "student"]
             names = ", ".join(e.get("student_name") or "" for e in enr[:3]) or "—"
             wd = WD_RU[mh_weekday(d)]
@@ -458,11 +460,12 @@ async def cmd_lessons(upd: Update, _ctx) -> None:
         await upd.message.reply_text(tr("lessons_empty", "ru"))
         return
     crepo = MeritHubClassRepository()
+    class_map = await crepo.get_many([l["class_id"] for l in lessons])
     lines = [tr("lessons_header_parent", "ru")]
     buttons = []
     for l in lessons:
         lines.append(f"• {l['label']} — {l['student_name']}")
-        c = await crepo.get(l["class_id"])
+        c = class_map.get(l["class_id"])
         link = (c or {}).get("participant_link")
         if link:
             buttons.append([InlineKeyboardButton(

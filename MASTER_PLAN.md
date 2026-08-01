@@ -108,6 +108,13 @@
   `src/bot/pilot.py:524-535` — в визарде уже `tr("tutor_link", ...)`, тут нет.
   План: `tr("tutor_link", await lang_of(tutor_tg), ...)`. E2E: tutor(en) → EN-текст.
 
+- [x] **R7-8a (хвост прежнего P1: `/today` сырые ID + «150/300 мин»).**
+  ✅ 2026-08-01. «150/300 мин» уже закрыто в R7-5 (человеческие заголовки
+  no-reply алертов); здесь — `cmd_today`: backtick-`C9` → title курса или
+  label «C9 — 09.08, 15:00», везде `hhmm` локальное + хвост «До урока N мин».
+  Admin-guard осознанно ОСТАВЛЕН (будущий ENABLE_ADMIN_APPROVAL — отдельное
+  решение владельца, см. 🛑-секцию). 1 новый тест, 199/199.
+
 - [x] **R7-9. Mock/эвристики tutor-reply не знают английских слов.**
   ✅ 2026-08-01. EN-слова в обеих ветках + найден латентный баг mock-режима:
   сканировался весь промпт (шаблон сам содержит status-слова) — сканируем
@@ -163,14 +170,14 @@
   `complete_workflow` (+контракт-тест: state=completed + WORKFLOW_COMPLETED на шине).
   E2E: 197/197 зелёные.
 
-- [ ] **R7-15. N+1 запросы на карточках расписания.**
-  `cmd_today`, `build_morning_digest_text`, `upcoming_lessons_for_parent`,
-  tutor-ветка `/lessons`: `list_by_class`/`get` на каждый класс в цикле
-  (масштаб сейчас мал — 26 классов, но мандат требует).
-  План: `MeritHubEnrollmentRepository.list_by_classes(class_ids)` +
-  `MeritHubClassStatusRepository.get_many(class_ids)`, перейти на батчи.
-  Регрессионные тесты уже есть (wizard/parent_circuit) — дополнить ассертом
-  на одинаковый вывод.
+- [x] **R7-15** ✅ 2026-08-01 — батч-методы `list_by_classes`, `get_many`
+  (classes), `get_map` (statuses), `get_by_client_ids` (students); перешли все
+  6 петель: cmd_today, build_morning_digest_text, upcoming_lessons_for_parent
+  (классы и tz), tutor- и coordinator-ветки /lessons, parent-ветка /lessons.
+  Тест паритета «батч ≡ одиночные» + регресс существующих функциональных тестов.
+  E2E: 198/198 зелёные.
+  **Была задача: N+1 запросы на карточках расписания** — `list_by_class`/`get`
+  на каждый класс в цикле.
 
 - [ ] **R7-16. Scheduler: повторный запуск упавшего действия переигрывает всех
   подписчиков тика** (requeue после частичного провала публикации события).

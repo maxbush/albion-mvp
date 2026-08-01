@@ -647,3 +647,50 @@ async def test_r7_14_complete_workflow_contract(tmp_path, monkeypatch):
     assert done and done[0]["workflow_id"] == wid and done[0]["ok"] is True
     wf = await engine.repo.get(wid)
     assert wf["state"] == "completed"
+
+
+# ── R7-15: батч-запросы ≡ одиночные (анти-N+1) ───────────────────────
+
+@pytest.mark.asyncio
+async def test_r7_15_batch_queries_match_singles(tmp_path, monkeypatch):
+    """get_many/list_by_classes/get_map/get_by_client_ids дают идентичный
+    результат куче одиночных запросов — иначе оптимизация меняет поведение."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.db.repository import (
+        MeritHubClassRepository,
+        MeritHubClassStatusRepository,
+        MeritHubEnrollmentRepository,
+        MeritHubStudentRepository,
+    )
+
+    crepo, erepo = MeritHubClassRepository(db), MeritHubEnrollmentRepository(db)
+    srepo, strepo = MeritHubStudentRepository(db), MeritHubClassStatusRepository(db)
+
+    # Два класса, зачисления и студент-строки (минимум для селектов).
+    await crepo._execute(
+        "INSERT INTO merithub_classes (class_id, title, start_time, class_type) VALUES ('B1','B1','2099-08-03T15:00:00','oneTime')")
+    await crepo._execute(
+        "INSERT INTO merithub_classes (class_id, title, start_time, class_type) VALUES ('B2','B2','2099-08-04T16:00:00','oneTime')")
+    await erepo.add("B1", "mh1", client_user_id="cu1", student_name="Ann")
+    await erepo.add("B2", "mh2", client_user_id="cu2", student_name="Bob")
+    await srepo.upsert("cu1", name="Ann S")
+    await srepo.upsert("cu2", name="Bob T")
+    await strepo.upsert("B1", "lv")
+
+    many = await crepo.get_many(["B1", "B2"])
+    assert set(many) == {"B1", "B2"}
+    assert many["B1"]["title"] == (await crepo.get("B1"))["title"]
+
+    by_cls = await erepo.list_by_classes(["B1", "B2"])
+    assert [e["student_name"] for e in by_cls["B1"]] == ["Ann"]
+    assert [e["student_name"] for e in by_cls["B2"]] == ["Bob"]
+
+    st = await strepo.get_map(["B1", "B2"])
+    assert st["B1"]["last_status"] == "lv" and "B2" not in st
+
+    sm = await srepo.get_by_client_ids(["cu1", "cu2"])
+    assert sm["cu1"]["name"] == "Ann S" and sm["cu2"]["name"] == "Bob T"
+
+    # Пустые/дублирующиеся входы не падают.
+    assert await crepo.get_many([]) == {}
+    assert set(await crepo.get_many(["B1", "B1", None])) == {"B1"}
