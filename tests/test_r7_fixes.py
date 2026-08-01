@@ -175,3 +175,71 @@ async def test_r7_1_free_text_full_chain_via_bus(tmp_path, monkeypatch):
     # пользователь получил видимый ответ через шину (fallback по question)
     assert any("координатору" in d.get("message", "") for d in captured
                if d.get("telegram_id") == "777")
+
+
+# ── R7-2: ack отправителю на lead / absence_report ───────────────────
+
+@pytest.mark.asyncio
+async def test_r7_2_lead_sender_gets_ack(tmp_path, monkeypatch):
+    """Заявка: координаторы уведомлены (как раньше) + отправитель получает ack."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.db.repository import LeadRepository, UserRepository
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+    from src.workflows.lead_capture import LeadCaptureWorkflow
+
+    await UserRepository(db).create("911", "parent", "Новый клиент")
+    await UserRepository(db).create("coord_1", "coordinator", "Координатор")
+
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await LeadCaptureWorkflow(db).handle_lead_new(Event(EventTypes.LEAD_NEW, {
+            "raw_message": "Нужен репетитор по математике для сына",
+            "telegram_id": "911",
+            "extracted_data": {"subject": "math", "is_lead": True},
+        }))
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    sender = [d for d in captured if d.get("telegram_id") == "911"]
+    coord = [d for d in captured if d.get("telegram_id") == "coord_1"]
+    assert sender, "отправитель заявки должен получить подтверждение"
+    assert "Заявка принята" in sender[0]["message"]
+    assert coord and "Новая заявка" in coord[0]["message"]  # прежний алерт на месте
+    assert await LeadRepository(db).get(1)                  # заявка сохранена
+
+
+@pytest.mark.asyncio
+async def test_r7_2_absence_report_sender_gets_ack(tmp_path, monkeypatch):
+    """Репорт о неявке текстом: координаторы получают алерт + отправителю ack."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.db.repository import UserRepository
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+    from src.workflows.absence import AbsenceWorkflow
+
+    await UserRepository(db).create("912", "parent", "Мама")
+    await UserRepository(db).create("coord_1", "coordinator", "Координатор")
+
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await AbsenceWorkflow(db).handle_classified(Event(EventTypes.MESSAGE_CLASSIFIED, {
+            "intent": "absence_report", "telegram_id": "912", "text": "сын сегодня не придёт",
+        }))
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    sender = [d for d in captured if d.get("telegram_id") == "912"]
+    coord = [d for d in captured if d.get("telegram_id") == "coord_1"]
+    assert sender and "передали координатору" in sender[0]["message"]
+    assert coord and "неявке" in coord[0]["message"]

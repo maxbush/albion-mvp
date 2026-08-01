@@ -120,6 +120,12 @@ class AbsenceWorkflow:
         )
         await notify_all_coordinators(
             msg, notification_type="absence_report", db_path=self.incidents.db_path)
+        # Отправителю — ack (R7-2): иначе репорт уходил в молчание.
+        from src.utils.i18n import lang_of, tr
+        await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+            "telegram_id": str(tg),
+            "message": tr("absence_report_ack", await lang_of(str(tg))),
+        }))
         logger.info("absence_report from %s forwarded to coordinators", tg)
 
     async def handle_scheduler_tick(self, event: Event) -> None:
