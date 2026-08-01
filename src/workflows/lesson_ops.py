@@ -250,10 +250,12 @@ class LessonOpsWorkflow:
             return wf["id"], data, wf_type
         return None
 
-    async def notify_coordinators(self, title: str, lines: list[str]) -> None:
+    async def notify_coordinators(self, title: str, lines: list[str],
+                                  buttons: list[dict] | None = None) -> None:
         msg = title + "\n" + "\n".join(lines)
         from src.bot.roles import notify_all_coordinators
-        await notify_all_coordinators(msg, notification_type="ops_alert", db_path=self.repo.db_path)
+        await notify_all_coordinators(msg, notification_type="ops_alert",
+                                      db_path=self.repo.db_path, buttons=buttons)
 
     async def record_checkin_response(
         self,
@@ -465,15 +467,20 @@ class LessonOpsWorkflow:
         if not wf or wf["state"] != "running":
             return
         data["response_status"] = "no_reply"
+        # R7-5: вместо «Actor: tutor / Telegram: <id>» — контекст словами и
+        # кнопка связи с молчащим (кто именно молчит — уже сказано в title).
+        actor_tg = data.get("actor_telegram_id")
+        who = "родителю" if data.get("actor_type") == "parent" else "репетитору"
+        buttons = ([{"text": f"👤 Написать {who}", "url": f"tg://user?id={actor_tg}"}]
+                   if actor_tg else None)
         await self.notify_coordinators(
             title,
             [
                 f"Занятие: {_format_class_label(data.get('class_id', '—'), data.get('start_time'))}",
-                f"Actor: {data.get('actor_type')}",
-                f"Telegram: {data.get('actor_telegram_id')}",
-                f"Ученик(и): {data.get('student_name') or ', '.join(data.get('student_names') or []) or '—'}",
                 f"Репетитор: {data.get('tutor_name', '—')}",
+                f"Ученик(и): {data.get('student_name') or ', '.join(data.get('student_names') or []) or '—'}",
             ],
+            buttons=buttons,
         )
         await self._cancel_future_actions(wid)
         await self._save_workflow(wid, "completed", data)

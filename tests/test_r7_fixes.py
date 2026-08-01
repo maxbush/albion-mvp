@@ -363,3 +363,46 @@ async def test_r7_4_parent_reply_notification_has_button_not_raw_tg(tmp_path, mo
     assert "опоздаем" in coord["message"]
     btns = coord.get("buttons") or []
     assert any(b.get("url") == "tg://user?id=555" for b in btns)
+
+
+# ── R7-5: no-reply алерт без «Actor:/Telegram:» ──────────────────────
+
+@pytest.mark.asyncio
+async def test_r7_5_no_reply_alert_human_with_contact_button(tmp_path, monkeypatch):
+    """«Репетитор не подтвердил готовность»: контекст словами + кнопка связи."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.db.repository import UserRepository, WorkflowRepository
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+    from src.workflows.lesson_ops import LessonOpsWorkflow
+
+    await UserRepository(db).create("coord_1", "coordinator", "Координатор")
+    wid = await WorkflowRepository(db).create("prelesson_tutor", "running", {
+        "class_id": "C9", "actor_type": "tutor", "actor_telegram_id": "42",
+        "tutor_name": "Daniel John", "student_names": ["Sofia"],
+        "start_time": "2099-07-31T15:00:00+00:00"})
+
+    captured = []
+
+    async def cap(ev):
+        captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await LessonOpsWorkflow(db).handle_scheduler_tick(Event(EventTypes.SCHEDULER_TICK, {
+            "action": "tutor_prelesson_no_reply",
+            "workflow_id": wid,
+            "data": {"workflow_id": wid},
+        }))
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    coord = [d for d in captured if d.get("telegram_id") == "coord_1"]
+    assert coord, "координатор должен получить алерт о молчании"
+    text = coord[0]["message"]
+    assert "не подтвердил готовность" in text
+    assert "Daniel John" in text and "Sofia" in text
+    assert "Actor:" not in text and "Telegram:" not in text   # теххвостов нет
+    btns = coord[0].get("buttons") or []
+    assert any(b.get("url") == "tg://user?id=42" for b in btns)
+    assert any("репетитору" in (b.get("text") or "") for b in btns)
