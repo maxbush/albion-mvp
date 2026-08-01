@@ -731,6 +731,8 @@ async def test_u7_after_role_choice_user_can_retext(tmp_path, monkeypatch):
     db = await _init_tmp_db(tmp_path, monkeypatch)
     from src.bot.handlers import handle_callback, handle_message
     from src.db.repository import UserRepository
+    from src.events.bus import bus
+    from src.events.types import EventTypes
 
     upd = FakeUpdate(FakeUser(890))
     upd.message.text = "привет"
@@ -741,8 +743,19 @@ async def test_u7_after_role_choice_user_can_retext(tmp_path, monkeypatch):
     assert (await UserRepository(db).get_by_telegram_id("890"))["role"] == "parent"
 
     # Повторное сообщение теперь проходит как у обычного родителя —
-    # без инцидента/чекина попадёт в классификатор (ответ «Обрабатываю...»).
+    # без инцидента/чекина попадёт в классификатор. Видимый ответ теперь
+    # приходит через шину уведомлений (fallback), а не «Обрабатываю...» (R7-1).
     upd2 = FakeUpdate(FakeUser(890))
     upd2.message.text = "привет ещё раз"
-    await handle_message(upd2, FakeContext())
-    assert upd2.message.replies, "повторный текст обработан"
+    incoming = []
+
+    async def cap2(ev):
+        incoming.append(ev.data)
+
+    bus.subscribe(EventTypes.MESSAGE_INCOMING, cap2)
+    try:
+        await handle_message(upd2, FakeContext())
+    finally:
+        bus.unsubscribe(EventTypes.MESSAGE_INCOMING, cap2)
+    assert incoming, "повторный текст обработан и классифицирован"
+    assert not any("Обрабатываю" in (t or "") for t, _ in upd2.message.replies)

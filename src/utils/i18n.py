@@ -88,6 +88,20 @@ T: dict[str, dict[str, str]] = {
         "ru": "Ссылки постоянные: если потеряли — нажмите здесь заново в любой момент.",
         "en": "Links are permanent: if lost, just tap here again anytime.",
     },
+    # ── Fallback: непокрытые интенты (question/other) ──
+    "fb_user_ack": {
+        "ru": "💬 Спасибо! Передал ваше сообщение координатору — он ответит вам здесь, в чате.",
+        "en": "💬 Thanks! I've passed your message to the coordinator — they'll reply here in the chat.",
+    },
+    # ── Подтверждения на заявку / репорт о неявке ──
+    "lead_ack": {
+        "ru": "✅ Заявка принята! Координатор свяжется с вами здесь, в чате.",
+        "en": "✅ Request received! The coordinator will get back to you here in the chat.",
+    },
+    "absence_report_ack": {
+        "ru": "✅ Спасибо, передали координатору — он всё увидит.",
+        "en": "✅ Thanks, we've passed it to the coordinator.",
+    },
 }
 
 

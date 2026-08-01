@@ -1197,10 +1197,13 @@ async def handle_message(upd: Update, _ctx) -> None:
             )
             return
 
+    # Классификация → конкретные workflow отвечают пользователю сами
+    # (отмена / заявка / неявка / fallback). Промежуточного «Обрабатываю...»
+    # больше нет (R7-1): ин-мемори bus выполняет цепочку синхронно, поэтому
+    # настоящий ответ приходит в рамках того же запроса — без лишнего шума.
     await bus.publish(Event(EventTypes.MESSAGE_INCOMING, {
         "text": text, "telegram_id": tg_id, "chat_id": str(upd.effective_chat.id),
     }))
-    await upd.message.reply_text("Обрабатываю...")
 
 
 async def _demo_tick_handler(event: Event) -> None:

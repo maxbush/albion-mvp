@@ -17,6 +17,7 @@ from src.workflows.absence import register_handlers as ra
 from src.workflows.lead_capture import register_handlers as rl
 from src.workflows.cancellation import register_handlers as rc
 from src.workflows.lesson_ops import register_handlers as rops, ensure_morning_digest
+from src.workflows.fallback import register_handlers as rfb
 from src.ai.classifier import register_handlers as rx
 from src.bot.handlers import setup_handlers, seed_demo_data
 from src.bot.wizard import wizard_expiry_loop
@@ -33,6 +34,7 @@ async def register_all():
     await rl()
     await rc()
     await rops()
+    await rfb()
     await rx()
     logger.info("Handlers registered. Events: %s", bus.get_subscribed_events())
 
