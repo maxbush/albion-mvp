@@ -40,15 +40,9 @@ class AbsenceWorkflow:
         if not lid:
             return
 
-        lesson = None
-        merithub_get_lesson = getattr(self.merithub, "get_lesson", None)
-        if callable(merithub_get_lesson):
-            try:
-                lesson = await merithub_get_lesson(lid)
-            except Exception as e:
-                logger.warning("MeritHub get_lesson failed for %s: %s", lid, e)
-        if not lesson:
-            lesson = await self.airtable.get_lesson(lid)
+        # Чтение урока — только airtable (демо-данные): у merithub-сервиса
+        # read-методов нет (create-only вендор, R7-10).
+        lesson = await self.airtable.get_lesson(lid)
         if not lesson:
             logger.warning("Lesson %s not found", lid)
             # Честный фидбэк отправителю: /absent уже ответил «зафиксировал» —
@@ -64,12 +58,6 @@ class AbsenceWorkflow:
                 }))
             return
 
-        merithub_mark_absent = getattr(self.merithub, "mark_absent", None)
-        if callable(merithub_mark_absent):
-            try:
-                await merithub_mark_absent(lid)
-            except Exception as e:
-                logger.warning("MeritHub mark_absent failed for %s: %s", lid, e)
         await self.airtable.mark_absent(lid, event.data.get("reported_by", ""))
 
         student = await self.airtable.get_student(lesson.student_id)
