@@ -16,14 +16,8 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS conversations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER REFERENCES users(id),
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    metadata TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+-- Таблица conversations УДАЛЕНА (R7-11): 0 ссылок в коде — история чата не
+-- реализована как фича; существующие БД очищаются DROP'ом в init_db.
 
 CREATE TABLE IF NOT EXISTS workflow_instances (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -132,6 +126,8 @@ CREATE INDEX IF NOT EXISTS idx_mh_students_tz ON merithub_students(timezone);
 -- Метаданные классов MeritHub, созданных через ALBION.
 -- Нужны, чтобы потом реально добавлять пользователей в класс: MeritHub
 -- возвращает commonHostLink/commonParticipantLink только на этапе schedule_class.
+-- class_type: 'oneTime' | 'perma' (регулярная серия; type менять нельзя — API).
+-- schedule_days: JSON-список дней недели формата MeritHub (0=вс..6=сб), только perma.
 CREATE TABLE IF NOT EXISTS merithub_classes (
     class_id TEXT PRIMARY KEY,
     host_link TEXT,
@@ -140,9 +136,36 @@ CREATE TABLE IF NOT EXISTS merithub_classes (
     start_time TEXT,
     tutor_client_user_id TEXT,
     tutor_merithub_user_id TEXT,
+    class_type TEXT NOT NULL DEFAULT 'oneTime',
+    schedule_days TEXT,
+    duration INTEGER,
+    timezone TEXT DEFAULT 'Europe/London',
+    end_date TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_mh_classes_start ON merithub_classes(start_time);
+
+-- Occurrences perma-серий из webhook'ов MeritHub (subClassId → родительский classId).
+-- D6: таблица спроектирована сейчас, наполнение и fallback-lookup — после демо.
+CREATE TABLE IF NOT EXISTS merithub_occurrences (
+    sub_class_id TEXT PRIMARY KEY,
+    parent_class_id TEXT NOT NULL,
+    occurrence_date TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_mh_occ_parent ON merithub_occurrences(parent_class_id);
+
+-- Состояние кнопочных сценариев (визардов) координатора.
+-- В SQLite, а не в памяти: перезапуск бота не должен молча убивать сценарий
+-- (тот же принцип, что и у scheduler'а). expires_at — TTL неактивности.
+CREATE TABLE IF NOT EXISTS wizard_state (
+    chat_id TEXT PRIMARY KEY,
+    flow TEXT NOT NULL,
+    step TEXT NOT NULL,
+    data TEXT NOT NULL DEFAULT '{}',
+    expires_at TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 -- Контакты участников MeritHub в Telegram. Нужны для напоминаний tutor/parent.
 CREATE TABLE IF NOT EXISTS merithub_contacts (

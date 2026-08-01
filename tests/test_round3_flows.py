@@ -154,7 +154,10 @@ async def test_cancel_lesson_workflow_race_fallback_notifies_reporter(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_p03_cancel_lesson_usage_hint(tmp_path, monkeypatch):
-    """Без аргументов — подсказка, события нет."""
+    """Без аргументов и личных занятий — честное пустое состояние, события нет.
+
+    (Round 6: вместо техподсказки «<ID>» — персональный список кнопками;
+    если занятий нет — просим написать координатору.)"""
     await _init_tmp_db(tmp_path, monkeypatch)
     from src.bot.handlers import cmd_cancel_lesson
 
@@ -166,7 +169,7 @@ async def test_p03_cancel_lesson_usage_hint(tmp_path, monkeypatch):
         upd = FakeUpdate(FakeUser(9))
         await cmd_cancel_lesson(upd, FakeContext([]))
         texts = [t for t, _ in upd.message.replies]
-        assert any("/cancel_lesson" in t for t in texts)
+        assert any("координатору" in t for t in texts)
     finally:
         bus.unsubscribe(EventTypes.LESSON_CANCELLED, boom)
 
@@ -254,7 +257,10 @@ async def test_p11_absence_report_reaches_coordinators(tmp_path, monkeypatch):
         msgs = [d for d in captured if d.get("telegram_id") == "coord_1"]
         assert msgs, "координатор должен получить репорт о неявке"
         assert "не смог прийти" in msgs[0]["message"]
-        assert "555" in msgs[0]["message"]
+        # R7-4: сырой TG не печатаем — он в url-кнопке «Написать пользователю».
+        assert "TG 555" not in msgs[0]["message"]
+        btns = msgs[0].get("buttons") or []
+        assert any(b.get("url") == "tg://user?id=555" for b in btns)
     finally:
         bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
 
@@ -456,7 +462,7 @@ async def test_p14_expired_lock_with_retries_left_still_reaped(tmp_path, monkeyp
 
 @pytest.mark.asyncio
 async def test_p15_escalation_message_has_context(tmp_path, monkeypatch):
-    """Координаторская эскалация содержит ученика, занятие и TG родителя."""
+    """Координаторская эскалация содержит ученика, занятие и способ связаться."""
     db = await _init_tmp_db(tmp_path, monkeypatch)
     from src.db.repository import (
         IncidentRepository, MeritHubClassRepository, UserRepository,
@@ -494,7 +500,10 @@ async def test_p15_escalation_message_has_context(tmp_path, monkeypatch):
         assert "Миша Иванов" in m          # ученик
         assert "C9" in m                   # занятие
         assert "31.07" in m                # человекочитаемая дата из метаданных
-        assert "555" in m                  # TG родителя
+        # R7-4: TG родителя — в tg://-кнопке, а не сырой строкой в тексте.
+        assert "555" not in m
+        btns = msgs[0].get("buttons") or []
+        assert any(b.get("url") == "tg://user?id=555" for b in btns)
     finally:
         bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
 

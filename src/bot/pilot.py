@@ -516,21 +516,20 @@ async def cmd_mh_schedule(upd: Update, ctx) -> None:
             user_links = client.parse_user_links(resp_links)
             logger.info("MH_SYNC: add_users_to_class %s (%d users)", class_id, len(users))
 
-        # Отправляем ссылку tutor'у
+        # Отправляем ссылку tutor'у — на его языке (i18n, R7-8; визард уже так делает)
         tutor_contact_row = await contact_repo.get(tutor_cuid)
         tutor_tg = (tutor_contact_row or {}).get("telegram_id")
         if tutor_tg:
             tutor_link = user_links.get(tutor.get("merithub_user_id", ""))
             if tutor_link:
                 tutor_room = client.room_url(tutor_link)
+                from src.utils.i18n import lang_of, tr
                 await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
                     "telegram_id": tutor_tg,
-                    "message": (
-                        f"📎 Ссылка на урок:\n"
-                        f"🕐 {start}\n"
-                        f"👥 Ученики: {', '.join(s.get('name','') for s in student_rows)}\n"
-                        f"🔗 {tutor_room}"
-                    ),
+                    "message": tr("tutor_link", await lang_of(tutor_tg),
+                                  time=start,
+                                  students=", ".join(s.get("name", "") for s in student_rows),
+                                  url=tutor_room),
                 }))
 
         # Отправляем ссылки parent'ам
@@ -853,13 +852,45 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
             f"Всего: {stats['total']}\n"
         )
 
+    # Живые подписи вместо техстрок (R7-3): статус/тип словом, время в org-зоне.
+    import json as _json
+    from src.utils.recurrence import fmt_dt_org as _fmt_ts
+    from src.workflows.lesson_ops import _format_class_label
+
+    _TYPE_RU = {"absence": "неявка", "late": "опоздание",
+                "cancellation": "отмена", "other": "прочее"}
+    _STATUS_RU = {"pending": "ожидает ответа", "escalated": "ЭСКАЛАЦИЯ", "open": "открыт"}
+
+    async def _student_name(inc_id: int) -> str | None:
+        """Имя ученика из данных workflow инцидента (если сценарий его знал)."""
+        row = await repo._fetchone(
+            "SELECT data FROM workflow_instances WHERE data LIKE ? ORDER BY id DESC LIMIT 1",
+            (f'%"incident_id": {inc_id}%',),
+        )
+        if not row:
+            return None
+        try:
+            return _json.loads(row["data"]).get("student_name")
+        except Exception:
+            return None
+
     if active:
         lines.append("─── Активные ───")
         for inc in active:
             status_emoji = {"pending": "⏳", "escalated": "🚨", "open": "📌"}.get(inc["status"], "❓")
+            label = _format_class_label(
+                inc.get("lesson_ref") or "—", None)
+            # Уточняем время занятия из карточки класса, если знаем ID
+            if inc.get("lesson_ref"):
+                cls = await MeritHubClassRepository().get(inc["lesson_ref"])
+                if cls:
+                    label = _format_class_label(inc["lesson_ref"], cls.get("start_time"))
+            who = await _student_name(inc["id"])
+            who_part = f" · {who}" if who else ""
             lines.append(
-                f"{status_emoji} #{inc['id']} [{inc['type']}] урок: `{inc.get('lesson_ref') or '—'}` "
-                f"| статус: {inc['status']} | {inc.get('created_at', '')[:16]}"
+                f"{status_emoji} #{inc['id']} {_TYPE_RU.get(inc['type'], inc['type'])}"
+                f"{who_part} · {label}\n"
+                f"   {_STATUS_RU.get(inc['status'], inc['status'])} · создан {_fmt_ts(inc.get('created_at'))}"
             )
     else:
         lines.append("✅ Активных инцидентов нет.")
@@ -867,78 +898,126 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
     if closed:
         lines.append("\n─── Последние закрытые ───")
         for inc in closed:
+            who = await _student_name(inc["id"])
+            who_part = f" · {who}" if who else ""
+            resolution = {
+                "parent_ok": "всё в порядке", "parent_not_coming": "не пришли",
+                "parent_late": "опоздали", "parent_text_reply": "ответ текстом",
+                "parent_confirmed": "подтверждено родителем",
+                "coordinator": "закрыто координатором",
+                "coordinator_closed": "закрыто координатором",
+            }.get(inc.get("resolution") or "", None) or (inc.get("resolution") or "—")
             lines.append(
-                f"✅ #{inc['id']} | `{inc.get('lesson_ref') or '—'}` "
-                f"| {inc.get('resolution') or '—'} | {(inc.get('resolved_at') or '')[:16]}"
+                f"✅ #{inc['id']}{who_part} · {resolution} · {_fmt_ts(inc.get('resolved_at'))}"
             )
 
     await upd.message.reply_text("\n".join(lines))
 
 
+async def cmd_leads(upd: Update, _ctx) -> None:
+    """R7-18: лиды — backend писался всегда, поверхности просмотра не было.
+
+    Последние 10 со статусом + общий счётчик; время — в зоне организации,
+    формулировки человеческие (тот же стандарт, что /incidents в R7-3)."""
+    if not is_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только владелец/админ.")
+        return
+
+    from src.db.repository import LeadRepository
+    from src.utils.recurrence import fmt_dt_org, org_zone_label
+
+    repo = LeadRepository()
+    total = await repo.count()
+    recent = await repo.list_recent(10)
+
+    lines = ["🎯 Лиды\n",
+             f"Всего: {total}  |  Ниже — последние {len(recent)} "
+             f"(время — {org_zone_label()}):\n"]
+    if not recent:
+        lines.append("Пока пусто. Лид создаётся автоматически, когда "
+                     "незнакомец пишет боту «хочу занятия» и т.п.")
+    _STATUS_RU = {"new": "новый", "contacted": "в работе",
+                  "converted": "стал учеником", "closed": "закрыт"}
+    for r in recent:
+        ex = r.get("extracted_data") or {}
+        name = ex.get("name") or ex.get("student") or "—"
+        status_ru = _STATUS_RU.get(r.get("status") or "", r.get("status") or "новый")
+        src = r.get("source") or "telegram"
+        when = fmt_dt_org(r.get("created_at"))
+        text = (r.get("raw_message") or "").replace("\n", " ").strip()
+        lines.append(f"• #{r['id']} · {when} · {name} · {status_ru}")
+        if text:
+            lines.append(f"  «{text[:80]}{'…' if len(text) > 80 else ''}» ({src})")
+    await upd.message.reply_text("\n".join(lines))
+
+
 async def cmd_today(upd: Update, _ctx) -> None:
-    """Обзор на сегодня: классы, записи, ожидающие действия."""
+    """Обзор на сегодня: занятия и инциденты.
+
+    П5 аудита: интерьеры движка (pending actions, workflow id) убраны отсюда
+    в /status — /today читается как продуктовый обзор, а не дашборд дебага."""
     if not is_admin(upd.effective_user.id):
         await upd.message.reply_text("⛔ Только владелец/админ.")
         return
 
     from src.db.repository import (
-        MeritHubClassRepository, ScheduledActionRepository,
+        MeritHubClassRepository,
         MeritHubEnrollmentRepository, MeritHubClassStatusRepository,
-        WorkflowRepository,
     )
-    from datetime import datetime
-
-    # Используем зону организации для определения «сегодня» (P1.1)
-    today_str = datetime.now(settings.org_zone()).strftime("%Y-%m-%d")
+    from src.workflows.lesson_ops import _format_class_label
+    from datetime import datetime as _dt
 
     # Классы
     classes = await MeritHubClassRepository().list_all()
-    # Ожидающие действия
-    sched = ScheduledActionRepository()
-    pending_actions = await sched._fetchall(
-        "SELECT * FROM scheduled_actions WHERE status='pending' ORDER BY execute_at LIMIT 20"
-    )
-    # Активные workflow'ы
-    wf_repo = WorkflowRepository()
-    active_wf = await wf_repo._fetchall(
-        "SELECT * FROM workflow_instances WHERE state='running' ORDER BY id DESC LIMIT 10"
-    )
     # Инциденты за сегодня
     from src.db.repository import IncidentRepository
+    from src.utils.recurrence import org_now, org_zone_label, class_occurs_on
     inc_repo = IncidentRepository()
+    today_str = _dt.now().strftime("%Y-%m-%d")
     today_incidents = await inc_repo._fetchall(
         "SELECT * FROM incidents WHERE created_at LIKE ? ORDER BY created_at",
         (f"{today_str}%",),
     )
+    # «Сегодня» — по канонической зоне организации (H4/P4.1), occurrence-aware:
+    # perma-серии материализуются из паттерна дней, oneTime — по дате start_time.
+    today_org = org_now().date()
 
     lines = ["📅 Обзор системы\n"]
 
-    # Классы — фильтруем сегодняшние по дате старта в зоне организации
-    today_classes = []
-    for c in classes:
-        start_str = c.get("start_time", "")
-        if start_str and start_str[:10] == today_str:
-            today_classes.append(c)
+    # Занятия на сегодня: oneTime по дате, perma — по паттерну дней недели
+    today_classes = [c for c in classes if class_occurs_on(c, today_org)]
+    today_classes.sort(key=lambda c: (c.get("start_time") or "")[11:16] or "99:99")
 
     if today_classes:
-        lines.append(f"📚 Занятия сегодня ({len(today_classes)}):")
+        lines.append(f"📚 Занятия сегодня ({len(today_classes)}), время — {org_zone_label()}:")
+        # R7-15: батчи вместо N+1 — статусы и зачисления одним запросом каждый.
+        _cids = [c["class_id"] for c in today_classes]
+        status_map = await MeritHubClassStatusRepository().get_map(_cids)
+        enr_map = await MeritHubEnrollmentRepository().list_by_classes(_cids)
+        now_hhmm = org_now().strftime("%H:%M")
         for c in today_classes:
-            status_row = await MeritHubClassStatusRepository().get(c["class_id"])
+            status_row = status_map.get(c["class_id"])
             live_status = status_row["last_status"] if status_row else "—"
             live_emoji = {"lv": "🟢", "cp": "✅", "cl": "❌", "ex": "⌛"}.get(live_status, "⚪")
-            enr = await MeritHubEnrollmentRepository().list_by_class(c["class_id"])
+            marker = "🔁" if (c.get("class_type") or "oneTime") == "perma" else "1️⃣"
+            enr = enr_map.get(c["class_id"], [])
             student_count = sum(1 for e in enr if (e.get("role") or "student") == "student")
             student_names = [e.get("student_name") or e.get("client_user_id") for e in enr
                             if (e.get("role") or "student") == "student"]
+            hhmm = (c.get("start_time") or "")[11:16] or "00:00"
+            # P1 аудита: вместо голого `C9` — название курса или человекочитаемый
+            # label с датой («C9 — 09.08, 15:00»), плюс сколько осталось до урока.
+            label = c.get("title") or _format_class_label(c["class_id"], c.get("start_time"))
+            mins_left = max(0, (int(hhmm[:2]) * 60 + int(hhmm[3:5])) - (int(now_hhmm[:2]) * 60 + int(now_hhmm[3:5])))
             lines.append(
-                f"  {live_emoji} `{c['class_id']}` | {c.get('start_time', '—')[11:16]} "
-                f"| 👥 {student_count}: {', '.join(student_names[:3])}"
+                f"  {live_emoji}{marker} {label} | {hhmm} | До урока {mins_left} мин "
+                f"| 👥 {student_count}: {', '.join(str(n) for n in student_names[:3])}"
                 + (f" +{len(student_names)-3}" if len(student_names) > 3 else "")
             )
     elif classes:
         lines.append(f"📚 Сегодня занятий нет. Всего классов: {len(classes)}")
     else:
-        lines.append("📚 Классов пока нет. Создайте: `/mh_schedule ...`")
+        lines.append("📚 Классов пока нет. Создайте: /schedule")
 
     # Инциденты за сегодня
     lines.append("")
@@ -953,101 +1032,18 @@ async def cmd_today(upd: Update, _ctx) -> None:
     else:
         lines.append("📋 Инцидентов сегодня нет.")
 
-    # Ожидающие действия
-    lines.append("")
-    if pending_actions:
-        lines.append(f"⏰ Ожидающие действия ({len(pending_actions)}):")
-        for a in pending_actions[:10]:
-            execute_str = a.get("execute_at", "—")[:19]
-            lines.append(f"  [{a['action']}] → {execute_str} | wf#{a['workflow_id']}")
-    else:
-        lines.append("⏰ Нет ожидающих действий.")
-
-    # Активные workflow'ы
-    if active_wf:
-        lines.append("")
-        lines.append(f"⚙️ Активные workflow ({len(active_wf)}):")
-        for w in active_wf[:5]:
-            lines.append(f"  #{w['id']} [{w['workflow_type']}]")
-
     await upd.message.reply_text("\n".join(lines))
 
 
 async def cmd_morning_digest(upd: Update, _ctx) -> None:
-    """Утренняя сводка: какие сегодня занятия, кто задействован, что нужно подтвердить.
-
-    Для прода: запускать по cron/scheduler каждое утро и рассылать координаторам.
-    Для демо: вызывается командой.
-    """
+    """Утренняя сводка по требованию. Текст общий с авто-рассылкой 07:30
+    (build_morning_digest_text) — occurrence-aware: perma-серии материализуются
+    из паттерна дней, а не ищутся по дате start_time (П6 аудита)."""
     if not is_admin(upd.effective_user.id):
         await upd.message.reply_text("⛔ Только владелец/админ.")
         return
-
-    from src.db.repository import (
-        MeritHubClassRepository, MeritHubEnrollmentRepository,
-        MeritHubClassStatusRepository, IncidentRepository,
-    )
-    from datetime import datetime
-
-    today_str = datetime.now(settings.org_zone()).strftime("%Y-%m-%d")
-    classes = await MeritHubClassRepository().list_all()
-
-    # Фильтруем занятия на сегодня
-    today_classes = []
-    for c in classes:
-        start_str = c.get("start_time", "")
-        if start_str and start_str[:10] == today_str:
-            today_classes.append(c)
-
-    # Сортируем по времени
-    today_classes.sort(key=lambda c: c.get("start_time", ""))
-
-    if not today_classes:
-        await upd.message.reply_text(
-            f"☀️ Доброе утро!\n\n"
-            f"📅 На сегодня ({today_str}) занятий не запланировано.\n\n"
-            f"Создать занятие: `/mh_schedule <tutor> <start> <min> <students...>`",
-            parse_mode="Markdown",
-        )
-        return
-
-    lines = [f"☀️ *Доброе утро!*\n📅 Расписание на {today_str}\n"]
-    lines.append(f"Занятий сегодня: *{len(today_classes)}*\n")
-
-    total_students = 0
-    total_tutors = set()
-
-    for c in today_classes:
-        class_id = c["class_id"]
-        start_time = c.get("start_time", "—")
-        time_str = start_time[11:16] if len(start_time) > 16 else start_time
-
-        enr = await MeritHubEnrollmentRepository().list_by_class(class_id)
-        students = [e for e in enr if (e.get("role") or "student") == "student"]
-        tutors = [e for e in enr if (e.get("role") or "student") in ("tutor", "teacher")]
-
-        total_students += len(students)
-        for t in tutors:
-            total_tutors.add(t.get("student_name") or t.get("client_user_id"))
-
-        tutor_name = tutors[0].get("student_name") if tutors else "—"
-        student_names = [s.get("student_name") or s.get("client_user_id") for s in students]
-
-        lines.append(
-            f"🕐 *{time_str}* — {tutor_name}\n"
-            f"   👥 {', '.join(student_names)}\n"
-        )
-
-    lines.append(
-        f"───\n"
-        f"📊 Итого: {len(today_classes)} занятий, "
-        f"{total_students} учеников, "
-        f"{len(total_tutors)} репетиторов\n\n"
-        f"Система автоматически напомнит всех за "
-        f"{settings.albion_prelesson_reminder_min} мин до урока."
-    )
-
-    await upd.message.reply_text("\n".join(lines))
+    from src.workflows.lesson_ops import build_morning_digest_text
+    await upd.message.reply_text(await build_morning_digest_text())
 
 
 async def cmd_mh_contact(upd: Update, ctx) -> None:
@@ -1367,6 +1363,7 @@ def register_pilot_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("seed10", cmd_seed10))
     app.add_handler(CommandHandler("demo_reset", cmd_demo_reset))
     app.add_handler(CommandHandler("incidents", cmd_incidents))
+    app.add_handler(CommandHandler("leads", cmd_leads))
     app.add_handler(CommandHandler("today", cmd_today))
     app.add_handler(CommandHandler("morning", cmd_morning_digest))
     logger.info("Pilot handlers registered (/pilot_* /mh_* /seed10 /demo_reset /incidents /today /morning)")

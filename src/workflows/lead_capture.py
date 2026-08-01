@@ -32,6 +32,17 @@ class LeadCaptureWorkflow:
         lid = await self.repo.create(text, extracted)
         await self.airtable.create_lead(Lead("", text, extracted))
         subj = extracted.get("subject", "не указан")
+
+        # Отправителю — мгновенный ack (R7-2): раньше заявка молча улетала
+        # координаторам, а пишущий (потенциальный клиент!) не слышал ответа.
+        tg = event.data.get("telegram_id")
+        if tg:
+            from src.utils.i18n import lang_of, tr
+            await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                "telegram_id": str(tg),
+                "message": tr("lead_ack", await lang_of(str(tg))),
+            }))
+
         msg = f"📥 Новая заявка! #{lid}\nПредмет: {subj}\n\n{text[:150]}"
 
         # Уведомляем всех координаторов (без хардкода)

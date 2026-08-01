@@ -12,9 +12,11 @@ class EventTypes:
     # Lessons
     LESSON_ABSENT = "lesson.absent"
     LESSON_CANCELLED = "lesson.cancelled"
-    LESSON_RESCHEDULED = "lesson.rescheduled"
+    # Публикуются webhook-диспетчером по факту classStatus (lv/cp) — метрики/DLQ.
     LESSON_STARTED = "lesson.started"
     LESSON_COMPLETED = "lesson.completed"
+    # NOTE: LESSON_RESCHEDULED и PAYMENT_* убраны (R7-13) — непланируемые фичи,
+    # вернём по решению о переносах/монетизации.
 
     # Messages
     MESSAGE_INCOMING = "message.incoming"
@@ -28,9 +30,8 @@ class EventTypes:
     NOTIFICATION_DELIVERED = "notification.delivered"
     NOTIFICATION_FAILED = "notification.failed"
 
-    # Payments
-    PAYMENT_RECEIVED = "payment.received"
-    PAYMENT_LOW_BALANCE = "payment.low_balance"
+    # Payments — ОТКЛЮЧЕНО (Round 3, решение владельца): ждём интеграцию Xero.
+    # PAYMENT_RECEIVED/PAYMENT_LOW_BALANCE удалены в R7-13 (фантомы, 0 publish).
 
     # Workflows
     WORKFLOW_STARTED = "workflow.started"

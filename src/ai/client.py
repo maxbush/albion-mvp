@@ -120,21 +120,38 @@ class LLMClient:
 
     def _heuristic_tutor_reply(self, text: str) -> dict:
         t = (text or "").lower().strip()
-        if any(w in t for w in ["не смогу", "не могу", "отмен", "не провед", "cancel"]):
+        # R7-9: тьюторы англоговорящие — словарики пополнены EN-формулировками.
+        if any(w in t for w in ["не смогу", "не могу", "отмен", "не провед", "cancel",
+                                "can't", "cannot", "can not", "won't", "no show", "no-show",
+                                "sick", "unable", "have to skip", "absent"]):
             return {"status": "no_show", "confidence": 0.85, "summary": text[:120]}
-        if any(w in t for w in ["тех", "интернет", "камера", "микрофон", "platform", "платформ"]):
+        if any(w in t for w in ["тех", "интернет", "камера", "микрофон", "platform", "платформ",
+                                "connection", "wifi", "wi-fi", "internet", "camera", "mic",
+                                "microphone", "laptop", "computer", "vpn", "is down", "broken",
+                                "issue with", "problem with"]):
             return {"status": "tech", "confidence": 0.85, "summary": text[:120]}
-        if any(w in t for w in ["опоз", "задерж", "late", "через"]):
+        if any(w in t for w in ["опоз", "задерж", "late", "через",
+                                "running late", "behind", "delay", "stuck", "traffic",
+                                "be there in", "minutes late", "few min"]):
             return {"status": "late", "confidence": 0.8, "summary": text[:120]}
-        if any(w in t for w in ["готов", "ok", "в порядке", "буду", "на месте"]):
+        if any(w in t for w in ["готов", "ok", "в порядке", "буду", "на месте",
+                                "ready", "all set", "confirmed", "confirm", "on track",
+                                "good to go", "yes", "yep", "fine"]):
             return {"status": "ready", "confidence": 0.75, "summary": text[:120]}
         return {"status": "other", "confidence": 0.4, "summary": text[:120]}
 
     def _mock_response(self, msgs):
-        t = msgs[-1]["content"].lower() if msgs else ""
-        if "extract" in t:
+        full = msgs[-1]["content"].lower() if msgs else ""
+        # Сканируем ТОЛЬКО текст пользователя (в первой паре кавычек), а не весь
+        # промпт: шаблон сам содержит status-слова («ready», «late», «cannot conduct
+        # class») — при полном скане все ответы схлопываются в один статус (R7-9;
+        # латентный баг mock-режима).
+        raw = msgs[-1]["content"] if msgs else ""
+        quoted = raw.split('"')
+        t = quoted[1].lower() if len(quoted) > 2 else full
+        if "extract" in full:
             return json.dumps({"subject": "mathematics", "grade_level": "9", "is_lead": True})
-        if "interpret parent reply" in t:
+        if "interpret parent reply" in full:
             if any(w in t for w in ["не прид", "не будет", "боле", "cancel"]):
                 return json.dumps({"status": "no_show", "confidence": 0.9, "summary": "parent says student will miss class"})
             if any(w in t for w in ["опоз", "late", "через"]):
@@ -142,17 +159,23 @@ class LLMClient:
             if any(w in t for w in ["в порядке", "ok", "спасибо", "подключ"]):
                 return json.dumps({"status": "ok", "confidence": 0.8, "summary": "parent says everything is fine"})
             return json.dumps({"status": "other", "confidence": 0.4, "summary": "free text"})
-        if "interpret tutor reply" in t:
-            if any(w in t for w in ["не смогу", "не могу", "отмен", "cancel"]):
+        if "interpret tutor reply" in full:
+            # R7-9: EN-слова — тьюторы англоговорящие.
+            if any(w in t for w in ["не смогу", "не могу", "отмен", "cancel",
+                                    "can't", "cannot", "can not", "won't", "unable"]):
                 return json.dumps({"status": "no_show", "confidence": 0.9, "summary": "tutor cannot conduct class"})
-            if any(w in t for w in ["тех", "интернет", "platform", "камера", "микрофон"]):
+            if any(w in t for w in ["тех", "интернет", "platform", "камера", "микрофон",
+                                    "connection", "wifi", "wi-fi", "internet", "camera", "mic",
+                                    "issue with", "problem with"]):
                 return json.dumps({"status": "tech", "confidence": 0.88, "summary": "tutor has technical issue"})
-            if any(w in t for w in ["опоз", "late", "через"]):
+            if any(w in t for w in ["опоз", "late", "через",
+                                    "running late", "behind", "delay", "stuck", "traffic"]):
                 return json.dumps({"status": "late", "confidence": 0.85, "summary": "tutor will be late"})
-            if any(w in t for w in ["готов", "ok", "буду", "на месте"]):
+            if any(w in t for w in ["готов", "ok", "буду", "на месте",
+                                    "ready", "all set", "confirmed", "on track"]):
                 return json.dumps({"status": "ready", "confidence": 0.8, "summary": "tutor is ready"})
             return json.dumps({"status": "other", "confidence": 0.4, "summary": "free text"})
-        if "intent" in t or "classify" in t:
+        if "intent" in full or "classify" in full:
             if any(w in t for w in ["отмени", "cancel"]):
                 return json.dumps({"intent": "cancellation", "confidence": 0.95})
             if any(w in t for w in ["absent", "отсутств"]):

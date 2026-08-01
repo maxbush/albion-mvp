@@ -298,6 +298,39 @@ async def test_cmd_today_empty(tmp_path, monkeypatch):
     assert "Обзор" in upd.message.replies[0]
 
 
+@pytest.mark.asyncio
+async def test_cmd_today_shows_human_labels_and_time_left(tmp_path, monkeypatch):
+    """UX-аудит (хвост P1): строка занятия — название, локальное время и
+    «До урока N мин», без сырых ID в backticks."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    await UserRepository("albion.db").create("100", "coordinator", "Admin")
+
+    from src.db.repository import MeritHubClassRepository, MeritHubEnrollmentRepository
+    from src.utils.recurrence import org_now
+    from datetime import timedelta
+    today = org_now().date().isoformat()
+    start = org_now() + timedelta(minutes=90)          # чтобы было «До урока ~90 мин»
+    start_time = f"{today}T{start.strftime('%H:%M')}:00"
+    crepo = MeritHubClassRepository("albion.db")
+    await crepo._execute(
+        "INSERT INTO merithub_classes (class_id, title, start_time, class_type) VALUES (?,?,?,?)",
+        ("C9", "Алгебра", start_time, "oneTime"))
+    await MeritHubEnrollmentRepository("albion.db").add(
+        "C9", "mh1", client_user_id="cu1", student_name="Алиса")
+
+    from src.bot.pilot import cmd_today
+    upd = FakeUpdate(FakeUser(100, "admin"))
+    await cmd_today(upd, FakeContext([]))
+    text = upd.message.replies[0]
+    assert "До урока" in text                       # хвост про оставшееся время
+    assert "Алгебра" in text                        # название курса, а не голый ID
+    assert "`C9`" not in text                       # сырые ID в backticks ушли
+    assert "Алиса" in text
+
+
 # ── P2.7c: cmd_morning ───────────────────────────────────────────────
 
 @pytest.mark.asyncio
