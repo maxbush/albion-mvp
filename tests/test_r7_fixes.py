@@ -621,3 +621,29 @@ def test_r7_13_phantom_event_types_removed():
     assert not hasattr(EventTypes, "PAYMENT_RECEIVED")
     assert not hasattr(EventTypes, "PAYMENT_LOW_BALANCE")
     assert not hasattr(EventTypes, "LESSON_RESCHEDULED")
+
+
+# ── R7-14: complete_workflow — мёртвый SELECT убран ──────────────────
+
+@pytest.mark.asyncio
+async def test_r7_14_complete_workflow_contract(tmp_path, monkeypatch):
+    """Контракт после удаления мёртвого repo.get(): state=completed + событие на шине."""
+    await _init_tmp_db(tmp_path, monkeypatch)
+    from src.events.bus import bus
+    from src.events.types import EventTypes
+    from src.workflows.engine import engine
+
+    done = []
+
+    async def cap(ev): done.append(ev.data)
+
+    bus.subscribe(EventTypes.WORKFLOW_COMPLETED, cap)
+    try:
+        wid = await engine.start_workflow("zzz_test", {"x": 1})
+        await engine.complete_workflow(wid, {"ok": True})
+    finally:
+        bus.unsubscribe(EventTypes.WORKFLOW_COMPLETED, cap)
+
+    assert done and done[0]["workflow_id"] == wid and done[0]["ok"] is True
+    wf = await engine.repo.get(wid)
+    assert wf["state"] == "completed"

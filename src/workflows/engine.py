@@ -26,7 +26,7 @@ class WorkflowEngine:
 
     async def complete_workflow(self, wid: int, result: dict | None = None) -> None:
         await self.repo.update_state(wid, "completed", result or {})
-        wf = await self.repo.get(wid)
+        # R7-14: лишний SELECT self.repo.get(wid) убран — результат не использовался.
         await bus.publish(Event(EventTypes.WORKFLOW_COMPLETED, {"workflow_id": wid, **(result or {})}))
 
     async def fail_workflow(self, wid: int, error: str) -> None:

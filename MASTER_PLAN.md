@@ -159,9 +159,9 @@
   (непланируемые фичи — возвращать не будем до решения о монетизации).
   Тест: webhook classStatus lv → событие на шине.
 
-- [ ] **R7-14. Мёртвый SELECT в `WorkflowEngine.complete_workflow`.**
-  `src/workflows/engine.py:29-32`: `wf = await self.repo.get(wid)` не используется.
-  Тесты должны остаться зелёными (покрыты test_event_bus/test_workflows).
+- [x] **R7-14** ✅ 2026-08-01 — мёртвый `wf = await self.repo.get(wid)` убран из
+  `complete_workflow` (+контракт-тест: state=completed + WORKFLOW_COMPLETED на шине).
+  E2E: 197/197 зелёные.
 
 - [ ] **R7-15. N+1 запросы на карточках расписания.**
   `cmd_today`, `build_morning_digest_text`, `upcoming_lessons_for_parent`,
