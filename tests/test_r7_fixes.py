@@ -579,3 +579,45 @@ async def test_r7_9_mock_scans_user_text_not_prompt_template():
     assert got["status"] == "ok", got
     got = await llm_client.interpret_parent_reply("сын не придёт сегодня")
     assert got["status"] == "no_show", got
+
+
+# ── R7-13: webhook classStatus публикует продуктовые события ─────────
+
+@pytest.mark.asyncio
+async def test_r7_13_classstatus_publishes_lesson_events(tmp_path, monkeypatch):
+    """lv → LESSON_STARTED, cp → LESSON_COMPLETED; статус сохраняется как раньше."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.api.webhook import _dispatch_class_status
+    from src.db.repository import MeritHubClassStatusRepository
+    from src.events.bus import bus
+    from src.events.types import EventTypes
+
+    started, completed = [], []
+
+    async def cap_started(ev): started.append(ev.data)
+    async def cap_completed(ev): completed.append(ev.data)
+
+    bus.subscribe(EventTypes.LESSON_STARTED, cap_started)
+    bus.subscribe(EventTypes.LESSON_COMPLETED, cap_completed)
+    try:
+        await _dispatch_class_status({"classId": "C9", "subClassId": "SC1",
+                                      "status": "lv", "startTime": "2099-07-31T15:00:00Z"})
+        await _dispatch_class_status({"classId": "C9", "subClassId": "SC1", "status": "cp"})
+        await _dispatch_class_status({"classId": "C10", "status": "up"})   # другой класс, не публикуется
+    finally:
+        bus.unsubscribe(EventTypes.LESSON_STARTED, cap_started)
+        bus.unsubscribe(EventTypes.LESSON_COMPLETED, cap_completed)
+
+    assert len(started) == 1 and started[0]["class_id"] == "C9"
+    assert started[0]["sub_class_id"] == "SC1"
+    assert len(completed) == 1
+    row = await MeritHubClassStatusRepository(db).get("C9")
+    assert row["last_status"] == "cp"                              # прежняя запись статуса
+
+
+def test_r7_13_phantom_event_types_removed():
+    """Фантомные типы (0 publish за всю историю) удалены из EventTypes."""
+    from src.events.types import EventTypes
+    assert not hasattr(EventTypes, "PAYMENT_RECEIVED")
+    assert not hasattr(EventTypes, "PAYMENT_LOW_BALANCE")
+    assert not hasattr(EventTypes, "LESSON_RESCHEDULED")

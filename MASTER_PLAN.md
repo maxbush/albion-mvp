@@ -139,12 +139,18 @@
   ни записи/чтения). План: убрать из `SCHEMA_SQL` + `DROP TABLE IF EXISTS` в
   `init_db` (идемпотентно, существующие БД очистятся).
 
-- [ ] **R7-12. Мёртвая зависимость `apscheduler`** — requirements.txt, а
+- [x] **R7-12. Мёртвая зависимость `apscheduler`** ✅ 2026-08-01.
+  Удалена из requirements; доказательство — реальный uninstall из venv +
+  полный прогон (194/194). — requirements.txt, а
   scheduler кастомный (`src/scheduler/scheduler.py`), импортов нет.
   План: удалить из requirements (в `utils/logging.py` ссылка — только имя логера,
   оставить). Проверка: `--reinstall`, suite зелёная.
 
-- [ ] **R7-13. События-фантомы: LESSON_STARTED / LESSON_COMPLETED никогда не
+- [x] **R7-13** ✅ 2026-08-01 — `_dispatch_class_status` публикует LESSON_STARTED
+  (lv) / LESSON_COMPLETED (cp) с class_id/sub_class_id/event_time; PAYMENT_* и
+  LESSON_RESCHEDULED удалены из EventTypes (+контракт-тест на отсутствие).
+  E2E: 2 новых теста, 196/196 зелёные. Коммит ниже.
+  **Была задача: События-фантомы: LESSON_STARTED / LESSON_COMPLETED никогда не
   публикуются** (0 publish в коде), как и PAYMENT_*, LESSON_RESCHEDULED.
   Мандат «недовоплощённое»: статусы lv/cp уже приходят webhook'ом
   (`src/api/webhook.py:_dispatch_class_status`) — публикация даёт метрики/DLQ-хуки.
