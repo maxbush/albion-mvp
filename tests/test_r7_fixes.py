@@ -461,3 +461,18 @@ async def test_r7_6_coordinator_lessons_org_wide_view(tmp_path, monkeypatch):
     upd2 = FakeUpdate(FakeUser(100))
     await cmd_lessons(upd2, FakeContext([]))
     assert "/schedule" in upd2.message.replies[-1][0]
+
+
+# ── R7-7: help-карточка покрывает команды владельца ──────────────────
+
+def test_r7_7_help_card_covers_owner_commands():
+    """kill_switch и /roles находимы из help; ежедневные визарды наверху."""
+    from src.bot.handlers import _coordinator_help_text
+    text = _coordinator_help_text()
+    # команды аварийного дня и обзора команды — находимы (R7-7)
+    assert "/kill\\_switch" in text and "/roles" in text
+    # ежедневные визарды — в первой секции (Hick: частое — наверху)
+    assert text.index("/schedule") < text.index("/mh\\_schedule")
+    for cmd in ("/add\\_student", "/add\\_tutor", "/today", "/morning",
+                "/incidents", "/lessons", "/status", "/ok"):
+        assert cmd in text, cmd
