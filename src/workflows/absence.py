@@ -278,6 +278,14 @@ class AbsenceWorkflow:
         # Родитель/имя ученика: сначала из данных workflow (пилот / реальные данные
         # MeritHub), затем фолбэк на Airtable/MeritHub по student_id.
         wf_data = await self._workflow_data(wid)
+
+        # R7-16: идемпотентность. Повторное выполнение того же scheduled action
+        # (requeue после падения/гонки воркера) не должно дублировать сообщение
+        # родителю и планировать вторую эскалацию.
+        if wf_data.get("notify_parent_sent"):
+            logger.info("Workflow %d: notify_parent уже отправлен — дубль пропущен", wid)
+            return
+
         ptg = wf_data.get("parent_telegram_id")
         student_name = wf_data.get("student_name")
 
@@ -330,6 +338,12 @@ class AbsenceWorkflow:
             "nonce": nonce,
             "buttons": buttons,
         }))
+
+        # R7-16: флаг — ПОСЛЕ успешной публикации (requeue-тик увидит его и выйдет).
+        # Если упадём между publish и флагом — возможен редкий дубль сообщения
+        # с тем же nonce; это осознанно предпочтительнее потери уведомления.
+        wf_data["notify_parent_sent"] = True
+        await WorkflowRepository(self.incidents.db_path).update_data(wid, wf_data)
 
         # Планируем эскалацию (задержка настраивается, по умолчанию 15 мин)
         await engine.schedule_action(wid, settings.albion_escalate_delay_min, "escalate", {"incident_id": inc_id})

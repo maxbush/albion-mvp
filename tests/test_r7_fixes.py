@@ -694,3 +694,61 @@ async def test_r7_15_batch_queries_match_singles(tmp_path, monkeypatch):
     # Пустые/дублирующиеся входы не падают.
     assert await crepo.get_many([]) == {}
     assert set(await crepo.get_many(["B1", "B1", None])) == {"B1"}
+
+
+# ── R7-16: idempotent notify_parent (requeue ≠ дубль) ────────────────
+
+@pytest.mark.asyncio
+async def test_r7_16_notify_parent_idempotent_on_requeue(tmp_path, monkeypatch):
+    """Повторное выполнение того же scheduled action (requeue после падения
+    воркера/гонки) НЕ дублирует сообщение родителю и НЕ планирует вторую
+    эскалацию. Флаг notify_parent_sent в данных workflow."""
+    db = await _init_tmp_db(tmp_path, monkeypatch)
+    from src.db.repository import (
+        IncidentRepository, ScheduledActionRepository, UserRepository,
+        WorkflowRepository,
+    )
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+    from src.workflows.absence import AbsenceWorkflow
+    from src.workflows.engine import engine
+
+    engine.repo = WorkflowRepository(db)
+    engine.scheduler = ScheduledActionRepository(db)
+    # Родитель mock-ученика student_1 (Airtable mock: parent_telegram_id=parent_1).
+    await UserRepository(db).create("parent_1", "parent", "Родитель Миши")
+
+    wf = AbsenceWorkflow(db)
+    captured = []
+
+    async def cap(ev): captured.append(ev.data)
+
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await wf.handle_lesson_absent(Event(EventTypes.LESSON_ABSENT, {
+            "lesson_id": "lesson_1", "reported_by": "111111"}))
+        inc = (await IncidentRepository(db)._fetchall("SELECT * FROM incidents"))[0]
+        wrow = (await WorkflowRepository(db)._fetchall(
+            "SELECT * FROM workflow_instances WHERE workflow_type='absence_notification'"))[0]
+        wid = wrow["id"]
+
+        tick = lambda: wf.handle_scheduler_tick(Event("scheduler.tick", {
+            "action": "notify_parent", "workflow_id": wid,
+            "data": {"incident_id": inc["id"]}}))
+        await tick()          # первое выполнение — отправляем
+        await tick()          # requeue-дубль — должен молча выйти
+        await tick()          # и ещё раз для надёжности
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    parent_msgs = [d for d in captured
+                   if d.get("workflow_id") == wid and d.get("incident_id") == inc["id"]]
+    assert len(parent_msgs) == 1, f"родителю ушло {len(parent_msgs)} сообщений вместо 1"
+
+    escalates = await ScheduledActionRepository(db)._fetchall(
+        "SELECT * FROM scheduled_actions WHERE workflow_id=? AND action='escalate'", (wid,))
+    assert len(escalates) == 1, f"эскалаций запланировано {len(escalates)} вместо 1"
+
+    import json as _json
+    data = _json.loads((await WorkflowRepository(db).get(wid))["data"])
+    assert data.get("notify_parent_sent") is True
