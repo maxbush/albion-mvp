@@ -77,14 +77,28 @@ def _extract_type(payload: dict) -> str | None:
 
 
 async def _dispatch_class_status(payload: dict) -> None:
-    """requestType=classStatus → обновляем последний статус класса для live-check."""
+    """requestType=classStatus → обновляем последний статус класса для live-check.
+
+    Плюс публикуем продуктовые события (R7-13): lv → LESSON_STARTED,
+    cp → LESSON_COMPLETED. Подписчиков сейчас нет — это метрики/DLQ-хуки
+    (раньше типы объявлены, но не публиковались: «недовоплощённое»)."""
     from src.db.repository import MeritHubClassStatusRepository
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
     class_id = str(payload.get("classId") or "")
     status = str(payload.get("status") or "")
     if not class_id or not status:
         return
     event_time = str(payload.get("startTime") or payload.get("eventTime") or "") or None
     await MeritHubClassStatusRepository().upsert(class_id, status, payload=payload, event_time=event_time)
+    evt = {"lv": EventTypes.LESSON_STARTED, "cp": EventTypes.LESSON_COMPLETED}.get(status)
+    if evt:
+        await bus.publish(Event(evt, {
+            "class_id": class_id, "status": status,
+            "sub_class_id": str(payload.get("subClassId") or "") or None,
+            "event_time": event_time,
+            "source": "merithub_classstatus_webhook",
+        }))
 
 
 async def _dispatch_attendance(payload: dict) -> None:

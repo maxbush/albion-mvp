@@ -40,15 +40,9 @@ class AbsenceWorkflow:
         if not lid:
             return
 
-        lesson = None
-        merithub_get_lesson = getattr(self.merithub, "get_lesson", None)
-        if callable(merithub_get_lesson):
-            try:
-                lesson = await merithub_get_lesson(lid)
-            except Exception as e:
-                logger.warning("MeritHub get_lesson failed for %s: %s", lid, e)
-        if not lesson:
-            lesson = await self.airtable.get_lesson(lid)
+        # Чтение урока — только airtable (демо-данные): у merithub-сервиса
+        # read-методов нет (create-only вендор, R7-10).
+        lesson = await self.airtable.get_lesson(lid)
         if not lesson:
             logger.warning("Lesson %s not found", lid)
             # Честный фидбэк отправителю: /absent уже ответил «зафиксировал» —
@@ -64,12 +58,6 @@ class AbsenceWorkflow:
                 }))
             return
 
-        merithub_mark_absent = getattr(self.merithub, "mark_absent", None)
-        if callable(merithub_mark_absent):
-            try:
-                await merithub_mark_absent(lid)
-            except Exception as e:
-                logger.warning("MeritHub mark_absent failed for %s: %s", lid, e)
         await self.airtable.mark_absent(lid, event.data.get("reported_by", ""))
 
         student = await self.airtable.get_student(lesson.student_id)
@@ -113,13 +101,24 @@ class AbsenceWorkflow:
         if not text:
             return
         from src.bot.roles import notify_all_coordinators
+        # Автор — по имени из карточки (П9/R7-4), TG только в url-кнопке ответа.
+        user = await self.users.get_by_telegram_id(str(tg))
+        author = (user or {}).get("name") or "—"
+        role = (user or {}).get("role") or "?"
         msg = (
             "📣 Сообщение о неявке (из чата)\n"
-            f"От: TG {tg}\n"
+            f"От: {author} ({role})\n"
             f"Текст: {text[:300]}"
         )
         await notify_all_coordinators(
-            msg, notification_type="absence_report", db_path=self.incidents.db_path)
+            msg, notification_type="absence_report", db_path=self.incidents.db_path,
+            buttons=[{"text": "👤 Написать пользователю", "url": f"tg://user?id={tg}"}])
+        # Отправителю — ack (R7-2): иначе репорт уходил в молчание.
+        from src.utils.i18n import lang_of, tr
+        await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+            "telegram_id": str(tg),
+            "message": tr("absence_report_ack", await lang_of(str(tg))),
+        }))
         logger.info("absence_report from %s forwarded to coordinators", tg)
 
     async def handle_scheduler_tick(self, event: Event) -> None:
@@ -255,13 +254,17 @@ class AbsenceWorkflow:
         class_label = await self._class_label(lesson_ref)
         base = labels.get(outcome, "ℹ️ Родитель обновил статус")
         msg = f"{base}\nИнцидент #{inc_id}\nУченик: {student_name}\nЗанятие: {class_label}"
-        if parent_telegram_id:
-            msg += f"\nParent TG: {parent_telegram_id}"
         if parent_text:
             msg += f"\nОтвет: {parent_text[:300]}"
         from src.bot.roles import notify_all_coordinators
+        # Сырой TG в текст не пишем (П9/R7-4): действие — url-кнопкой.
+        buttons = None
+        if parent_telegram_id:
+            buttons = [{"text": "👤 Написать родителю",
+                        "url": f"tg://user?id={parent_telegram_id}"}]
         await notify_all_coordinators(
-            msg, notification_type="parent_reply", db_path=self.incidents.db_path)
+            msg, notification_type="parent_reply",
+            db_path=self.incidents.db_path, buttons=buttons)
 
     async def _notify_parent(self, wid: int, inc_id: int | None) -> None:
         """Уведомить родителя. С проверкой статуса инцидента."""
@@ -275,6 +278,14 @@ class AbsenceWorkflow:
         # Родитель/имя ученика: сначала из данных workflow (пилот / реальные данные
         # MeritHub), затем фолбэк на Airtable/MeritHub по student_id.
         wf_data = await self._workflow_data(wid)
+
+        # R7-16: идемпотентность. Повторное выполнение того же scheduled action
+        # (requeue после падения/гонки воркера) не должно дублировать сообщение
+        # родителю и планировать вторую эскалацию.
+        if wf_data.get("notify_parent_sent"):
+            logger.info("Workflow %d: notify_parent уже отправлен — дубль пропущен", wid)
+            return
+
         ptg = wf_data.get("parent_telegram_id")
         student_name = wf_data.get("student_name")
 
@@ -328,6 +339,12 @@ class AbsenceWorkflow:
             "buttons": buttons,
         }))
 
+        # R7-16: флаг — ПОСЛЕ успешной публикации (requeue-тик увидит его и выйдет).
+        # Если упадём между publish и флагом — возможен редкий дубль сообщения
+        # с тем же nonce; это осознанно предпочтительнее потери уведомления.
+        wf_data["notify_parent_sent"] = True
+        await WorkflowRepository(self.incidents.db_path).update_data(wid, wf_data)
+
         # Планируем эскалацию (задержка настраивается, по умолчанию 15 мин)
         await engine.schedule_action(wid, settings.albion_escalate_delay_min, "escalate", {"incident_id": inc_id})
         logger.info("Parent notified for incident %d (parent=%s)", inc_id, ptg)
@@ -355,11 +372,11 @@ class AbsenceWorkflow:
             f"Ученик: {student_name}\n"
             f"Занятие: {class_label}"
         )
-        if parent_tg:
-            esc_msg += f"\nParent TG: {parent_tg}"
-        created = (inc_row.get("created_at") or "")[:16]
+        # Сырой TG в тексте не нужен — ниже url-кнопка «Написать родителю» (R7-4).
+        created = inc_row.get("created_at")
         if created:
-            esc_msg += f"\nСоздан: {created} UTC"
+            from src.utils.recurrence import fmt_dt_org
+            esc_msg += f"\nСоздан: {fmt_dt_org(created)}"
 
         # UX U2: действия прямо на эскалации — без ручного ввода /ok <ID>
         # (management by exception должен решаться в один тап).

@@ -250,10 +250,12 @@ class LessonOpsWorkflow:
             return wf["id"], data, wf_type
         return None
 
-    async def notify_coordinators(self, title: str, lines: list[str]) -> None:
+    async def notify_coordinators(self, title: str, lines: list[str],
+                                  buttons: list[dict] | None = None) -> None:
         msg = title + "\n" + "\n".join(lines)
         from src.bot.roles import notify_all_coordinators
-        await notify_all_coordinators(msg, notification_type="ops_alert", db_path=self.repo.db_path)
+        await notify_all_coordinators(msg, notification_type="ops_alert",
+                                      db_path=self.repo.db_path, buttons=buttons)
 
     async def record_checkin_response(
         self,
@@ -406,17 +408,17 @@ class LessonOpsWorkflow:
         user_tz = data.get("actor_timezone")
         time_display = _format_dual_time(start_time, user_tz) if start_time else ""
         time_line = f"\n🕐 Время: {time_display}" if time_display else ""
-        msg = (
-            f"🧑‍🏫 Через {settings.albion_prelesson_reminder_min} мин урок.{time_line}\n"
-            f"Репетитор: {data.get('tutor_name', 'Репетитор')}\n"
-            f"Ученики: {students}\n\n"
-            f"Подтвердите готовность."
-        )
+        # Тьюторы — англоязычные; язык из users.language (i18n, аудит П3)
+        from src.utils.i18n import lang_of, tr
+        lang = await lang_of(data["actor_telegram_id"])
+        msg = tr("tutor_reminder", lang, mins=settings.albion_prelesson_reminder_min,
+                 time_line=time_line, tutor=data.get("tutor_name", "Репетитор"),
+                 students=students)
         buttons = [
-            {"text": "✅ Готов(а)", "callback_data": f"checkin:{wid}:{nonce}:ready"},
-            {"text": "⏰ Опоздаю", "callback_data": f"checkin:{wid}:{nonce}:late"},
-            {"text": "❌ Не смогу провести", "callback_data": f"checkin:{wid}:{nonce}:no_show"},
-            {"text": "🛠 Проблема с платформой", "callback_data": f"checkin:{wid}:{nonce}:tech"},
+            {"text": tr("tutor_btn_ready", lang), "callback_data": f"checkin:{wid}:{nonce}:ready"},
+            {"text": tr("tutor_btn_late", lang), "callback_data": f"checkin:{wid}:{nonce}:late"},
+            {"text": tr("tutor_btn_no_show", lang), "callback_data": f"checkin:{wid}:{nonce}:no_show"},
+            {"text": tr("tutor_btn_tech", lang), "callback_data": f"checkin:{wid}:{nonce}:tech"},
         ]
         user = await self.users.get_by_telegram_id(data["actor_telegram_id"])
         if not user:
@@ -438,15 +440,15 @@ class LessonOpsWorkflow:
         data["nonce"] = nonce
         await self.repo.update_data(wid, data)
         students = ", ".join(data.get("student_names") or []) or "учеником"
-        msg = (
-            f"▶️ Время урока: {_format_class_label(data.get('class_id', '—'), data.get('start_time'))}.\n"
-            f"Ученики: {students}\n\n"
-            f"Отметьте статус старта урока."
-        )
+        from src.utils.i18n import lang_of, tr
+        lang = await lang_of(data["actor_telegram_id"])
+        msg = tr("tutor_start_check", lang,
+                 label=_format_class_label(data.get("class_id", "—"), data.get("start_time")),
+                 students=students)
         buttons = [
-            {"text": "✅ Урок начался", "callback_data": f"checkin:{wid}:{nonce}:class_started"},
-            {"text": "👤 Ученик не пришёл", "callback_data": f"checkin:{wid}:{nonce}:student_absent"},
-            {"text": "🛠 Техпроблема", "callback_data": f"checkin:{wid}:{nonce}:tech"},
+            {"text": tr("tutor_btn_class_started", lang), "callback_data": f"checkin:{wid}:{nonce}:class_started"},
+            {"text": tr("tutor_btn_student_absent", lang), "callback_data": f"checkin:{wid}:{nonce}:student_absent"},
+            {"text": tr("tutor_btn_tech_short", lang), "callback_data": f"checkin:{wid}:{nonce}:tech"},
         ]
         user = await self.users.get_by_telegram_id(data["actor_telegram_id"])
         if not user:
@@ -465,15 +467,20 @@ class LessonOpsWorkflow:
         if not wf or wf["state"] != "running":
             return
         data["response_status"] = "no_reply"
+        # R7-5: вместо «Actor: tutor / Telegram: <id>» — контекст словами и
+        # кнопка связи с молчащим (кто именно молчит — уже сказано в title).
+        actor_tg = data.get("actor_telegram_id")
+        who = "родителю" if data.get("actor_type") == "parent" else "репетитору"
+        buttons = ([{"text": f"👤 Написать {who}", "url": f"tg://user?id={actor_tg}"}]
+                   if actor_tg else None)
         await self.notify_coordinators(
             title,
             [
                 f"Занятие: {_format_class_label(data.get('class_id', '—'), data.get('start_time'))}",
-                f"Actor: {data.get('actor_type')}",
-                f"Telegram: {data.get('actor_telegram_id')}",
-                f"Ученик(и): {data.get('student_name') or ', '.join(data.get('student_names') or []) or '—'}",
                 f"Репетитор: {data.get('tutor_name', '—')}",
+                f"Ученик(и): {data.get('student_name') or ', '.join(data.get('student_names') or []) or '—'}",
             ],
+            buttons=buttons,
         )
         await self._cancel_future_actions(wid)
         await self._save_workflow(wid, "completed", data)
@@ -572,9 +579,118 @@ class LessonOpsWorkflow:
             await self._send_tutor_start_check(wid)
         elif action == "class_live_check":
             await self._check_class_live(wid)
+        elif action == MORNING_DIGEST_ACTION:
+            await self._send_morning_digest_auto(wid)
+
+    async def _send_morning_digest_auto(self, wid: int) -> None:
+        """Авто-утренняя сводка координаторам. Пересоздаёт себя на следующий день
+        (07:30 org) — самоподдерживающаяся рекуррентная задача в SQLite scheduler."""
+        from src.bot.roles import notify_all_coordinators
+        try:
+            text = await build_morning_digest_text()
+            await notify_all_coordinators(
+                text, notification_type="morning_digest", db_path=self.repo.db_path)
+        finally:
+            # workflow выполнен → немедленно планируем следующий день
+            await self.repo.update_state(wid, "completed", {"auto_reschedule": True})
+            await _schedule_next_digest()
 
 
 async def register_handlers() -> None:
     ops = LessonOpsWorkflow()
     bus.subscribe(EventTypes.SCHEDULER_TICK, ops.handle_scheduler_tick)
     logger.info("Lesson ops workflow registered")
+
+
+# =====================================================================
+# АВТО-УТРЕННЯЯ СВОДКА (07:30 по зоне организации)
+# =====================================================================
+
+MORNING_DIGEST_ACTION = "morning_digest_send"
+
+
+def _next_digest_exec() -> str:
+    """Следующие 07:30 по зоне организации → aware UTC ISO для scheduler."""
+    zone = settings.org_zone()
+    now = datetime.now(zone)
+    cand = now.replace(hour=7, minute=30, second=0, microsecond=0)
+    if cand <= now:
+        cand += timedelta(days=1)
+    return cand.astimezone(timezone.utc).isoformat()
+
+
+async def _schedule_next_digest() -> str:
+    """Создаёт следующую задачу сводки (свежий workflow на каждый день)."""
+    wid = await WorkflowRepository().create(
+        "morning_digest_auto", "running", {"recurring": True})
+    aid = await ScheduledActionRepository().create(
+        wid, _next_digest_exec(), MORNING_DIGEST_ACTION, {"workflow_id": wid})
+    logger.info("Morning digest scheduled (wf=%d, action=%s)", wid, aid)
+    return aid
+
+
+async def ensure_morning_digest() -> None:
+    """Гарантирует наличие следующей авто-сводки. Идемпотентно — вызывается на старте бота."""
+    repo = ScheduledActionRepository()
+    rows = await repo._fetchall(
+        "SELECT 1 FROM scheduled_actions WHERE action=? AND status='pending' LIMIT 1",
+        (MORNING_DIGEST_ACTION,),
+    )
+    if rows:
+        return
+    await _schedule_next_digest()
+
+
+async def build_morning_digest_text(db_path: str | None = None) -> str:
+    """Текст утренней сводки (occurrence-aware). Общий для /morning и авто-рассылки."""
+    from src.db.repository import (
+        IncidentRepository,
+        MeritHubClassRepository,
+        MeritHubEnrollmentRepository,
+        MeritHubStudentRepository,
+    )
+    from src.utils.recurrence import class_occurs_on, org_now, org_zone_label
+
+    today = org_now().date()
+    crepo = MeritHubClassRepository(db_path)
+    classes = [c for c in await crepo.list_all() if class_occurs_on(c, today)]
+    classes.sort(key=lambda c: (c.get("start_time") or "")[11:16] or "99:99")
+
+    if not classes:
+        return "☀️ Доброе утро!\n\n📅 Сегодня занятий нет."
+
+    erepo = MeritHubEnrollmentRepository(db_path)
+    srepo = MeritHubStudentRepository(db_path)
+    org = org_zone_label()
+    # R7-15: батчи вместо N+1 (enrollments + tutor rows одним запросом каждый).
+    by_cid = await erepo.list_by_classes([c["class_id"] for c in classes])
+    tutor_map = await srepo.get_by_client_ids(
+        [c["tutor_client_user_id"] for c in classes if c.get("tutor_client_user_id")])
+    lines = [f"☀️ Доброе утро!\n\n📅 Занятия сегодня ({len(classes)}):"]
+    tutors: set[str] = set()
+    students_total = 0
+    for c in classes:
+        marker = "🔁" if (c.get("class_type") or "oneTime") == "perma" else "1️⃣"
+        hhmm = (c.get("start_time") or "—")[11:16]
+        time_part = f"{hhmm} ({org})" if hhmm else "—"
+        enr = [
+            e for e in by_cid.get(c["class_id"], [])
+            if (e.get("role") or "student") not in ("tutor", "teacher", "C", "host")
+        ]
+        students_total += len(enr)
+        names = ", ".join(e.get("student_name") or "" for e in enr[:3]) or "—"
+        tutor_name = ""
+        if c.get("tutor_client_user_id"):
+            trow = tutor_map.get(c["tutor_client_user_id"])
+            tutor_name = (trow or {}).get("name") or c["tutor_client_user_id"]
+            tutors.add(tutor_name)
+        suffix = f" · {names}" + (f" · {tutor_name}" if tutor_name else "")
+        lines.append(f"  {marker} {time_part}{suffix}")
+    lines.append(f"\n👥 Учеников: {students_total} · репетиторов: {len(tutors)}")
+
+    inc_repo = IncidentRepository(db_path)
+    active = await inc_repo._fetchone(
+        "SELECT COUNT(*) as cnt FROM incidents WHERE status IN ('pending','escalated','open')")
+    if active and active["cnt"]:
+        lines.append(f"📋 Активных инцидентов: {active['cnt']} — /incidents")
+    return "\n".join(lines)

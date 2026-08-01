@@ -26,6 +26,9 @@ from src.workflows.absence import AbsenceWorkflow
 from src.workflows.lesson_ops import LessonOpsWorkflow
 from src.bot.roles import register_role_handlers, get_coordinator_ids, is_admin, apply_command_menu
 from src.bot.pilot import register_pilot_handlers
+from src.bot.wizard import (
+    cmd_schedule, cmd_add_student, cmd_add_tutor, handle_wz_callback, try_handle_wz_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -189,20 +192,33 @@ async def _demo_solo_absence(upd: Update, _ctx) -> None:
 def _coordinator_help_text() -> str:
     """Единый список команд координатора (было два расходящихся списка —
     в /start и в регистрации по кнопке). Underscore в командах экранируем
-    для Markdown V1, иначе парные '_' ломают отображение."""
+    для Markdown V1, иначе парные '_' ломают отображение.
+
+    Порядок — по частоте использования (UX-аудит П2): сначала ежедневные
+    визарды и обзор, технические mh_* — свёрнуты в «Служебные»."""
     return (
         "📋 *Ваши команды:*\n\n"
+        "*Расписание:*\n"
+        "/schedule — новое занятие (пошагово)\n"
+        "/add\\_student — новый ученик\n"
+        "/add\\_tutor — новый репетитор\n\n"
         "*Обзор:*\n"
         "/today — занятия сегодня\n"
-        "/morning — утренняя сводка\n"
+        "/morning — утренняя сводка (приходит автоматически в 07:30)\n"
         "/incidents — инциденты и статистика\n"
+        "/lessons — ближайшие занятия и ссылки\n"
         "/status — состояние системы\n\n"
-        "*Управление:*\n"
+        "*Инциденты:*\n"
+        "/ok <ID> — закрыть инцидент\n"
+        "/cancel\\_lesson <ID> — отмена по ID (обычно не нужно — родители отменяют сами)\n\n"
+        "*Демо:*\n"
         "/pilot\\_absent — тест: сценарий неявки\n"
-        "/demo\\_reset — сброс между прогонами\n"
-        "/cancel\\_lesson <ID> — отмена урока\n"
-        "/ok <ID> — закрыть инцидент\n\n"
-        "*MeritHub:*\n"
+        "/demo\\_reset — сброс между прогонами\n\n"
+        "*Владельцу:*\n"
+        "/kill\\_switch — аварийный стоп/ограничение рассылок\n"
+        "/roles — участники и роли\n"
+        "/leads — заявки (последние 10 + счётчик)\n\n"
+        "*Служебные (MeritHub):*\n"
         "/seed10 <parentTG> — создать 10 учеников\n"
         "/mh\\_schedule <tutor> <start> <min> <students...>\n"
         "/mh\\_tutor <cuid> <tg> <имя>\n"
@@ -226,6 +242,7 @@ def _role_expectations(role: str) -> str:
             "Как это работает:\n"
             "• перед уроком напомню и попрошу подтвердить готовность;\n"
             "• в начале урока попрошу отметить старт.\n\n"
+            "Ближайшие уроки и ссылки: /lessons\n"
             "Отменить урок: /cancel_lesson"
         )
     # parent (и дефолт)
@@ -233,6 +250,7 @@ def _role_expectations(role: str) -> str:
         "Дальше ничего настраивать не нужно:\n"
         "• перед занятием напомню и уточню статус;\n"
         "• если ученик не придёт — спрошу у вас.\n\n"
+        "Мои занятия и ссылки: /lessons\n"
         "Отменить занятие: /cancel_lesson"
     )
 
@@ -256,8 +274,7 @@ async def cmd_start(upd: Update, _ctx) -> None:
             buttons.insert(0, InlineKeyboardButton("📋 Команды", callback_data="help_commands"))
         await upd.message.reply_text(
             f"👋 С возвращением, {user.full_name or '—'}!\n\n"
-            f"Ваша роль: {emoji} {role}{admin_mark}\n"
-            f"TG ID: `{tg_id}`\n\n"
+            f"Ваша роль: {emoji} {role}{admin_mark}\n\n"
             f"{_role_expectations(role)}",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([buttons]),
@@ -275,9 +292,9 @@ async def cmd_start(upd: Update, _ctx) -> None:
         ],
     ])
     await upd.message.reply_text(
-        f"👋 *Добро пожаловать в ALBION!*\n\n"
-        f"Меня зовут ALBION AI — я помогаю координировать занятия.\n\n"
-        f"Пожалуйста, выберите вашу роль:",
+        "👋 *Добро пожаловать в ALBION!*\n\n"
+        "Я помогаю координировать занятия: напоминания, ссылки, статусы.\n\n"
+        "Пожалуйста, выберите вашу роль:",
         parse_mode="Markdown",
         reply_markup=kb,
     )
@@ -299,10 +316,166 @@ async def cmd_status(upd: Update, _ctx) -> None:
     else:
         ai = "работает" if settings.openrouter_api_key else "демо-режим"
         ks_info = ""
-    await upd.message.reply_text(
-        f"✅ *ALBION*\nВремя: {datetime.now():%H:%M:%S}\nРоль: {role}\nAI: {ai}\nОжидает: {cnt} задач{ks_info}",
-        parse_mode="Markdown",
+    text = (
+        f"✅ *ALBION*\nВремя: {datetime.now():%H:%M:%S}\nРоль: {role}\nAI: {ai}\nОжидает: {cnt} задач{ks_info}"
     )
+    # Техсекция для владельца (перенесена из /today — П5 аудита: интерьеры
+    # движка не должны мешать продуктовому обзору занятий).
+    if is_admin(upd.effective_user.id):
+        pending = await sched._fetchall(
+            "SELECT * FROM scheduled_actions WHERE status='pending' ORDER BY execute_at LIMIT 8")
+        if pending:
+            text += "\n\n⏰ *Ожидающие действия:*"
+            for a in pending:
+                text += f"\n  [{a['action']}] → {(a.get('execute_at') or '—')[:19]} | wf#{a['workflow_id']}"
+        active_wf = await WorkflowRepository()._fetchall(
+            "SELECT * FROM workflow_instances WHERE state='running' ORDER BY id DESC LIMIT 5")
+        if active_wf:
+            text += "\n\n⚙️ *Активные workflow:*"
+            for w in active_wf:
+                text += f"\n  #{w['id']} [{w['workflow_type']}]"
+    await upd.message.reply_text(text, parse_mode="Markdown")
+
+
+def _next_occurrence_in_days(class_row: dict, days: int, now) -> tuple | None:
+    """Ближайший occurrence класса в окне `days` дней → (date, 'HH:MM') или None.
+
+    Общий сканер для веток /lessons (tutor/coordinator): учитывает, что
+    сегодняшнее занятие, которое уже началось, пропускается."""
+    from src.utils.recurrence import class_occurs_on
+    hhmm = (class_row.get("start_time") or "")[11:16] or "00:00"
+    today = now.date()
+    for i in range(days):
+        d = today + timedelta(days=i)
+        if not class_occurs_on(class_row, d):
+            continue
+        if i == 0 and hhmm <= now.strftime("%H:%M"):
+            continue
+        return d, hhmm
+    return None
+
+
+async def cmd_lessons(upd: Update, _ctx) -> None:
+    """«Мои занятия»: ближайшие занятия + постоянные ссылки на комнату (П4 аудита).
+
+    parent — по своим зачислениям (participant_link, occurrence-aware, 14 дней).
+    tutor  — по карточке контакта TG→client_user_id (host_link).
+    Ссылки MeritHub постоянные для класса, поэтому перевыдача = просто показать."""
+    tg = str(upd.effective_user.id)
+    user_rec = await UserRepository().get_by_telegram_id(tg)
+    role = (user_rec or {}).get("role", "parent")
+
+    from src.db.repository import (
+        MeritHubClassRepository, MeritHubContactRepository, MeritHubEnrollmentRepository,
+    )
+    from src.integrations.factory import get_merithub_service
+    from src.utils.i18n import lang_of, tr
+    from src.utils.recurrence import org_now, org_zone_label
+    from src.workflows.cancellation import upcoming_lessons_for_parent
+
+    client = get_merithub_service()
+    lang = await lang_of(tg) if role == "tutor" else "ru"
+
+    if role == "tutor":
+        contact = await MeritHubContactRepository().get_by_telegram(tg)
+        if not contact:
+            await upd.message.reply_text(tr("lessons_empty", lang))
+            return
+        crepo = MeritHubClassRepository()
+        classes = await crepo._fetchall(
+            "SELECT * FROM merithub_classes WHERE tutor_client_user_id=?",
+            (contact["client_user_id"],))
+        now = org_now()
+        items = []
+        for c in classes:
+            occ = _next_occurrence_in_days(c, 14, now)
+            if occ:
+                items.append((occ[0], occ[1], c))
+        items.sort(key=lambda x: (x[0], x[1]))
+        if not items:
+            await upd.message.reply_text(tr("lessons_empty", lang))
+            return
+        from src.utils.recurrence import WD_EN
+        erepo = MeritHubEnrollmentRepository()
+        by_cid = await erepo.list_by_classes([c["class_id"] for _, _, c in items[:10]])
+        lines = [tr("lessons_header_tutor", lang, org=org_zone_label())]
+        buttons = []
+        for d, hhmm, c in items[:10]:
+            enr = [e for e in by_cid.get(c["class_id"], [])
+                   if (e.get("role") or "student") == "student"]
+            names = ", ".join(e.get("student_name") or "" for e in enr[:3]) or "—"
+            wd = WD_EN[(d.weekday() + 1) % 7]
+            lines.append(f"• {wd} {d:%d.%m}, {hhmm} — {names}")
+            link = c.get("host_link")
+            if link:
+                buttons.append([InlineKeyboardButton(
+                    f"🔗 {wd} {d:%d.%m}, {hhmm}"[:64], url=client.room_url(link))])
+        lines.append("")
+        lines.append(tr("lessons_link_hint", lang))
+        await upd.message.reply_text(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
+        return
+
+    if role == "coordinator" or is_admin(upd.effective_user.id):
+        # Координатору — вся организация (его «личных» зачислений нет:
+        # parent-ветка вводила бы в заблуждение «вас не добавили»).
+        from src.utils.recurrence import WD_RU, mh_weekday
+        crepo = MeritHubClassRepository()
+        now = org_now()
+        items = []
+        for c in await crepo.list_all():
+            occ = _next_occurrence_in_days(c, 7, now)
+            if occ:
+                items.append((occ[0], occ[1], c))
+        items.sort(key=lambda x: (x[0], x[1]))
+        if not items:
+            await upd.message.reply_text(
+                "📚 Ближайших занятий нет (7 дней). Создать: /schedule")
+            return
+        erepo = MeritHubEnrollmentRepository()
+        by_cid = await erepo.list_by_classes([c["class_id"] for _, _, c in items[:12]])
+        lines = [f"📚 Ближайшие занятия организации (7 дней, время — {org_zone_label()}):"]
+        buttons = []
+        for d, hhmm, c in items[:12]:
+            enr = [e for e in by_cid.get(c["class_id"], [])
+                   if (e.get("role") or "student") == "student"]
+            names = ", ".join(e.get("student_name") or "" for e in enr[:3]) or "—"
+            wd = WD_RU[mh_weekday(d)]
+            title = c.get("title") or c["class_id"]
+            lines.append(f"• {wd} {d:%d.%m}, {hhmm} — {title} · 👥 {names}")
+            link = c.get("participant_link")
+            if link:
+                buttons.append([InlineKeyboardButton(
+                    f"🔗 {wd} {d:%d.%m}, {hhmm} — {title}"[:64], url=client.room_url(link))])
+        lines.append("")
+        lines.append("Ссылки — участнические (для пересылки родителям при потере).")
+        await upd.message.reply_text(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
+        return
+
+    # parent (и любая другая роль — безопасный дефолт)
+    lessons = await upcoming_lessons_for_parent(tg, limit=10)
+    if not lessons:
+        await upd.message.reply_text(tr("lessons_empty", "ru"))
+        return
+    crepo = MeritHubClassRepository()
+    class_map = await crepo.get_many([l["class_id"] for l in lessons])
+    lines = [tr("lessons_header_parent", "ru")]
+    buttons = []
+    for l in lessons:
+        lines.append(f"• {l['label']} — {l['student_name']}")
+        c = class_map.get(l["class_id"])
+        link = (c or {}).get("participant_link")
+        if link:
+            buttons.append([InlineKeyboardButton(
+                f"🔗 {l['student_name']} — {l['label']}"[:64], url=client.room_url(link))])
+    lines.append("")
+    lines.append(tr("lessons_link_hint", "ru"))
+    await upd.message.reply_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
 
 
 async def cmd_absent(upd: Update, _ctx) -> None:
@@ -376,34 +549,44 @@ async def cmd_kill_switch(upd: Update, _ctx) -> None:
 
 
 async def cmd_cancel_lesson(upd: Update, _ctx) -> None:
-    """Отмена урока: /cancel_lesson <ID урока> [причина...]
+    """Отмена урока: /cancel_lesson — персональный список кнопками (основной путь
+    для родителей), /cancel_lesson <ID> [причина...] — legacy-путь по голому ID
+    (для координаторов и критических случаев из прошлых инструкций).
 
-    Команда, на которую ссылается подсказка бота при интенте «отмена»
-    (cancellation.handle_classified). Раньше отсылала в никуда — команды не было.
-    """
+    Персональный список — только занятия этого родителя (audit П1: раньше
+    показывались первые 5 классов ВСЕЙ организации)."""
     if not _ctx.args:
-        await upd.message.reply_text("Используйте: /cancel_lesson <ID урока> [причина...]")
+        from src.workflows.cancellation import upcoming_lessons_for_parent
+        tg = str(upd.effective_user.id)
+        await _ensure_user(upd, "parent")
+        lessons = await upcoming_lessons_for_parent(tg, limit=5)
+        if not lessons:
+            await upd.message.reply_text(
+                "Не вижу ваших ближайших занятий.\n"
+                "Чтобы отменить — напишите координатору, пожалуйста.")
+            return
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                f"❌ {l['student_name']} — {l['label']}"[:64],
+                callback_data=f"cancel_class:{l['class_id']}:{l['date']}",
+            )
+        ] for l in lessons])
+        await upd.message.reply_text(
+            "Какое занятие отменяем?\n\n"
+            "Если его нет в списке — напишите координатору.",
+            reply_markup=kb)
         return
     lid = _ctx.args[0]
     reason = " ".join(_ctx.args[1:]) or "не указана"
     await _ensure_user(upd, "parent")
 
-    # Проверяем, что урок существует: сначала merithub_classes, затем mock
+    # Проверяем, что урок существует: merithub_classes (реальные занятия)
+    # или airtable (демо-уроки). Ветки merithub.get_lesson больше нет (R7-10).
     from src.db.repository import MeritHubClassRepository
     class_row = await MeritHubClassRepository().get(lid)
     if not class_row:
-        # Фолбэк на mock (для тестов и демо)
         from src.workflows.cancellation import CancellationWorkflow
-        cwf = CancellationWorkflow()
-        lesson = None
-        mh_get = getattr(cwf.merithub, "get_lesson", None)
-        if callable(mh_get):
-            try:
-                lesson = await mh_get(lid)
-            except Exception:
-                pass
-        if not lesson:
-            lesson = await cwf.airtable.get_lesson(lid)
+        lesson = await CancellationWorkflow().airtable.get_lesson(lid)
         if not lesson:
             await upd.message.reply_text(
                 f"❌ Урок {lid} не найден в расписании. "
@@ -450,6 +633,11 @@ async def cmd_ok(upd: Update, _ctx) -> None:
 
 async def handle_callback(upd: Update, _ctx) -> None:
     query = upd.callback_query
+    # Визарды координатора (/schedule, /add_student, /add_tutor) обрабатывают
+    # свои callback'и сами — включая ответ на query (answer с toast-обратной связью).
+    if query.data and query.data.startswith("wz:"):
+        await handle_wz_callback(upd, _ctx)
+        return
     await query.answer()
     data = query.data
     chat_id = upd.effective_chat.id
@@ -468,6 +656,8 @@ async def handle_callback(upd: Update, _ctx) -> None:
             await repo.update_role(existing["id"], role)
         else:
             await repo.create(str(user.id), role, user.full_name or str(user.id), username=user.username)
+        # Язык интерфейса по роли (i18n): тьюторы — англоговорящие, остальные — RU.
+        await repo.set_language(str(user.id), "en" if role == "tutor" else "ru")
         # Меню «/» под выбранную роль (UX U1).
         await apply_command_menu(getattr(_ctx, "bot", None), user.id, role)
         emoji = {"parent": "👨‍👩‍👦", "tutor": "🧑‍🏫", "coordinator": "👨‍💼"}.get(role, "")
@@ -481,8 +671,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
             ]])
         await query.edit_message_text(
             f"✅ Вы зарегистрированы как {emoji} *{role}*{admin_mark}.\n\n"
-            f"{_role_expectations(role)}\n\n"
-            f"TG ID: `{user.id}` · Имя: {user.full_name or '—'}",
+            f"{_role_expectations(role)}",
             parse_mode="Markdown",
             reply_markup=markup,
         )
@@ -529,8 +718,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
             buttons.insert(0, InlineKeyboardButton("📋 Команды", callback_data="help_commands"))
         await query.edit_message_text(
             f"👋 С возвращением, {user.full_name or '—'}!\n\n"
-            f"Ваша роль: {emoji} {role}{admin_mark}\n"
-            f"TG ID: `{user.id}`\n\n"
+            f"Ваша роль: {emoji} {role}{admin_mark}\n\n"
             f"{_role_expectations(role)}",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([buttons]),
@@ -653,24 +841,61 @@ async def handle_callback(upd: Update, _ctx) -> None:
         return
 
     # --- Отмена занятия кнопкой со списка (UX U6) ---
+    # callback формата cancel_class:{class_id}:{occ_date} — дата опциональна.
     if data.startswith("cancel_class:"):
-        class_id = data.split(":", 1)[1]
+        # Отмена необратима для родителя (уведомление уже уйдёт репетитору),
+        # поэтому сначала явное подтверждение — случайный тап ≠ отмена.
+        parts = data.split(":")
+        class_id = parts[1] if len(parts) > 1 else ""
+        occ_date = parts[2] if len(parts) > 2 else ""
+        if not class_id:
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
+            return
+        from src.db.repository import MeritHubClassRepository
+        from src.workflows.lesson_ops import _format_class_label
+        cls = await MeritHubClassRepository().get(class_id)
+        label = _format_class_label(class_id, (cls or {}).get("start_time"))
+        date_note = f" {occ_date}" if occ_date else ""
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Да, отменить", callback_data=f"cancel_yes:{class_id}:{occ_date}"),
+            InlineKeyboardButton("◀️ Не надо", callback_data="cancel_x"),
+        ]])
+        await query.edit_message_text(
+            f"Отменяем занятие {label}{date_note}?\n\n"
+            "Репетитор и координаторы получат уведомление.",
+            reply_markup=kb,
+        )
+        return
+
+    if data == "cancel_x":
+        await query.edit_message_text("Хорошо, занятие остаётся в расписании 👌")
+        return
+
+    if data.startswith("cancel_yes:"):
+        parts = data.split(":")
+        class_id = parts[1] if len(parts) > 1 else ""
+        occ_date = parts[2] if len(parts) > 2 else ""
         if not class_id:
             await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
             return
         await _ensure_user(upd, "parent")
+        reason = "Отмена родителем через бота"
+        if occ_date:
+            reason += f" (занятие {occ_date})"
         await bus.publish(Event(EventTypes.LESSON_CANCELLED, {
             "lesson_id": class_id,
-            "reason": "не указана (отмена кнопкой)",
+            "reason": reason,
+            "occurrence_date": occ_date or None,
             "reported_by": str(query.from_user.id),
         }))
         from src.db.repository import MeritHubClassRepository
         from src.workflows.lesson_ops import _format_class_label
         cls = await MeritHubClassRepository().get(class_id)
         label = _format_class_label(class_id, (cls or {}).get("start_time"))
+        date_note = f" ({occ_date})" if occ_date else ""
         await query.edit_message_text(
-            f"🔄 Отмена {label} передана репетитору и координаторам.")
-        logger.info("Cancel via button: class=%s by=%s", class_id, query.from_user.id)
+            f"🔄 Отмена {label}{date_note} передана репетитору и координаторам.")
+        logger.info("Cancel via button: class=%s date=%s by=%s", class_id, occ_date, query.from_user.id)
         return
 
     # --- Координатор закрывает ситуацию прямо с эскалации (UX U2) ---
@@ -830,15 +1055,11 @@ async def handle_callback(upd: Update, _ctx) -> None:
         ops = LessonOpsWorkflow()
         await ops.record_checkin_response(wid, actor_tg=str(query.from_user.id), action=action)
         await idem.save(idem_key, "telegram_checkin", response=action)
-        ack_map = {
-            "ready": "✅ Статус принят.",
-            "late": "⏰ Спасибо, отметили опоздание.",
-            "no_show": "❌ Спасибо, отметили отсутствие.",
-            "tech": "🛠 Спасибо, отметили техпроблему.",
-            "class_started": "✅ Отлично, старт урока зафиксирован.",
-            "student_absent": "👤 Спасибо, отметили отсутствие ученика.",
-        }
-        await query.edit_message_text(ack_map.get(action, "✅ Ответ принят."))
+        # Подтверждение — на языке нажавшего (тьюторы — EN).
+        from src.utils.i18n import lang_of, tr
+        lang = await lang_of(str(query.from_user.id))
+        ack = tr(f"ack_{action}", lang)
+        await query.edit_message_text(ack if ack != f"ack_{action}" else "✅ Ответ принят.")
         return
 
     await query.edit_message_text("Не понял действие — попробуйте ещё раз или напишите текстом.")
@@ -897,6 +1118,10 @@ async def _show_demo_report(upd: Update, _ctx) -> None:
 # =====================================================================
 
 async def handle_message(upd: Update, _ctx) -> None:
+    # Free-text шаги визардов координатора (поиск репетитора, своё время и т.п.) —
+    # если активен сценарий, сообщение обрабатывает он, диалог не доходит до NLU.
+    if await try_handle_wz_text(upd, _ctx):
+        return
     text = upd.message.text or ""
     tg_id = str(upd.effective_user.id)
     if not text.strip():
@@ -951,29 +1176,23 @@ async def handle_message(upd: Update, _ctx) -> None:
         if active_checkin:
             wid, data, _wf_type = active_checkin
             actor_type = data.get("actor_type")
+            from src.utils.i18n import lang_of, tr
+            lang = await lang_of(tg_id)
             if actor_type == "tutor_start":
                 # Для tutor_start используем кнопки (callback), а не free-text.
                 # Free-text сюда попадает только если репетитор пишет вместо нажатия кнопки.
                 # Не делаем auto-detect student_absent из текста — слишком опасно (ложные срабатывания).
                 # Передаём в координатор для ручной обработки.
                 await ops.record_checkin_response(wid, actor_tg=tg_id, action="other", free_text=text)
-                await upd.message.reply_text(
-                    "💬 Спасибо! Передали ответ координатору для ручной обработки.\n"
-                    "Для быстрого ответа используйте кнопки из предыдущего сообщения."
-                )
+                await upd.message.reply_text(tr("ft_tutor_start_hint", lang))
                 return
             else:
                 interpreted = await llm_client.interpret_tutor_reply(text)
                 action = interpreted.get("status", "other")
             await ops.record_checkin_response(wid, actor_tg=tg_id, action=action, free_text=text)
-            reply_map = {
-                "ready": "✅ Спасибо! Отметили, что вы готовы.",
-                "late": "⏰ Спасибо! Отметили, что вы опоздаете. Координатор уведомлён.",
-                "no_show": "❌ Спасибо! Отметили, что урок не состоится. Координатор уведомлён.",
-                "tech": "🛠 Спасибо! Техпроблема зафиксирована. Координатор уведомлён.",
-                "other": "💬 Спасибо! Передали ответ координатору для ручной обработки.",
-            }
-            await upd.message.reply_text(reply_map.get(action, "✅ Ответ принят."))
+            key = f"ft_tutor_{action}" if action in ("ready", "late", "no_show", "tech") else "ft_tutor_other"
+            reply = tr(key, lang)
+            await upd.message.reply_text(reply if reply != key else "✅ Ответ принят.")
             return
 
     # Если это родитель и у него есть активный инцидент по неявке — считаем,
@@ -1024,10 +1243,13 @@ async def handle_message(upd: Update, _ctx) -> None:
             )
             return
 
+    # Классификация → конкретные workflow отвечают пользователю сами
+    # (отмена / заявка / неявка / fallback). Промежуточного «Обрабатываю...»
+    # больше нет (R7-1): ин-мемори bus выполняет цепочку синхронно, поэтому
+    # настоящий ответ приходит в рамках того же запроса — без лишнего шума.
     await bus.publish(Event(EventTypes.MESSAGE_INCOMING, {
         "text": text, "telegram_id": tg_id, "chat_id": str(upd.effective_chat.id),
     }))
-    await upd.message.reply_text("Обрабатываю...")
 
 
 async def _demo_tick_handler(event: Event) -> None:
@@ -1052,7 +1274,12 @@ def setup_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("mock_demo", cmd_mock_demo))
     app.add_handler(CommandHandler("kill_switch", cmd_kill_switch))
     app.add_handler(CommandHandler("cancel_lesson", cmd_cancel_lesson))
+    app.add_handler(CommandHandler("lessons", cmd_lessons))
     app.add_handler(CommandHandler("ok", cmd_ok))
+    # Кнопочные сценарии координатора (визарды) — создание без ручного ввода ID.
+    app.add_handler(CommandHandler("schedule", cmd_schedule))
+    app.add_handler(CommandHandler("add_student", cmd_add_student))
+    app.add_handler(CommandHandler("add_tutor", cmd_add_tutor))
     register_role_handlers(app)  # /whoami /role /roles — раздача ролей владельцами
     register_pilot_handlers(app)  # /pilot_seed /pilot_absent — прогон сценария на живых аккаунтах
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

@@ -67,6 +67,15 @@ class UserRepository(Repository):
             (role, datetime.now(timezone.utc).isoformat(), uid),
         )
 
+    async def set_language(self, telegram_id: str, lang: str) -> None:
+        """Язык интерфейса пользователя (ru/en). Иное значение игнорируется."""
+        if lang not in ("ru", "en"):
+            return
+        await self._execute(
+            "UPDATE users SET language=?, updated_at=? WHERE telegram_id=?",
+            (lang, datetime.now(timezone.utc).isoformat(), str(telegram_id)),
+        )
+
     async def set_role_by_telegram(
         self,
         tg: str,
@@ -174,6 +183,22 @@ class LeadRepository(Repository):
         if row and row.get("extracted_data"):
             row["extracted_data"] = json.loads(row["extracted_data"])
         return row
+
+    async def list_recent(self, limit: int = 10) -> list[dict]:
+        """R7-18: поверхность просмотра для /leads."""
+        rows = await self._fetchall(
+            "SELECT * FROM leads ORDER BY id DESC LIMIT ?", (limit,))
+        for r in rows:
+            if r.get("extracted_data"):
+                try:
+                    r["extracted_data"] = json.loads(r["extracted_data"])
+                except Exception:
+                    pass
+        return rows
+
+    async def count(self) -> int:
+        row = await self._fetchone("SELECT COUNT(*) as cnt FROM leads")
+        return row["cnt"] if row else 0
 
 
 SCHEDULED_LOCK_MINUTES = 5  # сколько минут даём на выполнение action
@@ -360,11 +385,26 @@ class MeritHubStudentRepository(Repository):
     async def get_by_client_id(self, cuid: str) -> dict | None:
         return await self._fetchone("SELECT * FROM merithub_students WHERE client_user_id=?", (cuid,))
 
+    async def get_by_client_ids(self, cuids: list[str]) -> dict[str, dict]:
+        """Батч (R7-15): client_user_id → строка. Один запрос вместо N+1 в циклах."""
+        ids = [str(c) for c in dict.fromkeys(cuids) if c]
+        if not ids:
+            return {}
+        ph = ",".join("?" for _ in ids)
+        rows = await self._fetchall(
+            f"SELECT * FROM merithub_students WHERE client_user_id IN ({ph})", tuple(ids))
+        return {r["client_user_id"]: r for r in rows}
+
     async def get_by_merithub_id(self, mh_id: str) -> dict | None:
         return await self._fetchone("SELECT * FROM merithub_students WHERE merithub_user_id=?", (mh_id,))
 
     async def list_all(self) -> list[dict]:
         return await self._fetchall("SELECT * FROM merithub_students ORDER BY name")
+
+    async def list_by_role(self, role: str) -> list[dict]:
+        """Ученики ('student') или репетиторы ('tutor') по имени — для пикеров визарда."""
+        return await self._fetchall(
+            "SELECT * FROM merithub_students WHERE role=? ORDER BY name", (role,))
 
 
 class MeritHubClassRepository(Repository):
@@ -385,6 +425,11 @@ class MeritHubClassRepository(Repository):
         start_time: str | None = None,
         tutor_client_user_id: str | None = None,
         tutor_merithub_user_id: str | None = None,
+        class_type: str | None = None,
+        schedule_days: str | None = None,
+        duration: int | None = None,
+        timezone: str | None = None,
+        end_date: str | None = None,
     ) -> None:
         existing = await self._fetchone("SELECT 1 FROM merithub_classes WHERE class_id=?", (class_id,))
         if existing:
@@ -392,7 +437,10 @@ class MeritHubClassRepository(Repository):
                 "UPDATE merithub_classes SET host_link=COALESCE(?,host_link), "
                 "participant_link=COALESCE(?,participant_link), title=COALESCE(?,title), "
                 "start_time=COALESCE(?,start_time), tutor_client_user_id=COALESCE(?,tutor_client_user_id), "
-                "tutor_merithub_user_id=COALESCE(?,tutor_merithub_user_id) WHERE class_id=?",
+                "tutor_merithub_user_id=COALESCE(?,tutor_merithub_user_id), "
+                "class_type=COALESCE(?,class_type), schedule_days=COALESCE(?,schedule_days), "
+                "duration=COALESCE(?,duration), timezone=COALESCE(?,timezone), "
+                "end_date=COALESCE(?,end_date) WHERE class_id=?",
                 (
                     host_link,
                     participant_link,
@@ -400,14 +448,20 @@ class MeritHubClassRepository(Repository):
                     start_time,
                     tutor_client_user_id,
                     tutor_merithub_user_id,
+                    class_type,
+                    schedule_days,
+                    duration,
+                    timezone,
+                    end_date,
                     class_id,
                 ),
             )
         else:
             await self._execute(
                 "INSERT INTO merithub_classes "
-                "(class_id, host_link, participant_link, title, start_time, tutor_client_user_id, tutor_merithub_user_id) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "(class_id, host_link, participant_link, title, start_time, tutor_client_user_id, "
+                "tutor_merithub_user_id, class_type, schedule_days, duration, timezone, end_date) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     class_id,
                     host_link,
@@ -416,11 +470,26 @@ class MeritHubClassRepository(Repository):
                     start_time,
                     tutor_client_user_id,
                     tutor_merithub_user_id,
+                    class_type or "oneTime",
+                    schedule_days,
+                    duration,
+                    timezone,
+                    end_date,
                 ),
             )
 
     async def get(self, class_id: str) -> dict | None:
         return await self._fetchone("SELECT * FROM merithub_classes WHERE class_id=?", (class_id,))
+
+    async def get_many(self, class_ids: list[str]) -> dict[str, dict]:
+        """Батч (R7-15): class_id → строка. Один запрос вместо N+1 в циклах."""
+        ids = [str(c) for c in dict.fromkeys(class_ids) if c]
+        if not ids:
+            return {}
+        ph = ",".join("?" for _ in ids)
+        rows = await self._fetchall(
+            f"SELECT * FROM merithub_classes WHERE class_id IN ({ph})", tuple(ids))
+        return {r["class_id"]: r for r in rows}
 
     async def list_all(self) -> list[dict]:
         return await self._fetchall("SELECT * FROM merithub_classes ORDER BY created_at DESC")
@@ -465,6 +534,10 @@ class MeritHubContactRepository(Repository):
     async def get(self, client_user_id: str) -> dict | None:
         return await self._fetchone("SELECT * FROM merithub_contacts WHERE client_user_id=?", (client_user_id,))
 
+    async def get_by_telegram(self, telegram_id: str) -> dict | None:
+        return await self._fetchone(
+            "SELECT * FROM merithub_contacts WHERE telegram_id=?", (str(telegram_id),))
+
     async def list_all(self) -> list[dict]:
         return await self._fetchall("SELECT * FROM merithub_contacts ORDER BY role, name")
 
@@ -495,6 +568,17 @@ class MeritHubClassStatusRepository(Repository):
                 pass
         return row
 
+    async def get_map(self, class_ids: list[str]) -> dict[str, dict]:
+        """Батч (R7-15): class_id → row lightweight (без payload) для статусов в циклах."""
+        ids = [str(c) for c in dict.fromkeys(class_ids) if c]
+        if not ids:
+            return {}
+        ph = ",".join("?" for _ in ids)
+        rows = await self._fetchall(
+            f"SELECT class_id, last_status, last_event_at, updated_at "
+            f"FROM merithub_class_status WHERE class_id IN ({ph})", tuple(ids))
+        return {r["class_id"]: r for r in rows}
+
 
 class MeritHubEnrollmentRepository(Repository):
     """Зачисление в класс (для вычисления неявок по webhook attendance)."""
@@ -519,6 +603,19 @@ class MeritHubEnrollmentRepository(Repository):
     async def list_by_class(self, class_id: str) -> list[dict]:
         return await self._fetchall("SELECT * FROM merithub_enrollments WHERE class_id=?", (class_id,))
 
+    async def list_by_classes(self, class_ids: list[str]) -> dict[str, list[dict]]:
+        """Батч (R7-15): class_id → [зачисления]. Один запрос вместо N+1 на карточках."""
+        ids = [str(c) for c in dict.fromkeys(class_ids) if c]
+        if not ids:
+            return {}
+        ph = ",".join("?" for _ in ids)
+        rows = await self._fetchall(
+            f"SELECT * FROM merithub_enrollments WHERE class_id IN ({ph})", tuple(ids))
+        out: dict[str, list[dict]] = {cid: [] for cid in ids}
+        for r in rows:
+            out.setdefault(r["class_id"], []).append(r)
+        return out
+
 
 class IdempotencyRepository(Repository):
     async def exists(self, key: str) -> bool:
@@ -536,3 +633,40 @@ class IdempotencyRepository(Repository):
 
     async def cleanup_old(self, hours: int = 24) -> None:
         await self._execute(f"DELETE FROM idempotency_keys WHERE created_at < datetime('now', '-{hours} hours')")
+
+
+class WizardStateRepository(Repository):
+    """Состояние кнопочных сценариев (визардов) координатора.
+
+    В SQLite (не в памяти процесса): перезапуск бота не убивает сценарий молча —
+    тот же принцип, что и у scheduler'а. expires_at — TTL неактивности (UTC iso).
+    """
+
+    async def get(self, chat_id: str) -> dict | None:
+        return await self._fetchone("SELECT * FROM wizard_state WHERE chat_id=?", (str(chat_id),))
+
+    async def save(self, chat_id: str, flow: str, step: str, data: dict, expires_at: str) -> None:
+        import json as _json
+        from datetime import datetime as _dt, timezone as _tz
+        payload = _json.dumps(data, ensure_ascii=False)
+        now = _dt.now(_tz.utc).isoformat()
+        existing = await self.get(chat_id)
+        if existing:
+            await self._execute(
+                "UPDATE wizard_state SET flow=?, step=?, data=?, expires_at=?, updated_at=? "
+                "WHERE chat_id=?",
+                (flow, step, payload, expires_at, now, str(chat_id)),
+            )
+        else:
+            await self._execute(
+                "INSERT INTO wizard_state (chat_id, flow, step, data, expires_at, updated_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (str(chat_id), flow, step, payload, expires_at, now),
+            )
+
+    async def delete(self, chat_id: str) -> None:
+        await self._execute("DELETE FROM wizard_state WHERE chat_id=?", (str(chat_id),))
+
+    async def list_expired(self, now_iso: str) -> list[dict]:
+        return await self._fetchall(
+            "SELECT * FROM wizard_state WHERE expires_at < ?", (now_iso,))

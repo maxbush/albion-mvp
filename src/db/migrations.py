@@ -14,7 +14,19 @@ MIGRATIONS = [
         ("country", "TEXT"),
         ("city", "TEXT"),
     ]),
+    # Round 5: регулярные серии занятий (perma) — существующие БД получают колонки.
+    ("merithub_classes", [
+        ("class_type", "TEXT NOT NULL DEFAULT 'oneTime'"),
+        ("schedule_days", "TEXT"),
+        ("duration", "INTEGER"),
+        ("timezone", "TEXT DEFAULT 'Europe/London'"),
+        ("end_date", "TEXT"),
+    ]),
 ]
+
+
+# Мёртвые таблицы: удалить из существующих БД (идемпотентно, R7-11).
+DEAD_TABLES = ["conversations"]
 
 
 async def init_db(db_path: str = "albion.db") -> None:
@@ -30,4 +42,6 @@ async def init_db(db_path: str = "albion.db") -> None:
                         await db.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
             except Exception:
                 pass  # таблица может ещё не существовать при первом запуске
+        for dead in DEAD_TABLES:
+            await db.execute(f"DROP TABLE IF EXISTS {dead}")
         await db.commit()
