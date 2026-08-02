@@ -657,3 +657,62 @@ def test_r9_9_no_phantom_event_types_published():
     for phantom in ("notification.delivered", "notification.failed",
                     "system.kill_switch"):
         assert not hasattr(EventTypes, phantom.upper().replace(".", "_")), phantom
+
+
+# ── R9-11: /incidents — батч вместо N+1 ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_r9_11_incidents_student_names_loaded_in_batch(tmp_path, monkeypatch):
+    """R9-11: имена учеников в /incidents берутся батчем (та же картина на выходе)."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    engine.repo = WorkflowRepository("albion.db")
+    engine.scheduler = ScheduledActionRepository("albion.db")
+    from src.config import settings
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+
+    from src.db.repository import UserRepository, MeritHubClassRepository
+    await UserRepository("albion.db").create("100", "coordinator", "Босс")
+    await MeritHubClassRepository("albion.db").upsert(
+        "C9", title="Sofia — Physics", start_time="2099-08-03T15:00:00+00:00")
+
+    # Три инцидента с workflow (имена Миша, Катя, без workflow)
+    i1 = await IncidentRepository("albion.db").create(
+        lesson_ref="C9", type="absence", status="pending")
+    i2 = await IncidentRepository("albion.db").create(
+        lesson_ref="C9", type="absence", status="pending")
+    i3 = await IncidentRepository("albion.db").create(
+        lesson_ref="C9", type="absence", status="pending")
+    await engine.start_workflow("absence_notification", {
+        "incident_id": i1, "student_name": "Миша", "parent_telegram_id": "1"})
+    await engine.start_workflow("absence_notification", {
+        "incident_id": i2, "student_name": "Катя", "parent_telegram_id": "2"})
+
+    from src.bot.pilot import cmd_today  # noqa — убеждаемся что pilot импортируется
+    from src.bot.pilot import cmd_incidents
+
+    class _U:
+        id = 100
+
+    class _M:
+        def __init__(self):
+            self.replies = []
+
+        async def reply_text(self, text, **kw):
+            self.replies.append((text, kw))
+
+    class _Upd:
+        def __init__(self):
+            self.effective_user = _U()
+            self.message = _M()
+
+    class _Ctx:
+        args = []
+
+    upd = _Upd()
+    await cmd_incidents(upd, _Ctx())
+    text = upd.message.replies[0][0]
+    assert f"#{i1}" in text and f"#{i2}" in text and f"#{i3}" in text
+    assert "Миша" in text and "Катя" in text
+    assert "Sofia — Physics" in text or "15:00" in text  # label из карточки класса

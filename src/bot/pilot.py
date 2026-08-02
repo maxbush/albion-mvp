@@ -872,32 +872,43 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
                 "cancellation": "отмена", "other": "прочее"}
     _STATUS_RU = {"pending": "ожидает ответа", "escalated": "ЭСКАЛАЦИЯ", "open": "открыт"}
 
-    async def _student_name(inc_id: int) -> str | None:
-        """Имя ученика из данных workflow инцидента (если сценарий его знал)."""
-        rows = await WorkflowRepository(repo.db_path).find_by_json(
-            "incident_id", inc_id, limit=1)
-        row = rows[0] if rows else None
-        if not row:
-            return None
-        try:
-            return _json.loads(row["data"]).get("student_name")
-        except Exception:
-            return None
+    # R9-11: батч вместо N+1 — имена учеников одним запросом (json_extract),
+    # карточки классов — get_many. Раньше на каждый инцидент (до 25) шло
+    # 2 отдельных запроса.
+    async def _student_names(inc_ids: list[int]) -> dict[int, str]:
+        ids = [int(i) for i in dict.fromkeys(inc_ids) if i]
+        if not ids:
+            return {}
+        ph = ", ".join("?" for _ in ids)
+        rows = await WorkflowRepository(repo.db_path)._fetchall(
+            "SELECT json_extract(data, '$.incident_id') AS inc_id, data "
+            "FROM workflow_instances WHERE json_extract(data, '$.incident_id') IN (" + ph + ")",
+            tuple(ids))
+        out: dict[int, str] = {}
+        for r in rows:
+            try:
+                out[int(r["inc_id"])] = _json.loads(r["data"]).get("student_name")
+            except Exception:
+                pass
+        return out
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     buttons = []
     if active:
         lines.append("─── Активные ───")
+        active_names = await _student_names([i["id"] for i in active])
+        cls_map = await MeritHubClassRepository().get_many(
+            [i["lesson_ref"] for i in active if i.get("lesson_ref")])
         for inc in active:
             status_emoji = {"pending": "⏳", "escalated": "🚨", "open": "📌"}.get(inc["status"], "❓")
             label = _format_class_label(
                 inc.get("lesson_ref") or "—", None)
             # Уточняем время занятия из карточки класса, если знаем ID
             if inc.get("lesson_ref"):
-                cls = await MeritHubClassRepository().get(inc["lesson_ref"])
+                cls = cls_map.get(inc["lesson_ref"])
                 if cls:
                     label = _format_class_label(inc["lesson_ref"], cls.get("start_time"))
-            who = await _student_name(inc["id"])
+            who = active_names.get(inc["id"])
             who_part = f" · {who}" if who else ""
             lines.append(
                 f"{status_emoji} #{inc['id']} {_TYPE_RU.get(inc['type'], inc['type'])}"
@@ -910,8 +921,9 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
 
     if closed:
         lines.append("\n─── Последние закрытые ───")
+        closed_names = await _student_names([i["id"] for i in closed])
         for inc in closed:
-            who = await _student_name(inc["id"])
+            who = closed_names.get(inc["id"])
             who_part = f" · {who}" if who else ""
             resolution = {
                 "parent_ok": "всё в порядке", "parent_not_coming": "не пришли",
