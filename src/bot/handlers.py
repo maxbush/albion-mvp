@@ -1335,6 +1335,21 @@ async def handle_message(upd: Update, _ctx) -> None:
                 m = re.search(r"(\d{1,3})\s*мин", text)
                 if m:
                     late_minutes = m.group(1)
+            if status == "other":
+                # П4: непонятный ответ НЕ закрывает инцидент — он остаётся
+                # активным (review) до разбора координатором. Эскалация по
+                # таймеру отменяется (мы уже эскалируем вручную), workflow
+                # остаётся running, чтобы поздние ответы родителя перехватывались.
+                await wf.incidents.update_status(inc_id, "review")
+                wf_rows_r = await WorkflowRepository().find_by_json(
+                    "incident_id", inc_id, limit=1)
+                if wf_rows_r:
+                    await ScheduledActionRepository().cancel_by_workflow(wf_rows_r[0]["id"])
+                await wf.notify_coordinators_parent_reply(
+                    inc_id, "free_text", parent_text=text,
+                    parent_telegram_id=tg_id, review=True)
+                await upd.message.reply_text(reply_map["other"])
+                return
             await wf.resolve_absence(inc_id, tg_id, resolution=resolution_map.get(status, "parent_text_reply"))
             await wf.notify_coordinators_parent_reply(
                 inc_id,

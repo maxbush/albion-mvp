@@ -233,6 +233,7 @@ class AbsenceWorkflow:
         parent_text: str | None = None,
         parent_telegram_id: str | None = None,
         late_minutes: str | None = None,
+        review: bool = False,
     ) -> None:
         """R9-14: late_minutes — '15'/'30+' → «ученик опоздает (на 15 мин)»."""
         labels = {
@@ -252,18 +253,27 @@ class AbsenceWorkflow:
         base = labels.get(outcome, "ℹ️ Родитель обновил статус")
         if outcome == "late" and late_minutes:
             base += f" (на {late_minutes} мин)"
+        # П4: непонятный ответ — инцидент остаётся активным до разбора
+        if review:
+            base += "\n\n💬 Ответ не распознан автоматически — инцидент остаётся активным до разбора."
         msg = f"{base}\nИнцидент #{inc_id}\nУченик: {student_name}\nЗанятие: {class_label}"
         if parent_text:
             msg += f"\n💬 «{parent_text[:500]}»"
         from src.bot.roles import notify_all_coordinators
         # Сырой TG в текст не пишем (П9/R7-4): действие — url-кнопкой.
-        buttons = None
+        buttons = []
         if parent_telegram_id:
-            buttons = [{"text": "👤 Написать родителю",
-                        "url": f"tg://user?id={parent_telegram_id}"}]
+            buttons.append({"text": "👤 Написать родителю",
+                            "url": f"tg://user?id={parent_telegram_id}"})
+        # П4: непонятный ответ — инцидент остаётся активным, координатор
+        # закрывает его явной кнопкой «✅ Разобрался».
+        if review:
+            buttons.insert(0, {"text": "✅ Разобрался",
+                               "callback_data": f"coord_resolve:{inc_id}"})
         await notify_all_coordinators(
             msg, notification_type="parent_reply",
-            db_path=self.incidents.db_path, buttons=buttons)
+            db_path=self.incidents.db_path,
+            buttons=buttons or None)
 
     async def _notify_parent(self, wid: int, inc_id: int | None) -> None:
         """Уведомить родителя. С проверкой статуса инцидента."""

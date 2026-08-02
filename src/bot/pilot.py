@@ -836,7 +836,7 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
 
     # Активные (pending + escalated)
     active = await repo._fetchall(
-        "SELECT * FROM incidents WHERE status IN ('pending', 'escalated', 'open') "
+        "SELECT * FROM incidents WHERE status IN ('pending', 'escalated', 'open', 'review') "
         "ORDER BY created_at DESC LIMIT 20"
     )
     # Последние закрытые
@@ -849,6 +849,7 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
         "SELECT "
         "  COUNT(CASE WHEN status='pending' THEN 1 END) as pending, "
         "  COUNT(CASE WHEN status='escalated' THEN 1 END) as escalated, "
+        "  COUNT(CASE WHEN status='review' THEN 1 END) as review, "
         "  COUNT(CASE WHEN status='resolved' THEN 1 END) as resolved, "
         "  COUNT(*) as total "
         "FROM incidents"
@@ -859,6 +860,7 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
         lines.append(
             f"⏳ Ожидают: {stats['pending']}  |  "
             f"🚨 Эскалации: {stats['escalated']}  |  "
+            f"💬 Нужен разбор: {stats['review']}  |  "
             f"✅ Закрыто: {stats['resolved']}  |  "
             f"Всего: {stats['total']}\n"
         )
@@ -870,7 +872,8 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
 
     _TYPE_RU = {"absence": "неявка", "late": "опоздание",
                 "cancellation": "отмена", "other": "прочее"}
-    _STATUS_RU = {"pending": "ожидает ответа", "escalated": "ЭСКАЛАЦИЯ", "open": "открыт"}
+    _STATUS_RU = {"pending": "ожидает ответа", "escalated": "ЭСКАЛАЦИЯ",
+                  "open": "открыт", "review": "💬 нужен разбор"}
 
     # R9-11: батч вместо N+1 — имена учеников одним запросом (json_extract),
     # карточки классов — get_many. Раньше на каждый инцидент (до 25) шло
@@ -900,7 +903,8 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
         cls_map = await MeritHubClassRepository().get_many(
             [i["lesson_ref"] for i in active if i.get("lesson_ref")])
         for inc in active:
-            status_emoji = {"pending": "⏳", "escalated": "🚨", "open": "📌"}.get(inc["status"], "❓")
+            status_emoji = {"pending": "⏳", "escalated": "🚨", "open": "📌",
+                             "review": "💬"}.get(inc["status"], "❓")
             label = _format_class_label(
                 inc.get("lesson_ref") or "—", None)
             # Уточняем время занятия из карточки класса, если знаем ID

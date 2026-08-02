@@ -1081,3 +1081,68 @@ async def test_r10_tutor_no_show_notifies_parent_and_keep_class(tmp_path, monkey
     kept = [d["message"] for d in captured2]
     assert any("состоится" in m for m in kept), kept
     assert "Ок, занятие остаётся" in upd.callback_query.edits[-1][0]
+
+
+# ── R10 (П4): непонятный ответ родителя не закрывает инцидент ──────────
+
+@pytest.mark.asyncio
+async def test_r10_unclear_parent_reply_keeps_incident_open_for_review(tmp_path, monkeypatch):
+    """П4: родитель пишет нераспознанный текст → инцидент НЕ закрывается,
+    статус review, координатору алерт с кнопкой «✅ Разобрался»."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    engine.repo = WorkflowRepository("albion.db")
+    engine.scheduler = ScheduledActionRepository("albion.db")
+    await UserRepository("albion.db").create("777", "parent", "Родитель")
+    await UserRepository("albion.db").create("999", "coordinator", "Координатор")
+
+    from src.bot.handlers import handle_message
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+
+    inc_id = await IncidentRepository("albion.db").create(
+        lesson_ref="C9", type="absence", status="pending")
+    wid = await engine.start_workflow("absence_notification", {
+        "incident_id": inc_id, "parent_telegram_id": "777",
+        "student_name": "Миша", "lesson_ref": "C9"})
+    # Эскалация запланирована — должна быть отменена при review
+    await ScheduledActionRepository("albion.db").create(
+        wid, "2099-01-01 00:00:00", "escalate", {"incident_id": inc_id})
+
+    captured = []
+    async def cap(ev):
+        captured.append(ev.data)
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        upd = _FakeUpd(_FakeUser(777), text="это не наш ребёнок кажется")
+        upd.message.replies = []
+        await handle_message(upd, _FakeCtx())
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    inc = await IncidentRepository("albion.db").get(inc_id)
+    assert inc["status"] == "review", "инцидент должен остаться активным на разбор"
+    assert inc["status"] != "resolved"
+
+    coord_msgs = [d for d in captured if d.get("telegram_id") == "999"]
+    assert coord_msgs
+    assert "не распознан" in coord_msgs[0]["message"]
+    cbs = [b.get("callback_data") for b in coord_msgs[0].get("buttons", [])]
+    assert f"coord_resolve:{inc_id}" in cbs, "нужна кнопка «Разобрался»"
+
+    # Эскалация по таймеру отменена (мы уже эскалировали вручную)
+    rows = await ScheduledActionRepository("albion.db")._fetchall(
+        "SELECT status FROM scheduled_actions WHERE workflow_id=?", (wid,))
+    assert rows and all(r["status"] == "cancelled" for r in rows)
+
+    # Workflow остаётся running — поздние ответы родителя перехватываются
+    wf = await WorkflowRepository("albion.db").get(wid)
+    assert wf["state"] == "running"
+
+    # Родитель уточняет «всё ок» → инцидент закрывается нормально
+    upd2 = _FakeUpd(_FakeUser(777), text="всё в порядке, спасибо")
+    upd2.message.replies = []
+    await handle_message(upd2, _FakeCtx())
+    inc = await IncidentRepository("albion.db").get(inc_id)
+    assert inc["status"] == "resolved"
