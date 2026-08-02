@@ -370,6 +370,30 @@ class LessonOpsWorkflow:
         await self._cancel_future_actions(wid)
         await self._save_workflow(wid, "completed", data)
 
+    async def _checkin_late_fallback(self, wid: int) -> None:
+        """R10 (П5): пользователь нажал «Опоздаю», но не выбрал минуты —
+        алерт координаторам без деталей (иначе факт опоздания терялся бы)."""
+        wf, data = await self._load_workflow(wid)
+        if not wf or wf["state"] != "running":
+            return
+        class_id = data.get("class_id", "—")
+        tutor_name = data.get("tutor_name") or "Репетитор"
+        student_name = data.get("student_name") or ", ".join(data.get("student_names") or []) or "Ученик"
+        if data.get("actor_type") == "parent":
+            title = "⏰ Родитель сообщил об опоздании ученика (без деталей)"
+            lines = [f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
+                     f"Ученик: {student_name}",
+                     f"Репетитор: {tutor_name}"]
+        else:
+            title = "⏰ Репетитор сообщил об опоздании (без деталей)"
+            lines = [f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
+                     f"Репетитор: {tutor_name}",
+                     f"Ученики: {student_name}"]
+        await self.notify_coordinators(title, lines)
+        data["response_status"] = "late_no_mins"
+        await self._cancel_future_actions(wid)
+        await self._save_workflow(wid, "completed", data)
+
     async def notify_late_detail(self, wid: int, mins_str: str) -> None:
         """R8-10/R9-13: точное время опоздания координаторам — от ФАКТИЧЕСКОГО актора.
 
@@ -619,6 +643,8 @@ class LessonOpsWorkflow:
             await self._send_tutor_start_check(wid)
         elif action == "class_live_check":
             await self._check_class_live(wid)
+        elif action == "checkin_late_fallback":
+            await self._checkin_late_fallback(wid)
         elif action == MORNING_DIGEST_ACTION:
             await self._send_morning_digest_auto(wid)
 

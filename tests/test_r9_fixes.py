@@ -825,3 +825,106 @@ async def test_r9_14_parent_late_asks_minutes_then_resolves(tmp_path, monkeypatc
     upd3 = _CBUpd(_CBUser(777), f"resolve_late_time:{inc_id}:nn1:15")
     await handle_callback(upd3, _FakeCtx())
     assert any("Уже обработано" in (a[0] or "") for a in upd3.callback_query.answers)
+
+
+# ── R10 (П3+П5): parent-checkin «Опоздаю» — формулировка про ученика,
+#    одно сообщение координатору, fallback без потери факта ────────────
+
+@pytest.mark.asyncio
+async def test_r10_parent_checkin_late_asks_student_minutes_and_single_alert(tmp_path, monkeypatch):
+    """П3: родителю — «На сколько минут УЧЕНИК опоздает?» (не «задержитесь вы»).
+    П5: координатор получает ОДНО итоговое сообщение с минутами."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    await UserRepository("albion.db").create("777", "parent", "Родитель")
+    await UserRepository("albion.db").create("999", "coordinator", "Координатор")
+
+    from src.bot.handlers import handle_callback
+    from src.workflows.lesson_ops import LessonOpsWorkflow
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+
+    wid = await WorkflowRepository("albion.db").create("prelesson_parent", "running", {
+        "class_id": "C9", "actor_type": "parent", "actor_telegram_id": "777",
+        "student_name": "Миша", "tutor_name": "Анна",
+        "start_time": "2099-08-02T15:00:00+00:00", "nonce": "nn1"})
+
+    upd1 = _CBUpd(_CBUser(777), f"checkin:{wid}:nn1:late")
+    await handle_callback(upd1, _FakeCtx())
+    q_text = upd1.callback_query.edits[-1][0]
+    assert "На сколько минут ученик опоздает?" in q_text
+    assert "задержитесь" not in q_text
+
+    captured = []
+    async def cap(ev):
+        captured.append(ev.data)
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        upd2 = _CBUpd(_CBUser(777), f"checkin_late_time:{wid}:nn1:15")
+        await handle_callback(upd2, _FakeCtx())
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    coord_msgs = [d["message"] for d in captured if d.get("telegram_id") == "999"]
+    # Ровно ОДНО сообщение координатору — «ученик опоздает (на 15 мин)»
+    assert len(coord_msgs) == 1, coord_msgs
+    assert "Уточнение по опозданию ученика" in coord_msgs[0]
+    assert "Ученик: Миша опоздает на 15 мин" in coord_msgs[0]
+
+    wf = await WorkflowRepository("albion.db").get(wid)
+    assert wf["state"] == "completed"
+    # fallback отменён
+    rows = await ScheduledActionRepository("albion.db")._fetchall(
+        "SELECT status FROM scheduled_actions WHERE action='checkin_late_fallback'")
+    assert rows and rows[0]["status"] == "cancelled"
+
+    # ack родителю — про ученика
+    ack = upd2.callback_query.edits[-1][0]
+    assert "ученик опоздает на 15 мин" in ack
+
+
+@pytest.mark.asyncio
+async def test_r10_checkin_late_fallback_alerts_when_minutes_not_picked(tmp_path, monkeypatch):
+    """П5-страховка: выбрал «Опоздаю», но не выбрал минуты → через fallback
+    координатор узнаёт об опоздании (без деталей), workflow завершается."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    await UserRepository("albion.db").create("777", "parent", "Родитель")
+    await UserRepository("albion.db").create("999", "coordinator", "Координатор")
+
+    from src.bot.handlers import handle_callback
+    from src.workflows.lesson_ops import LessonOpsWorkflow
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+
+    wid = await WorkflowRepository("albion.db").create("prelesson_parent", "running", {
+        "class_id": "C9", "actor_type": "parent", "actor_telegram_id": "777",
+        "student_name": "Миша", "tutor_name": "Анна",
+        "start_time": "2099-08-02T15:00:00+00:00", "nonce": "nn2"})
+
+    upd1 = _CBUpd(_CBUser(777), f"checkin:{wid}:nn2:late")
+    await handle_callback(upd1, _FakeCtx())
+    # fallback-задача создана
+    rows = await ScheduledActionRepository("albion.db")._fetchall(
+        "SELECT status FROM scheduled_actions WHERE action='checkin_late_fallback'")
+    assert rows and rows[0]["status"] == "pending"
+
+    # Имитируем срабатывание fallback (время вышло, минут не выбрал)
+    captured = []
+    async def cap(ev):
+        captured.append(ev.data)
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await LessonOpsWorkflow("albion.db").handle_scheduler_tick(Event(EventTypes.SCHEDULER_TICK, {
+            "action": "checkin_late_fallback", "workflow_id": wid,
+            "data": {"workflow_id": wid}}))
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    coord_msgs = [d["message"] for d in captured if d.get("telegram_id") == "999"]
+    assert coord_msgs
+    assert "Родитель сообщил об опоздании ученика (без деталей)" in coord_msgs[0]
+    wf = await WorkflowRepository("albion.db").get(wid)
+    assert wf["state"] == "completed"

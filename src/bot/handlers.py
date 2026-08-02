@@ -1111,13 +1111,25 @@ async def handle_callback(upd: Update, _ctx) -> None:
             return
 
         ops = LessonOpsWorkflow()
-        await ops.record_checkin_response(wid, actor_tg=str(query.from_user.id), action=action)
-        await idem.save(idem_key, "telegram_checkin", response=action)
-        # Подтверждение — на языке нажавшего (тьюторы — EN).
-        from src.utils.i18n import lang_of, tr
-        lang = await lang_of(str(query.from_user.id))
+        actor_type = wf_data.get("actor_type")
+        # R10 (П5): для «⏰ Опоздаю» НЕ шлём мгновенный алерт координатору —
+        # дождёмся выбора минут и отправим ОДНО итоговое сообщение. Пока выбор
+        # не сделан, workflow остаётся running; fallback-алерт через 10 минут —
+        # страховка, что факт опоздания не потеряется.
         if action == "late":
-            msg_text = tr("ack_late_ask_mins", lang)
+            wf_data["response_status"] = "late"
+            wf_data["responded_at"] = datetime.now(timezone.utc).isoformat()
+            await repo.update_data(wid, wf_data)
+            await ScheduledActionRepository().create(
+                wid,
+                (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+                "checkin_late_fallback", {"workflow_id": wid})
+            await idem.save(idem_key, "telegram_checkin", response=action)
+            from src.utils.i18n import lang_of, tr
+            lang = await lang_of(str(query.from_user.id))
+            # П3: родителю — «на сколько минут УЧЕНИК опоздает», а не «задержитесь ВЫ»
+            msg_key = "ack_late_ask_mins_parent" if actor_type == "parent" else "ack_late_ask_mins"
+            msg_text = tr(msg_key, lang)
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton(tr("tutor_btn_late_5", lang), callback_data=f"checkin_late_time:{wid}:{nonce}:5"),
                 InlineKeyboardButton(tr("tutor_btn_late_15", lang), callback_data=f"checkin_late_time:{wid}:{nonce}:15"),
@@ -1125,6 +1137,12 @@ async def handle_callback(upd: Update, _ctx) -> None:
             ]])
             await query.edit_message_text(msg_text, reply_markup=kb)
             return
+
+        await ops.record_checkin_response(wid, actor_tg=str(query.from_user.id), action=action)
+        await idem.save(idem_key, "telegram_checkin", response=action)
+        # Подтверждение — на языке нажавшего (тьюторы — EN).
+        from src.utils.i18n import lang_of, tr
+        lang = await lang_of(str(query.from_user.id))
         ack = tr(f"ack_{action}", lang)
         await query.edit_message_text(ack if ack != f"ack_{action}" else "✅ Ответ принят.")
         return
@@ -1148,10 +1166,23 @@ async def handle_callback(upd: Update, _ctx) -> None:
         ops = LessonOpsWorkflow()
         # R9-13: координаторам передаём raw-минуты (текст формирует workflow
         # по actor_type); пользователю — локализованный ack.
-        time_label = tr(f"tutor_btn_late_{mins_str.replace('+', '')}", lang)
+        # R10 (П5): одно итоговое сообщение координатору; fallback отменяем,
+        # workflow завершаем.
+        wf_row2 = await WorkflowRepository().get(wid)
+        try:
+            wf_data2 = json.loads(wf_row2.get("data") or "{}") if wf_row2 else {}
+        except Exception:
+            wf_data2 = {}
+        actor_type = wf_data2.get("actor_type")
+        await ScheduledActionRepository().cancel_by_workflow(wid)
         await ops.notify_late_detail(wid, mins_str)
+        await WorkflowRepository().update_state(
+            wid, "completed",
+            {**wf_data2, "response_status": "late", "late_minutes": mins_str})
         await idem.save(idem_key, "telegram_checkin_late_time", response=mins_str)
-        ack = tr("ack_late_detail", lang, mins=time_label)
+        mins_label = f"{mins_str} мин"
+        ack_key = "ack_late_detail_parent" if actor_type == "parent" else "ack_late_detail"
+        ack = tr(ack_key, lang, mins=mins_label)
         await query.edit_message_text(ack)
         return
 

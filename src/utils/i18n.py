@@ -57,7 +57,7 @@ T: dict[str, dict[str, str]] = {
     "tutor_btn_late_15": {"ru": "на 15 мин", "en": "15 min"},
     "tutor_btn_late_30": {"ru": "на 30+ мин", "en": "30+ min"},
     "ack_late_detail": {
-        "ru": "✅ Спасибо! Передали координатору, что вы задержитесь {mins}.",
+        "ru": "✅ Спасибо! Передали координатору, что вы задержитесь на {mins}.",
         "en": "✅ Thanks! Informed the coordinator you'll be {mins} late.",
     },
     # R9-14: вопрос и ack для РОДИТЕЛЯ (опаздывает ученик, не родитель)
