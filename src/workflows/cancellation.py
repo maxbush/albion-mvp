@@ -38,6 +38,7 @@ class CancellationWorkflow:
         sn = tn = "—"
         subject = "—"
         tutor_tg = None
+        parent_tgs: list[str] = []  # П1: родители, которых нужно уведомить об отмене
         reason = event.data.get("reason", "Не указана")
         lesson = await self.airtable.get_lesson(lid)
         if lesson:
@@ -48,6 +49,8 @@ class CancellationWorkflow:
             tn = tutor.name if tutor else "Репетитор"
             subject = lesson.subject
             tutor_tg = await self._get_tutor_telegram(lesson.tutor_id)
+            if student and student.parent_telegram_id:
+                parent_tgs = [student.parent_telegram_id]
         else:
             from src.db.repository import (
                 MeritHubClassRepository, MeritHubContactRepository,
@@ -72,6 +75,9 @@ class CancellationWorkflow:
                      for e in enr if (e.get("role") or "student") == "student"]
             sn = ", ".join(names[:3]) or "Ученик"
             subject = cls.get("title") or lid
+            # П1: родители зачисленных учеников тоже должны узнать об отмене
+            parent_tgs = list({e["parent_telegram_id"] for e in enr
+                               if e.get("parent_telegram_id")})
             trow = await MeritHubContactRepository(self.users.db_path).get(
                 cls.get("tutor_client_user_id") or "")
             tutor_tg = (trow or {}).get("telegram_id")
@@ -88,6 +94,15 @@ class CancellationWorkflow:
             await sched.cancel_by_workflow(wf["id"])
             await wf_repo.cancel(wf["id"])
             logger.info("Cancelled workflow %d for cancelled lesson %s", wf["id"], lid)
+
+        # П1: уведомляем родителей (если отмена инициирована не ими — сообщение
+        # закрывает цикл; если родитель отменил сам — это подтверждение).
+        from src.utils.i18n import lang_of, tr
+        for ptg in parent_tgs:
+            await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                "telegram_id": ptg,
+                "message": tr("class_cancelled_parent", "ru", label=subject),
+            }))
 
         # Уведомляем репетитора (если есть TG) — на его языке (i18n)
         if tutor_tg:

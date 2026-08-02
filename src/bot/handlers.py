@@ -871,6 +871,43 @@ async def handle_callback(upd: Update, _ctx) -> None:
         logger.info("Cancel via button: class=%s date=%s by=%s", class_id, occ_date, query.from_user.id)
         return
 
+    # --- П1: координатор решает судьбу занятия после «не придём»/«can't teach» ---
+    if data.startswith("coord_cancel_class:"):
+        if not await is_coordinator_or_admin(query.from_user.id):
+            await query.answer("⛔ Только координатор/админ", show_alert=True)
+            return
+        parts = data.split(":")
+        class_id = parts[1] if len(parts) > 1 else ""
+        occ_date = parts[2] if len(parts) > 2 and parts[2] != "None" else None
+        if not class_id:
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
+            return
+        await bus.publish(Event(EventTypes.LESSON_CANCELLED, {
+            "lesson_id": class_id,
+            "reason": "Отмена координатором после уведомления о неявке",
+            "occurrence_date": occ_date,
+            "reported_by": str(query.from_user.id),
+        }))
+        await query.edit_message_text("✅ Отмена передана: репетитор и родители уведомлены.")
+        logger.info("Coordinator cancelled class %s (date=%s) via no-show decision", class_id, occ_date)
+        return
+
+    if data.startswith("coord_keep_class:"):
+        if not await is_coordinator_or_admin(query.from_user.id):
+            await query.answer("⛔ Только координатор/админ", show_alert=True)
+            return
+        parts = data.split(":")
+        class_id = parts[1] if len(parts) > 1 else ""
+        occ_date = parts[2] if len(parts) > 2 and parts[2] != "None" else None
+        if not class_id:
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
+            return
+        ops = LessonOpsWorkflow()
+        await ops._keep_class_notify(class_id, occ_date)
+        await query.edit_message_text("✅ Ок, занятие остаётся — репетитор и родители уведомлены.")
+        logger.info("Coordinator kept class %s (date=%s) after no-show decision", class_id, occ_date)
+        return
+
     # --- Координатор закрывает ситуацию прямо с эскалации (UX U2) ---
     if data.startswith("coord_resolve:"):
         parts = data.split(":")

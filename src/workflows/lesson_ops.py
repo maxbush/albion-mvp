@@ -288,27 +288,31 @@ class LessonOpsWorkflow:
         status_label = action_labels.get(action, action)
 
         if actor_type == "parent":
-            await self.notify_coordinators(
-                "📣 Ответ родителя",
-                [
-                    f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
-                    f"Ученик: {student_name}",
-                    f"Репетитор: {tutor_name}",
-                    f"Статус: {status_label}",
-                    *( [f"💬 «{free_text[:500]}»"] if free_text else [] ),
-                ],
-            )
+            # П1: «Не придём» — отдельный decision-алерт с кнопками, без дубля
+            if action != "no_show":
+                await self.notify_coordinators(
+                    "📣 Ответ родителя",
+                    [
+                        f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
+                        f"Ученик: {student_name}",
+                        f"Репетитор: {tutor_name}",
+                        f"Статус: {status_label}",
+                        *( [f"💬 «{free_text[:500]}»"] if free_text else [] ),
+                    ],
+                )
         elif actor_type == "tutor":
-            await self.notify_coordinators(
-                "🧑‍🏫 Ответ репетитора",
-                [
-                    f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
-                    f"Репетитор: {tutor_name}",
-                    f"Ученики: {student_name}",
-                    f"Статус: {status_label}",
-                    *( [f"💬 «{free_text[:500]}»"] if free_text else [] ),
-                ],
-            )
+            # П1: «Can't teach» — отдельный decision-алерт с кнопками, без дубля
+            if action != "no_show":
+                await self.notify_coordinators(
+                    "🧑‍🏫 Ответ репетитора",
+                    [
+                        f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
+                        f"Репетитор: {tutor_name}",
+                        f"Ученики: {student_name}",
+                        f"Статус: {status_label}",
+                        *( [f"💬 «{free_text[:500]}»"] if free_text else [] ),
+                    ],
+                )
         elif actor_type == "tutor_start":
             if action == "class_started":
                 await self.notify_coordinators(
@@ -367,6 +371,10 @@ class LessonOpsWorkflow:
                     ],
                 )
 
+        # П1: «Не придём»/«Can't teach» — вторая сторона + решение координатора
+        if action == "no_show" and actor_type in ("parent", "tutor"):
+            await self._no_show_notify(data, actor_type)
+
         await self._cancel_future_actions(wid)
         await self._save_workflow(wid, "completed", data)
 
@@ -393,6 +401,86 @@ class LessonOpsWorkflow:
         data["response_status"] = "late_no_mins"
         await self._cancel_future_actions(wid)
         await self._save_workflow(wid, "completed", data)
+
+    async def _class_party(self, class_id: str) -> tuple[str | None, list[str]]:
+        """(tutor_tg, parent_tgs) для класса — по локальным таблицам."""
+        if not class_id:
+            return None, []
+        from src.db.repository import (
+            MeritHubClassRepository, MeritHubContactRepository, MeritHubEnrollmentRepository,
+        )
+        crepo = MeritHubClassRepository(self.repo.db_path)
+        cls = await crepo.get(class_id)
+        tcuid = (cls or {}).get("tutor_client_user_id")
+        tutor_tg = None
+        if tcuid:
+            trow = await MeritHubContactRepository(self.repo.db_path).get(tcuid)
+            tutor_tg = (trow or {}).get("telegram_id")
+        enr = await MeritHubEnrollmentRepository(self.repo.db_path).list_by_class(class_id)
+        parents = list({e["parent_telegram_id"] for e in enr if e.get("parent_telegram_id")})
+        return tutor_tg, parents
+
+    async def _no_show_notify(self, data: dict, actor_type: str) -> None:
+        """П1: «Не придём»/«Can't teach» — уведомить ВТОРУЮ сторону и дать
+        координатору кнопки решения (отменить / урок в силе)."""
+        from src.utils.i18n import lang_of, tr
+        class_id = data.get("class_id", "")
+        start_time = data.get("start_time")
+        label = _format_class_label(class_id, start_time)
+        occ_date = (start_time or "")[:10] or None
+        tutor_tg, parent_tgs = await self._class_party(class_id)
+
+        if actor_type == "parent":
+            # Репетитору — предупреждение
+            student = data.get("student_name") or "Ученик"
+            if tutor_tg:
+                await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                    "telegram_id": tutor_tg,
+                    "message": tr("no_show_tutor_notice", await lang_of(tutor_tg),
+                                  student=student, label=label),
+                }))
+            title = "👤 Родитель сообщил: ученик не придёт"
+            lines = [
+                f"Занятие: {label}",
+                f"Ученик: {student}",
+                f"Репетитор: {data.get('tutor_name') or '—'}",
+                "Решение: отменить занятие или оставить в силе.",
+            ]
+        else:
+            # Родителям — предупреждение
+            tutor = data.get("tutor_name") or "Репетитор"
+            for ptg in parent_tgs:
+                await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                    "telegram_id": ptg,
+                    "message": tr("no_show_parent_notice", "ru",
+                                  tutor=tutor, label=label),
+                }))
+            title = "🧑‍🏫 Репетитор сообщил: не сможет провести занятие"
+            lines = [
+                f"Занятие: {label}",
+                f"Репетитор: {tutor}",
+                f"Ученики: {', '.join(data.get('student_names') or []) or '—'}",
+                "Решение: отменить занятие или оставить в силе.",
+            ]
+
+        buttons = [{"text": "✅ Отменить занятие",
+                    "callback_data": f"coord_cancel_class:{class_id}:{occ_date}"},
+                   {"text": "◀️ Урок в силе",
+                    "callback_data": f"coord_keep_class:{class_id}:{occ_date}"}]
+        await self.notify_coordinators(title, lines, buttons=buttons)
+
+    async def _keep_class_notify(self, class_id: str, occ_date: str | None) -> None:
+        """П1: координатор оставил занятие в силе — уведомить обе стороны."""
+        from src.utils.i18n import lang_of, tr
+        tutor_tg, parent_tgs = await self._class_party(class_id)
+        if tutor_tg:
+            await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                "telegram_id": tutor_tg,
+                "message": tr("class_kept_tutor", await lang_of(tutor_tg), label=class_id)}))
+        for ptg in parent_tgs:
+            await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                "telegram_id": ptg,
+                "message": tr("class_kept_parent", "ru", label=class_id)}))
 
     async def notify_late_detail(self, wid: int, mins_str: str) -> None:
         """R8-10/R9-13: точное время опоздания координаторам — от ФАКТИЧЕСКОГО актора.

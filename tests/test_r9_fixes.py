@@ -928,3 +928,156 @@ async def test_r10_checkin_late_fallback_alerts_when_minutes_not_picked(tmp_path
     assert "Родитель сообщил об опоздании ученика (без деталей)" in coord_msgs[0]
     wf = await WorkflowRepository("albion.db").get(wid)
     assert wf["state"] == "completed"
+
+
+# ── R10 (П1): «Не придём»/«Can't teach» — вторая сторона + решение координатора ──
+
+async def _p1_seed(db):
+    from src.db.repository import (
+        UserRepository, MeritHubClassRepository, MeritHubContactRepository,
+        MeritHubEnrollmentRepository, MeritHubStudentRepository,
+    )
+    urepo = UserRepository(db)
+    await urepo.create("777", "parent", "Родитель")
+    await urepo.create("555", "tutor", "Анна")
+    await urepo.create("999", "coordinator", "Координатор")
+    await MeritHubStudentRepository(db).upsert("t01", merithub_user_id="mh_t01", name="Анна", role="tutor")
+    await MeritHubContactRepository(db).upsert("t01", "555", "tutor", name="Анна")
+    await MeritHubClassRepository(db).upsert(
+        "C9", title="Миша — математика", start_time="2099-08-03T15:00:00+00:00",
+        tutor_client_user_id="t01")
+    await MeritHubEnrollmentRepository(db).add(
+        "C9", "mh_s01", client_user_id="s01", parent_telegram_id="777",
+        student_name="Миша", role="student")
+
+
+@pytest.mark.asyncio
+async def test_r10_parent_no_show_notifies_tutor_and_coord_decision_buttons(tmp_path, monkeypatch):
+    """П1: родитель жмёт «❌ Не придём» → репетитор предупреждён, координатору —
+    алерт с кнопками [Отменить занятие] [Урок в силе]."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    await _p1_seed("albion.db")
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+
+    wid = await WorkflowRepository("albion.db").create("prelesson_parent", "running", {
+        "class_id": "C9", "actor_type": "parent", "actor_telegram_id": "777",
+        "student_name": "Миша", "tutor_name": "Анна",
+        "start_time": "2099-08-03T15:00:00+00:00", "nonce": "nnx"})
+
+    from src.workflows.lesson_ops import LessonOpsWorkflow
+    captured = []
+    async def cap(ev):
+        captured.append(ev.data)
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await LessonOpsWorkflow("albion.db").record_checkin_response(
+            wid, actor_tg="777", action="no_show")
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    tutor_msgs = [d["message"] for d in captured if d.get("telegram_id") == "555"]
+    assert tutor_msgs, "репетитор должен быть предупреждён"
+    assert "Миша не придёт" in tutor_msgs[0] and "C9" in tutor_msgs[0]
+
+    coord_msgs = [d for d in captured if d.get("telegram_id") == "999"]
+    assert coord_msgs, "координатор должен получить алерт"
+    assert "не придёт" in coord_msgs[0]["message"]
+    cbs = [b["callback_data"] for b in coord_msgs[0].get("buttons", [])]
+    assert f"coord_cancel_class:C9:2099-08-03" in cbs
+    assert any(b.startswith("coord_keep_class:C9") for b in cbs)
+
+
+@pytest.mark.asyncio
+async def test_r10_coord_cancel_class_publishes_cancellation_and_notifies_parents(tmp_path, monkeypatch):
+    """П1: координатор жмёт «✅ Отменить занятие» → LESSON_CANCELLED + родитель
+    получает «Занятие отменено»."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    await _p1_seed("albion.db")
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+
+    # Подписываемся на LESSON_CANCELLED + регистрируем обработчик отмены
+    from src.workflows.cancellation import CancellationWorkflow
+    wf_cancel = CancellationWorkflow("albion.db")
+    bus.subscribe(EventTypes.LESSON_CANCELLED, wf_cancel.handle_cancelled)
+    cancelled = []
+    async def cap_cancel(ev):
+        cancelled.append(ev.data)
+    bus.subscribe(EventTypes.LESSON_CANCELLED, cap_cancel)
+
+    captured = []
+    async def cap(ev):
+        captured.append(ev.data)
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        from src.bot.handlers import handle_callback
+        upd = _CBUpd(_CBUser(999, "Координатор"), "coord_cancel_class:C9:2099-08-03")
+        await handle_callback(upd, _FakeCtx())
+    finally:
+        bus.unsubscribe(EventTypes.LESSON_CANCELLED, cap_cancel)
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    assert cancelled, "LESSON_CANCELLED должен быть опубликован"
+    assert cancelled[0]["lesson_id"] == "C9"
+    assert cancelled[0]["occurrence_date"] == "2099-08-03"
+    assert "координатором" in cancelled[0]["reason"]
+
+    parent_msgs = [d["message"] for d in captured if d.get("telegram_id") == "777"]
+    assert parent_msgs, "родитель должен узнать об отмене"
+    assert "отменено" in parent_msgs[0]
+
+
+@pytest.mark.asyncio
+async def test_r10_tutor_no_show_notifies_parent_and_keep_class(tmp_path, monkeypatch):
+    """П1: репетитор «❌ Can't teach» → родитель предупреждён; «◀️ Урок в силе» —
+    обе стороны получают «занятие состоится»."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    await _p1_seed("albion.db")
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+
+    wid = await WorkflowRepository("albion.db").create("prelesson_tutor", "running", {
+        "class_id": "C9", "actor_type": "tutor", "actor_telegram_id": "555",
+        "tutor_name": "Анна", "student_names": ["Миша"],
+        "start_time": "2099-08-03T15:00:00+00:00", "nonce": "nny"})
+
+    from src.workflows.lesson_ops import LessonOpsWorkflow
+    captured = []
+    async def cap(ev):
+        captured.append(ev.data)
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await LessonOpsWorkflow("albion.db").record_checkin_response(
+            wid, actor_tg="555", action="no_show")
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    parent_msgs = [d["message"] for d in captured if d.get("telegram_id") == "777"]
+    assert parent_msgs, "родитель должен быть предупреждён"
+    assert "не сможет провести" in parent_msgs[0]
+
+    coord_msgs = [d for d in captured if d.get("telegram_id") == "999"]
+    assert coord_msgs and any("не сможет провести" in d["message"] for d in coord_msgs)
+
+    # Координатор: «Урок в силе»
+    captured2 = []
+    async def cap2(ev):
+        captured2.append(ev.data)
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap2)
+    try:
+        from src.bot.handlers import handle_callback
+        upd = _CBUpd(_CBUser(999, "Координатор"), "coord_keep_class:C9:2099-08-03")
+        await handle_callback(upd, _FakeCtx())
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap2)
+
+    kept = [d["message"] for d in captured2]
+    assert any("состоится" in m for m in kept), kept
+    assert "Ок, занятие остаётся" in upd.callback_query.edits[-1][0]

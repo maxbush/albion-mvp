@@ -122,6 +122,27 @@ T: dict[str, dict[str, str]] = {
         "ru": "✅ Спасибо, передали координатору — он всё увидит.",
         "en": "✅ Thanks, we've passed it to the coordinator.",
     },
+    # ── П1: «Не придём» / «Can't teach» — вторая сторона + решение координатора ──
+    "no_show_tutor_notice": {
+        "ru": "⚠️ {student} не придёт на занятие ({label}).\nЖдём подтверждение координатора — если занятие отменят, сообщим.",
+        "en": "⚠️ {student} will miss the lesson ({label}).\nWaiting for the coordinator's confirmation — we'll let you know.",
+    },
+    "no_show_parent_notice": {
+        "ru": "⚠️ Репетитор {tutor} сообщил, что не сможет провести занятие {label}.\nЖдём подтверждение координатора.",
+        "en": "⚠️ Tutor {tutor} said they can't run the lesson ({label}).\nWaiting for the coordinator's confirmation.",
+    },
+    "class_kept_tutor": {
+        "ru": "✅ Занятие ({label}) состоится.",
+        "en": "✅ The lesson ({label}) is on.",
+    },
+    "class_kept_parent": {
+        "ru": "✅ Занятие ({label}) состоится.",
+        "en": "✅ The lesson ({label}) is on.",
+    },
+    "class_cancelled_parent": {
+        "ru": "❌ Занятие ({label}) отменено.",
+        "en": "❌ The lesson ({label}) was cancelled.",
+    },
 }
 
 
