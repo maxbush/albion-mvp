@@ -557,3 +557,93 @@ async def test_r9_6_cmd_today_filters_incidents_by_org_day(tmp_path, monkeypatch
     assert "IN" not in text  # lesson_ref не выводится, но инцидент IN должен посчитаться
     assert "Инциденты сегодня: 1" in text, text
     assert "2" not in text.split("Инциденты сегодня:")[1][:5] or "Инциденты сегодня: 1" in text
+
+
+# ── R9-7: attendance-webhook идемпотентен (ретраи не плодят дубли) ─────
+
+@pytest.mark.asyncio
+async def test_r9_7_trigger_absence_dedup(tmp_path, monkeypatch):
+    """R9-7: повторный триггер неявки по тому же (lesson, student) с активным
+    workflow — пропускается; /pilot_absent (pilot_command) не дедуплицируется."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    engine.repo = WorkflowRepository("albion.db")
+    engine.scheduler = ScheduledActionRepository("albion.db")
+
+    from src.bot.pilot import trigger_absence
+    from src.db.repository import IncidentRepository
+
+    inc1, w1 = await trigger_absence(
+        lesson_ref="C9", student_id="s01", student_name="Миша",
+        parent_telegram_id="777", source="merithub_attendance_webhook")
+    assert inc1 is not None and w1 is not None
+
+    # Ретрай того же webhook — dedup
+    inc2, w2 = await trigger_absence(
+        lesson_ref="C9", student_id="s01", student_name="Миша",
+        parent_telegram_id="777", source="merithub_attendance_webhook")
+    assert inc2 is None and w2 is None
+    async def _count():
+        r = await IncidentRepository("albion.db")._fetchone("SELECT COUNT(*) as c FROM incidents")
+        return r["c"]
+    assert await _count() == 1
+
+    # Другой студент того же класса — создаётся
+    inc3, w3 = await trigger_absence(
+        lesson_ref="C9", student_id="s02", student_name="Катя",
+        parent_telegram_id="888", source="merithub_attendance_webhook")
+    assert inc3 is not None
+    r = await IncidentRepository("albion.db")._fetchone("SELECT COUNT(*) as c FROM incidents")
+    assert r["c"] == 2
+
+    # pilot_command не дедуплицируется (админ-демо, сброс через /demo_reset)
+    inc4, w4 = await trigger_absence(
+        lesson_ref="C9", student_id="s01", student_name="Миша",
+        parent_telegram_id="777", source="pilot_command")
+    assert inc4 is not None
+    r = await IncidentRepository("albion.db")._fetchone("SELECT COUNT(*) as c FROM incidents")
+    assert r["c"] == 3
+
+
+@pytest.mark.asyncio
+async def test_r9_7_attendance_webhook_double_delivery_single_notification(tmp_path, monkeypatch):
+    """R9-7: два attendance-webhook по одному классу → одно уведомление родителю."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    engine.repo = WorkflowRepository("albion.db")
+    engine.scheduler = ScheduledActionRepository("albion.db")
+
+    from src.db.repository import MeritHubEnrollmentRepository, UserRepository
+    await UserRepository("albion.db").create("777", "parent", "Родитель")
+    await MeritHubEnrollmentRepository("albion.db").add(
+        "C9", "mh_s01", client_user_id="s01",
+        parent_telegram_id="777", student_name="Миша", role="student")
+
+    from src.api.webhook import _dispatch_attendance
+    payload = {"classId": "C9", "attendance": []}  # никто не присутствовал
+    await _dispatch_attendance(payload)
+    await _dispatch_attendance(payload)  # ретрай
+
+    from src.db.repository import IncidentRepository
+    r = await IncidentRepository("albion.db")._fetchone("SELECT COUNT(*) as c FROM incidents")
+    assert r["c"] == 1
+
+    # Догоняем отложенное уведомление родителя (один scheduler-тик)
+    from src.db.repository import NotificationRepository
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+    from src.workflows.absence import AbsenceWorkflow
+    await ScheduledActionRepository("albion.db")._execute(
+        "UPDATE scheduled_actions SET execute_at=datetime('now','-1 minute') WHERE status='pending'", ())
+    tasks = await ScheduledActionRepository("albion.db").claim_pending(limit=20)
+    assert len(tasks) == 1, "должна быть ровно одна отложенная задача"
+    for t in tasks:
+        await AbsenceWorkflow("albion.db").handle_scheduler_tick(Event(EventTypes.SCHEDULER_TICK, {
+            "action": t["action"], "workflow_id": t["workflow_id"],
+            "data": json.loads(t["payload"]),
+        }))
+    rows = await NotificationRepository("albion.db")._fetchall(
+        "SELECT content FROM notifications WHERE type='absence_warning'")
+    assert len(rows) == 1, "родитель должен получить одно уведомление"

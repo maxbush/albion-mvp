@@ -10,6 +10,7 @@
 Когда подключим реальный MeritHub API, ученики будут браться уже оттуда.
 """
 
+import json
 import logging
 from datetime import datetime, timezone, timedelta
 
@@ -103,7 +104,18 @@ async def trigger_absence(
 
     Реальный TG родителя передаётся в данных workflow — `_notify_parent` берёт
     его оттуда. Используется и командой /pilot_absent, и webhook attendance.
-    Возвращает (incident_id, workflow_id)."""
+    Возвращает (incident_id, workflow_id). (None, None) — если активный
+    сценарий для (lesson, student) уже существует (R9-7: идемпотентность —
+    ретрай webhook/пересечение источников не плодит дубли)."""
+    if source != "pilot_command":
+        dup = await WorkflowRepository().find_by_json(
+            "lesson_ref", lesson_ref, state="running",
+            workflow_type="absence_notification", limit=100)
+        dup = [d for d in dup if json.loads(d.get("data") or "{}").get("student_id") == student_id]
+        if dup:
+            logger.info("Absence dedup (%s): active workflow for lesson=%s student=%s — skip",
+                        source, lesson_ref, student_id)
+            return None, None
     inc_id = await IncidentRepository().create(
         lesson_ref=lesson_ref, student_id=student_id, tutor_id=tutor_id,
         type="absence", status="pending",
