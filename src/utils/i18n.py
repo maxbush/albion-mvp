@@ -49,6 +49,17 @@ T: dict[str, dict[str, str]] = {
     "ack_tech": {"ru": "🛠 Спасибо, отметили техпроблему.", "en": "🛠 Thanks, tech issue logged."},
     "ack_class_started": {"ru": "✅ Отлично, старт урока зафиксирован.", "en": "✅ Great, lesson start recorded."},
     "ack_student_absent": {"ru": "👤 Спасибо, отметили отсутствие ученика.", "en": "👤 Thanks, noted the student is absent."},
+    "ack_late_ask_mins": {
+        "ru": "⏰ Спасибо, отметили опоздание. На сколько минут задержитесь?",
+        "en": "⏰ Thanks, noted you'll be late. How many minutes will you be delayed?",
+    },
+    "tutor_btn_late_5": {"ru": "на 5 мин", "en": "5 min"},
+    "tutor_btn_late_15": {"ru": "на 15 мин", "en": "15 min"},
+    "tutor_btn_late_30": {"ru": "на 30+ мин", "en": "30+ min"},
+    "ack_late_detail": {
+        "ru": "✅ Спасибо! Передали координатору, что вы задержитесь {mins}.",
+        "en": "✅ Thanks! Informed the coordinator you'll be {mins} late.",
+    },
     # ── Ответы на free-text тьютора ──
     "ft_tutor_ready": {"ru": "✅ Спасибо! Отметили, что вы готовы.", "en": "✅ Thanks! Noted you're ready."},
     "ft_tutor_late": {

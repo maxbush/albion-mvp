@@ -36,31 +36,35 @@ class EventBus:
         report = PublishReport(total_handlers=len(handlers))
 
         for handler in handlers:
+            h_name = getattr(handler, "__name__", str(handler))
             try:
                 await asyncio.wait_for(handler(event), timeout=HANDLER_TIMEOUT)
                 report.succeeded += 1
             except asyncio.TimeoutError:
                 error = f"Timeout {HANDLER_TIMEOUT}s"
-                logger.error("TIMEOUT [%ss]: %s.%s", HANDLER_TIMEOUT, event.type, handler.__name__)
+                logger.error("TIMEOUT [%ss]: %s.%s", HANDLER_TIMEOUT, event.type, h_name)
                 report.failed += 1
-                report.errors.append({"handler": handler.__name__, "error": error})
+                report.errors.append({"handler": h_name, "error": error})
                 await self._publish_alert(event, handler, error)
             except Exception as e:
-                logger.error("FAILED: %s.%s — %s", event.type, handler.__name__, e, exc_info=True)
+                logger.error("FAILED: %s.%s — %s", event.type, h_name, e, exc_info=True)
                 report.failed += 1
-                report.errors.append({"handler": handler.__name__, "error": str(e)})
+                report.errors.append({"handler": h_name, "error": str(e)})
                 await self._publish_alert(event, handler, str(e))
         return report
 
     async def _publish_alert(self, event: Event, handler, error: str) -> None:
         """Публикует алерт в систему (DLQ handler подхватит и запишет в БД)."""
         if event.type != EventTypes.SYSTEM_DLQ_ALERT:
-            await self.publish(Event(EventTypes.SYSTEM_DLQ_ALERT, {
-                "event_type": event.type,
-                "handler": handler.__name__,
-                "error": error,
-                "event_data": event.data,
-            }))
+            try:
+                await self.publish(Event(EventTypes.SYSTEM_DLQ_ALERT, {
+                    "event_type": event.type,
+                    "handler": getattr(handler, "__name__", str(handler)),
+                    "error": error,
+                    "event_data": event.data,
+                }))
+            except Exception as e:
+                logger.critical("EventBus: critical failure publishing DLQ alert for %s: %s", event.type, e)
 
     def get_subscribed_events(self) -> list[str]:
         return list(self._subscribers.keys())

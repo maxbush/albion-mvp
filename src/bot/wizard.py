@@ -32,7 +32,7 @@ from src.db.repository import (
     UserRepository,
     WizardStateRepository,
 )
-from src.bot.roles import is_admin
+from src.bot.roles import is_admin, is_coordinator_or_admin
 from src.events.bus import bus
 from src.events.types import Event, EventTypes
 from src.integrations.factory import get_merithub_service
@@ -1139,8 +1139,8 @@ async def _begin_person(upd: Update, ctx, chat_id: str, flow: str) -> None:
 
 
 async def _start_flow(upd: Update, flow: str) -> None:
-    if not is_admin(upd.effective_user.id):
-        await upd.message.reply_text("⛔ Только владелец/админ.")
+    if not await is_coordinator_or_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только координатор/админ.")
         return
     if getattr(upd.effective_chat, "type", "private") != "private":
         await upd.message.reply_text("Этот сценарий работает в личных сообщениях с ботом.")
@@ -1182,8 +1182,8 @@ async def handle_wz_callback(upd: Update, ctx) -> None:
     # wz:person:toschedule — кросс-потоковая кнопка «📅 К занятию» с финальной
     # карточки: состояние там уже удалено, поэтому обрабатываем БЕЗ состояния.
     if parts[1:3] == ["person", "toschedule"]:
-        if not is_admin(upd.effective_user.id):
-            await _ack(q, ack, "⛔ Только владелец/админ.", alert=True)
+        if not await is_coordinator_or_admin(upd.effective_user.id):
+            await _ack(q, ack, "⛔ Только координатор/админ.", alert=True)
             return
         await _ack(q, ack)
         await WizardStateRepository().delete(chat_id)
@@ -1200,8 +1200,8 @@ async def handle_wz_callback(upd: Update, ctx) -> None:
         else:
             await _ack(q, ack, "Этот сценарий уже закрыт. Начните заново.")
         return
-    if not is_admin(upd.effective_user.id):
-        await _ack(q, ack, "⛔ Только владелец/админ.", alert=True)
+    if not await is_coordinator_or_admin(upd.effective_user.id):
+        await _ack(q, ack, "⛔ Только координатор/админ.", alert=True)
         return
     # Значение "submitting" блокирует повторные действия на время вызова API
     if state["data"].get("submitting") and parts[2:3] != [] and parts[2] != "retry":
@@ -1229,7 +1229,7 @@ async def try_handle_wz_text(upd: Update, ctx) -> bool:
         return True
     if not state or state.get("step") not in _TEXT_STEPS:
         return False
-    if not is_admin(upd.effective_user.id):
+    if not await is_coordinator_or_admin(upd.effective_user.id):
         return False
     if state["flow"] == "schedule":
         return await _sched_text(state, upd, ctx)

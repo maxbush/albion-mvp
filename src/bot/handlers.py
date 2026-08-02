@@ -24,7 +24,7 @@ from src.integrations.factory import get_airtable_service
 from src.workflows.engine import engine
 from src.workflows.absence import AbsenceWorkflow
 from src.workflows.lesson_ops import LessonOpsWorkflow
-from src.bot.roles import register_role_handlers, get_coordinator_ids, is_admin, apply_command_menu
+from src.bot.roles import register_role_handlers, get_coordinator_ids, is_admin, is_coordinator_or_admin, apply_command_menu
 from src.bot.pilot import register_pilot_handlers
 from src.bot.wizard import (
     cmd_schedule, cmd_add_student, cmd_add_tutor, handle_wz_callback, try_handle_wz_text,
@@ -606,6 +606,9 @@ async def cmd_cancel_lesson(upd: Update, _ctx) -> None:
 
 
 async def cmd_ok(upd: Update, _ctx) -> None:
+    if not await is_coordinator_or_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только координатор/админ может закрывать ситуации.")
+        return
     if not _ctx.args:
         await upd.message.reply_text("Используйте: /ok <ID ситуации>")
         return
@@ -756,44 +759,6 @@ async def handle_callback(upd: Update, _ctx) -> None:
         await bus.publish(Event(EventTypes.SYSTEM_KILL_SWITCH, {"level": lvl}))
         return
 
-    # --- Выбор роли в демо-режиме ---
-    if data == "role_coordinator":
-        await _ensure_role(upd, "coordinator")
-        await apply_command_menu(getattr(_ctx, "bot", None), upd.effective_user.id, "coordinator")
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🚨 Ученик отсутствует", callback_data="demo_absent"),
-            InlineKeyboardButton("📊 Отчёт о сессии", callback_data="demo_report"),
-        ]])
-        await query.edit_message_text(
-            "👨‍💼 *Вы в роли координатора.*\n\n"
-            "Нажмите кнопку, чтобы запустить демо-сценарий.",
-            parse_mode="Markdown",
-            reply_markup=kb,
-        )
-        return
-
-    if data == "role_parent":
-        await _ensure_role(upd, "parent")
-        await apply_command_menu(getattr(_ctx, "bot", None), upd.effective_user.id, "parent")
-        await query.edit_message_text(
-            "👨‍👩‍👦 *Вы в роли родителя.*\n\n"
-            "В демо-режиме родительские уведомления симулируются.\n"
-            "Попросите координатора запустить сценарий.",
-            parse_mode="Markdown",
-        )
-        return
-
-    if data == "demo_absent":
-        await _demo_solo_absence(upd, _ctx)
-        return
-
-    if data == "demo_report":
-        if not settings.albion_demo_mode:
-            await query.edit_message_text("Демо-режим выключен.")
-            return
-        await _show_demo_report(upd, _ctx)
-        return
-
     # --- Демо: ответ родителя на кнопки ---
     if data.startswith("demo_resolve:"):
         parts = data.split(":")
@@ -908,9 +873,8 @@ async def handle_callback(upd: Update, _ctx) -> None:
             return
         # Guard: закрывать может только координатор (callback_data виден всем,
         # кто перешлёт сообщение — проверяем роль из БД, а не доверяем кнопке).
-        user_rec = await UserRepository().get_by_telegram_id(str(query.from_user.id))
-        if not user_rec or user_rec.get("role") != "coordinator":
-            await query.answer("⛔ Закрывать ситуации может только координатор", show_alert=True)
+        if not await is_coordinator_or_admin(query.from_user.id):
+            await query.answer("⛔ Закрывать ситуации может только координатор/админ", show_alert=True)
             return
         inc_repo = IncidentRepository()
         inc = await inc_repo.get(inc_id)
@@ -1058,59 +1022,44 @@ async def handle_callback(upd: Update, _ctx) -> None:
         # Подтверждение — на языке нажавшего (тьюторы — EN).
         from src.utils.i18n import lang_of, tr
         lang = await lang_of(str(query.from_user.id))
+        if action == "late":
+            msg_text = tr("ack_late_ask_mins", lang)
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton(tr("tutor_btn_late_5", lang), callback_data=f"checkin_late_time:{wid}:{nonce}:5"),
+                InlineKeyboardButton(tr("tutor_btn_late_15", lang), callback_data=f"checkin_late_time:{wid}:{nonce}:15"),
+                InlineKeyboardButton(tr("tutor_btn_late_30", lang), callback_data=f"checkin_late_time:{wid}:{nonce}:30+"),
+            ]])
+            await query.edit_message_text(msg_text, reply_markup=kb)
+            return
         ack = tr(f"ack_{action}", lang)
         await query.edit_message_text(ack if ack != f"ack_{action}" else "✅ Ответ принят.")
         return
 
-    await query.edit_message_text("Не понял действие — попробуйте ещё раз или напишите текстом.")
-
-
-# =====================================================================
-# DEMO: отчёт о сессии
-# =====================================================================
-
-async def _show_demo_report(upd: Update, _ctx) -> None:
-    """Формирует отчёт с реальными метриками из БД."""
-    repo = IncidentRepository()
-    closed = await repo._fetchone("SELECT COUNT(*) as cnt FROM incidents WHERE status='resolved'")
-    closed_cnt = closed["cnt"] if closed else 0
-
-    if closed_cnt == 0:
-        await upd.effective_chat.send_message(
-            "🎬 *Демо-сессия*\n\n"
-            "Сессия новая или бот был перезапущен. Запустите демо-сценарий.",
-            parse_mode="Markdown",
-        )
+    if data.startswith("checkin_late_time:"):
+        parts = data.split(":")
+        try:
+            wid = int(parts[1])
+            nonce = parts[2]
+            mins_str = parts[3]
+        except (IndexError, ValueError):
+            await query.edit_message_text("Не смог прочитать нажатие.")
+            return
+        idem_key = f"tg_callback:{data}"
+        idem = IdempotencyRepository()
+        if await idem.exists(idem_key):
+            await query.answer("✅ Уже обработано", show_alert=False)
+            return
+        from src.utils.i18n import lang_of, tr
+        lang = await lang_of(str(query.from_user.id))
+        ops = LessonOpsWorkflow()
+        time_label = tr(f"tutor_btn_late_{mins_str.replace('+','')}", lang)
+        await ops.notify_late_detail(wid, time_label)
+        await idem.save(idem_key, "telegram_checkin_late_time", response=mins_str)
+        ack = tr("ack_late_detail", lang, mins=time_label)
+        await query.edit_message_text(ack)
         return
 
-    last = await repo._fetchone(
-        "SELECT created_at, resolved_at FROM incidents WHERE status='resolved' AND resolved_at IS NOT NULL ORDER BY resolved_at DESC LIMIT 1"
-    )
-    last_time = "N/A"
-    if last and last["created_at"] and last["resolved_at"]:
-        try:
-            created = datetime.fromisoformat(last["created_at"])
-            resolved = datetime.fromisoformat(last["resolved_at"])
-            last_time = f"{int((resolved - created).total_seconds())} сек"
-        except (ValueError, TypeError):
-            pass
-
-    avg_row = await repo._fetchone(
-        "SELECT AVG(CAST((julianday(resolved_at) - julianday(created_at)) * 86400 AS INTEGER)) as avg_sec "
-        "FROM incidents WHERE status='resolved' AND resolved_at IS NOT NULL"
-    )
-    avg_time = "N/A"
-    if avg_row and avg_row["avg_sec"] is not None:
-        avg_time = f"{int(avg_row['avg_sec'])} сек"
-
-    await upd.effective_chat.send_message(
-        f"🎬 *Демо-сессия*\n\n"
-        f"📊 Сценариев обработано: {closed_cnt}\n"
-        f"⏱ Последняя ситуация закрыта за: {last_time}\n"
-        f"⚡ Среднее время реакции: {avg_time}\n\n"
-        f"🤖 Всё выполнено автоматически.",
-        parse_mode="Markdown",
-    )
+    await query.edit_message_text("Не понял действие — попробуйте ещё раз или напишите текстом.")
 
 
 # =====================================================================

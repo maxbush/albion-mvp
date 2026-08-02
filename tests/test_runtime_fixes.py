@@ -187,6 +187,9 @@ async def test_cmd_ok_uses_workflow_resolution_and_cancels_future_actions(tmp_pa
         {"incident_id": inc_id},
     )
 
+    from src.config import settings
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+
     upd = FakeUpdate(FakeUser(100, "admin"))
     await cmd_ok(upd, FakeContext([str(inc_id)]))
 
