@@ -489,7 +489,9 @@ class LessonOpsWorkflow:
         получали ложь «репетитор задержится». mins_str — raw-значение кнопки
         ('5' | '15' | '30+'); текст координаторам всегда RU."""
         wf, data = await self._load_workflow(wid)
-        if not wf:
+        # Самоаудит R10: если fallback уже завершил workflow (минуты выбраны
+        # позже 10-минутного окна) — не шлём второе уведомление координатору.
+        if not wf or wf["state"] != "running":
             return
         class_id = data.get("class_id", "—")
         tutor_name = data.get("tutor_name") or "Репетитор"
@@ -545,8 +547,7 @@ class LessonOpsWorkflow:
                 "⚠️ Родитель не зарегистрирован в боте",
                 [f"Занятие: {_format_class_label(data.get('class_id', '—'), data.get('start_time'))}",
                  f"Ученик: {data.get('student_name', '—')}",
-                 "Напоминание не отправлено. Попросите родителя написать боту /start.",
-                 "👤 Написать родителю" if data.get("actor_telegram_id") else ""][:4],
+                 "Напоминание не отправлено. Попросите родителя написать боту /start."],
                 buttons=[{"text": "👤 Написать родителю",
                           "url": f"tg://user?id={data['actor_telegram_id']}"}]
                 if data.get("actor_telegram_id") else None,

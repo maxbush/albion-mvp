@@ -1231,3 +1231,34 @@ async def test_r10_unregistered_parent_reminder_alerts_coordinator(tmp_path, mon
     wf = await WorkflowRepository("albion.db").get(wid)
     assert wf["state"] == "completed"
     assert "not_registered" in wf["data"]
+
+
+@pytest.mark.asyncio
+async def test_r10_late_checkin_cancels_no_reply_tasks(tmp_path, monkeypatch):
+    """Самоаудит R10: «Опоздаю» в pre-lesson отменяет parent_prelesson_no_reply —
+    иначе координатор получал бы ложное «Родитель не ответил»."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    engine.repo = WorkflowRepository("albion.db")
+    engine.scheduler = ScheduledActionRepository("albion.db")
+    await UserRepository("albion.db").create("777", "parent", "Родитель")
+    await UserRepository("albion.db").create("999", "coordinator", "Координатор")
+
+    from src.bot.handlers import handle_callback
+    wid = await WorkflowRepository("albion.db").create("prelesson_parent", "running", {
+        "class_id": "C9", "actor_type": "parent", "actor_telegram_id": "777",
+        "student_name": "Миша", "tutor_name": "Анна",
+        "start_time": "2099-08-02T15:00:00+00:00", "nonce": "nnr"})
+    await ScheduledActionRepository("albion.db").create(
+        wid, "2099-08-02T15:00:00", "parent_prelesson_no_reply", {"workflow_id": wid})
+
+    upd = _CBUpd(_CBUser(777), f"checkin:{wid}:nnr:late")
+    await handle_callback(upd, _FakeCtx())
+
+    rows = await ScheduledActionRepository("albion.db")._fetchall(
+        "SELECT action, status FROM scheduled_actions WHERE workflow_id=?", (wid,))
+    no_reply = [r for r in rows if r["action"] == "parent_prelesson_no_reply"]
+    assert no_reply and no_reply[0]["status"] == "cancelled", "no_reply должен быть отменён"
+    fallback = [r for r in rows if r["action"] == "checkin_late_fallback"]
+    assert fallback and fallback[0]["status"] == "pending", "fallback должен остаться"

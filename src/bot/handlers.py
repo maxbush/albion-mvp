@@ -1162,6 +1162,11 @@ async def handle_callback(upd: Update, _ctx) -> None:
             wf_data["response_status"] = "late"
             wf_data["responded_at"] = datetime.now(timezone.utc).isoformat()
             await repo.update_data(wid, wf_data)
+            # Самоаудит R10: отменяем остальные будущие действия workflow
+            # (parent/tutor_prelesson_no_reply и т.п.) — иначе координатор
+            # получит ложное «Родитель/репетитор не ответил» в добавок к
+            # «опоздает». Fallback создаём ПОСЛЕ отмены, чтобы он остался.
+            await ScheduledActionRepository().cancel_by_workflow(wid)
             await ScheduledActionRepository().create(
                 wid,
                 (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
