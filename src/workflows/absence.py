@@ -108,7 +108,7 @@ class AbsenceWorkflow:
         msg = (
             "📣 Сообщение о неявке (из чата)\n"
             f"От: {author} ({role})\n"
-            f"Текст: {text[:300]}"
+            f"💬 «{text[:500]}»"
         )
         await notify_all_coordinators(
             msg, notification_type="absence_report", db_path=self.incidents.db_path,
@@ -254,7 +254,7 @@ class AbsenceWorkflow:
             base += f" (на {late_minutes} мин)"
         msg = f"{base}\nИнцидент #{inc_id}\nУченик: {student_name}\nЗанятие: {class_label}"
         if parent_text:
-            msg += f"\nОтвет: {parent_text[:300]}"
+            msg += f"\n💬 «{parent_text[:500]}»"
         from src.bot.roles import notify_all_coordinators
         # Сырой TG в текст не пишем (П9/R7-4): действие — url-кнопкой.
         buttons = None

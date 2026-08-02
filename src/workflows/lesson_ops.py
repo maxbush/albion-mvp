@@ -295,7 +295,7 @@ class LessonOpsWorkflow:
                     f"Ученик: {student_name}",
                     f"Репетитор: {tutor_name}",
                     f"Статус: {status_label}",
-                    *( [f"Текст: {free_text[:300]}"] if free_text else [] ),
+                    *( [f"💬 «{free_text[:500]}»"] if free_text else [] ),
                 ],
             )
         elif actor_type == "tutor":
@@ -306,7 +306,7 @@ class LessonOpsWorkflow:
                     f"Репетитор: {tutor_name}",
                     f"Ученики: {student_name}",
                     f"Статус: {status_label}",
-                    *( [f"Текст: {free_text[:300]}"] if free_text else [] ),
+                    *( [f"💬 «{free_text[:500]}»"] if free_text else [] ),
                 ],
             )
         elif actor_type == "tutor_start":
@@ -363,7 +363,7 @@ class LessonOpsWorkflow:
                         f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
                         f"Репетитор: {tutor_name}",
                         f"Ученики: {student_name}",
-                        *( [f"Текст: {free_text[:300]}"] if free_text else [] ),
+                        *( [f"💬 «{free_text[:500]}»"] if free_text else [] ),
                     ],
                 )
 
