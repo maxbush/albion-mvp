@@ -20,7 +20,7 @@ from src.config import settings
 from src.db.repository import (
     UserRepository, IncidentRepository, ScheduledActionRepository, WebhookEventRepository,
     MeritHubStudentRepository, MeritHubClassRepository, MeritHubContactRepository,
-    MeritHubEnrollmentRepository,
+    MeritHubEnrollmentRepository, WorkflowRepository,
 )
 from src.workflows.engine import engine
 from src.workflows.lesson_ops import LessonOpsWorkflow
@@ -863,10 +863,9 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
 
     async def _student_name(inc_id: int) -> str | None:
         """Имя ученика из данных workflow инцидента (если сценарий его знал)."""
-        row = await repo._fetchone(
-            "SELECT data FROM workflow_instances WHERE data LIKE ? ORDER BY id DESC LIMIT 1",
-            (f'%"incident_id": {inc_id}%',),
-        )
+        rows = await WorkflowRepository(repo.db_path).find_by_json(
+            "incident_id", inc_id, limit=1)
+        row = rows[0] if rows else None
         if not row:
             return None
         try:

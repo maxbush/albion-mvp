@@ -233,10 +233,10 @@ class LessonOpsWorkflow:
 
     async def find_active_checkin(self, actor_tg: str, actor_types: tuple[str, ...]) -> tuple[int, dict, str] | None:
         for wf_type in ("tutor_start_check", "prelesson_parent", "prelesson_tutor"):
-            wf = await self.repo._fetchone(
-                "SELECT * FROM workflow_instances WHERE workflow_type=? AND state='running' AND data LIKE ? ORDER BY id DESC LIMIT 1",
-                (wf_type, f'%"actor_telegram_id": "{actor_tg}"%'),
-            )
+            wf_rows = await self.repo.find_by_json(
+                "actor_telegram_id", actor_tg, state="running",
+                workflow_type=wf_type, limit=1)
+            wf = wf_rows[0] if wf_rows else None
             if not wf:
                 continue
             try:
@@ -343,12 +343,10 @@ class LessonOpsWorkflow:
                 )
                 # Отменяем class_live_check workflow (отдельный workflow, свой wid)
                 # — чтобы не было лишнего алерта через 5 мин, раз ученик уже отмечен отсутствующим.
-                live_check_wf = await self.repo._fetchone(
-                    "SELECT * FROM workflow_instances "
-                    "WHERE workflow_type='class_live_check' AND state='running' AND data LIKE ? "
-                    "ORDER BY id DESC LIMIT 1",
-                    (f'%"class_id": "{class_id}"%',),
-                )
+                live_rows = await self.repo.find_by_json(
+                    "class_id", class_id, state="running",
+                    workflow_type="class_live_check", limit=1)
+                live_check_wf = live_rows[0] if live_rows else None
                 if live_check_wf:
                     await self.scheduler.cancel_by_workflow(live_check_wf["id"])
                     await self.repo.cancel(live_check_wf["id"])
@@ -529,12 +527,9 @@ class LessonOpsWorkflow:
         # Контекст: проверяем, ответил ли tutor на start check.
         # Это помогает координатору понять, в чём проблема.
         tutor_status = "не ответил"
-        tutor_start_wf = await self.repo._fetchone(
-            "SELECT * FROM workflow_instances "
-            "WHERE workflow_type='tutor_start_check' AND data LIKE ? "
-            "ORDER BY id DESC LIMIT 1",
-            (f'%"class_id": "{class_id}"%',),
-        )
+        ts_rows = await self.repo.find_by_json(
+            "class_id", class_id, workflow_type="tutor_start_check", limit=1)
+        tutor_start_wf = ts_rows[0] if ts_rows else None
         if tutor_start_wf:
             try:
                 start_data = json.loads(tutor_start_wf.get("data") or "{}")
@@ -629,11 +624,9 @@ class LessonOpsWorkflow:
         class_id = event.data.get("class_id")
         if not class_id:
             return
-        rows = await self.repo._fetchall(
-            "SELECT * FROM workflow_instances "
-            "WHERE workflow_type='class_live_check' AND state='running' AND data LIKE ?",
-            (f'%"class_id": "{class_id}"%',),
-        )
+        rows = await self.repo.find_by_json(
+            "class_id", class_id, state="running",
+            workflow_type="class_live_check", limit=100)
         for row in rows:
             wid = row["id"]
             try:
@@ -650,12 +643,11 @@ class LessonOpsWorkflow:
         class_id = event.data.get("class_id")
         if not class_id:
             return
-        rows = await self.repo._fetchall(
-            "SELECT * FROM workflow_instances "
-            "WHERE workflow_type IN ('prelesson_parent','prelesson_tutor','tutor_start_check','class_live_check') "
-            "AND state='running' AND data LIKE ?",
-            (f'%"class_id": "{class_id}"%',),
-        )
+        rows = await self.repo.find_by_json(
+            "class_id", class_id, state="running",
+            workflow_types=("prelesson_parent", "prelesson_tutor",
+                            "tutor_start_check", "class_live_check"),
+            limit=100)
         for row in rows:
             wid = row["id"]
             try:

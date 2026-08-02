@@ -172,16 +172,13 @@ class AbsenceWorkflow:
             pass
         return lesson_ref
 
-    # NOTE (принятое ограничение MVP, MASTER_PLAN H3): поиск по данным workflow
-    # идёт через LIKE по JSON-тексту и зависит от формата json.dumps (пробелы).
-    # Покрыто тестами. При росте: перевести на json_extract или вынести
-    # parent_telegram_id/incident_id в отдельные колонки с индексами.
+    # R9-1: точный поиск по JSON-полям через json_extract (LIKE-подстрока
+    # матчила чужие значения: 5 vs 55). Хелпер: WorkflowRepository.find_by_json.
     async def find_active_incident_for_parent(self, parent_tg: str) -> tuple[int, dict] | None:
         """Находит активный incident для родителя по данным workflow."""
-        wf = await WorkflowRepository(self.incidents.db_path)._fetchone(
-            "SELECT * FROM workflow_instances WHERE state='running' AND data LIKE ? ORDER BY id DESC LIMIT 1",
-            (f'%"parent_telegram_id": "{parent_tg}"%',),
-        )
+        wf_rows = await WorkflowRepository(self.incidents.db_path).find_by_json(
+            "parent_telegram_id", parent_tg, state="running", limit=1)
+        wf = wf_rows[0] if wf_rows else None
         if not wf:
             return None
         try:
@@ -198,10 +195,9 @@ class AbsenceWorkflow:
 
     async def find_escalated_incident_for_parent(self, parent_tg: str) -> tuple[int, dict] | None:
         """Находит недавно эскалированный инцидент (для позднего ответа родителя)."""
-        wf = await WorkflowRepository(self.incidents.db_path)._fetchone(
-            "SELECT * FROM workflow_instances WHERE data LIKE ? ORDER BY id DESC LIMIT 1",
-            (f'%"parent_telegram_id": "{parent_tg}"%',),
-        )
+        wf_rows = await WorkflowRepository(self.incidents.db_path).find_by_json(
+            "parent_telegram_id", parent_tg, limit=1)
+        wf = wf_rows[0] if wf_rows else None
         if not wf:
             return None
         try:
@@ -244,10 +240,9 @@ class AbsenceWorkflow:
             "free_text": "💬 Родитель ответил свободным текстом",
         }
         inc = await self.incidents.get(inc_id)
-        wf = await WorkflowRepository(self.incidents.db_path)._fetchone(
-            "SELECT * FROM workflow_instances WHERE data LIKE ? ORDER BY id DESC LIMIT 1",
-            (f'%"incident_id": {inc_id}%',),
-        )
+        wf_rows = await WorkflowRepository(self.incidents.db_path).find_by_json(
+            "incident_id", inc_id, limit=1)
+        wf = wf_rows[0] if wf_rows else None
         wf_data = json.loads(wf["data"]) if wf and wf.get("data") else {}
         student_name = wf_data.get("student_name") or "Ученик"
         lesson_ref = (inc or {}).get("lesson_ref") or wf_data.get("lesson_ref") or "—"
@@ -390,7 +385,7 @@ class AbsenceWorkflow:
             db_path=self.incidents.db_path, buttons=buttons)
 
         # Сохраняем ключевые поля в result, чтобы find_* методы могли
-        # найти workflow по LIKE-запросу даже после эскалации.
+        # найти workflow по json_extract даже после эскалации.
         wf_data = await self._workflow_data(wid)
         await engine.complete_workflow(wid, {
             **wf_data,
@@ -415,10 +410,8 @@ class AbsenceWorkflow:
         logger.info("Incident %d resolved by %s: %s (was: %s)", inc_id, by, resolution, inc["status"])
         # Отменяем будущие эскалации, если workflow активен
         wf_repo = WorkflowRepository(self.incidents.db_path)
-        wf = await wf_repo._fetchone(
-            "SELECT id, state FROM workflow_instances WHERE data LIKE ? ORDER BY id DESC LIMIT 1",
-            (f'%"incident_id": {inc_id}%',),
-        )
+        wf_rows = await wf_repo.find_by_json("incident_id", inc_id, limit=1)
+        wf = wf_rows[0] if wf_rows else None
         if wf:
             if wf["state"] == "running":
                 await ScheduledActionRepository(self.incidents.db_path).cancel_by_workflow(wf["id"])

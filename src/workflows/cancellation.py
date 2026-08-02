@@ -81,11 +81,9 @@ class CancellationWorkflow:
         from src.db.repository import ScheduledActionRepository, WorkflowRepository
         sched = ScheduledActionRepository(self.users.db_path) if self.users.db_path else ScheduledActionRepository()
         wf_repo = WorkflowRepository(self.users.db_path) if self.users.db_path else WorkflowRepository()
-        # Находим все running workflow для этого class_id
-        active_wfs = await wf_repo._fetchall(
-            "SELECT id FROM workflow_instances WHERE state='running' AND data LIKE ?",
-            (f'%"class_id": "{lid}"%',),
-        )
+        # Находим все running workflow для этого class_id (R9-1: json_extract)
+        active_wfs = await wf_repo.find_by_json(
+            "class_id", lid, state="running", limit=100)
         for wf in active_wfs:
             await sched.cancel_by_workflow(wf["id"])
             await wf_repo.cancel(wf["id"])

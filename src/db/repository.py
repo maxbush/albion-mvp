@@ -142,6 +142,41 @@ class WorkflowRepository(Repository):
             (wtype, state, json.dumps(data or {})),
         )).lastrowid
 
+    async def find_by_json(
+        self,
+        field: str,
+        value,
+        *,
+        state: str | None = None,
+        workflow_type: str | None = None,
+        workflow_types: tuple[str, ...] | None = None,
+        order: str = "DESC",
+        limit: int = 1,
+    ) -> list[dict]:
+        """Точный поиск workflow по полю внутри JSON-данных (R9-1).
+
+        Заменяет LIKE-поиск по сериализованному JSON. LIKE-подстрока
+        ('%"incident_id": 5%') матчила и 5, и 55 → resolve_absence(5) отменял
+        workflow инцидента 55 (молчаливая потеря эскалации). json_extract
+        сравнивает значение ТОЧНО, с учётом типа (int/str)."""
+        sql = "SELECT * FROM workflow_instances"
+        conds = ["json_extract(data, ?) = ?"]
+        params: list = [f"$.{field}", value]
+        if state:
+            conds.append("state = ?")
+            params.append(state)
+        if workflow_type:
+            conds.append("workflow_type = ?")
+            params.append(workflow_type)
+        elif workflow_types:
+            ph = ", ".join("?" for _ in workflow_types)
+            conds.append(f"workflow_type IN ({ph})")
+            params.extend(workflow_types)
+        sql += " WHERE " + " AND ".join(conds)
+        sql += f" ORDER BY id {order} LIMIT ?"
+        params.append(limit)
+        return await self._fetchall(sql, tuple(params))
+
     async def update_state(self, wid: int, state: str, data: dict | None = None) -> None:
         now = datetime.now(timezone.utc).isoformat()
         if data is not None:

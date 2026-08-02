@@ -936,10 +936,8 @@ async def handle_callback(upd: Update, _ctx) -> None:
         was_escalated = inc["status"] == "escalated"
 
         wf_repo = WorkflowRepository()
-        wf_row = await wf_repo._fetchone(
-            "SELECT * FROM workflow_instances WHERE data LIKE ? ORDER BY id DESC LIMIT 1",
-            (f'%\"incident_id\": {inc_id}%',),
-        )
+        wf_rows = await wf_repo.find_by_json("incident_id", inc_id, limit=1)
+        wf_row = wf_rows[0] if wf_rows else None
         if not wf_row:
             await query.edit_message_text("Ситуация уже закрыта или workflow не найден.")
             return
