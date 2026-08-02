@@ -109,7 +109,8 @@
   🧪 E2E: инцидент за 5 минут до полуночи org-зоны (после полуночи UTC) попадает
   в «сегодня», а не выпадает.
 
-- [~] **R9-7. Attendance-webhook не идемпотентен: ретраи плодят дубли уведомлений родителю**
+- [x] **R9-7. Attendance-webhook не идемпотентен: ретраи плодят дубли уведомлений родителю**
+  ✅ 2026-08-02. `trigger_absence` dedup по (lesson_ref, student_id) для не-pilot источников, возвращает (None, None); webhook считает только реальные срабатывания. 2 E2E-теста, 227/227.
   🐛 `_dispatch_attendance` → `trigger_absence` без проверки существующего активного
   сценария. Повторная доставка webhook (ретрай сети/мерithub) или пересечение
   с `tutor_start_check → student_absent` = ДВА инцидента по одному (класс, ученик) →
@@ -134,7 +135,8 @@
   (pre-encode). Мёртвый код + путаница (два разных docstring у «одного» класса).
   📍 Удалить первое определение, оставить pre-encode версию (она под тестами R8-8).
 
-- [ ] **R9-9. Фантомная эмиссия событий без подписчиков**
+- [x] **R9-9. Фантомная эмиссия событий без подписчиков**
+  ✅ 2026-08-02. Удалены publish NOTIFICATION_DELIVERED/FAILED и SYSTEM_KILL_SWITCH + константы типов (статусы персистятся в БД). 1 тест, 228/228.
   🐛 `SYSTEM_KILL_SWITCH` (2 publish, 0 subscribe), `NOTIFICATION_DELIVERED` и
   `NOTIFICATION_FAILED` (2 publish, 0 subscribe). Статусы уведомлений и так персистятся
   в БД (`mark_sent`/`mark_failed`). По прецеденту R7-13 (удаление фантомов) — эмиссию
@@ -145,7 +147,8 @@
   🧪 E2E: после отправки уведомления статус в БД `sent`/`failed` (как раньше);
   `get_subscribed_events()` не содержит удалённых типов.
 
-- [ ] **R9-10. Мусор в src/: неиспользуемые импорты и переменные (pyflakes)**
+- [x] **R9-10. Мусор в src/: неиспользуемые импорты и переменные (pyflakes)**
+  ✅ 2026-08-02. Удалены 10+ мусорных импортов/переменных/фантомного f-string/лишних global. `pyflakes src/` чист (кроме намеренно оставленного R9-8). 228/228.
   📍 `src/bot/pilot.py:340` (unused `MeritHubClient`), `src/bot/wizard.py:35` (unused
   `is_admin`), `src/workflows/engine.py` (unused `json`), `src/integrations/airtable_mock.py`
   (unused `Lead`), `src/integrations/merithub_client.py` (unused `datetime`),
@@ -155,16 +158,24 @@
   (`pilot.py:1278`).
   🧪 E2E: `pyflakes src/` — ноль предупреждений; полный прогон suite зелёный.
 
-- [ ] **R9-11. N+1 в `/incidents`: per-incident LIKE-запрос имени + запрос класса**
+- [x] **R9-11. N+1 в `/incidents`: per-incident LIKE-запрос имени + запрос класса**
+  ✅ 2026-08-02. Батч имён (json_extract IN) + get_many для классов. 1 тест, 229/229.
   🐛 Для каждого активного инцидента (до 20) — отдельный `_student_name` LIKE-запрос
   и отдельный `MeritHubClassRepository().get()`. После R9-1 имена учеников можно брать
   одним батч-запросом (`json_extract` + `IN`), классы — `get_many()`.
   📍 `src/bot/pilot.py` `cmd_incidents`.
   🧪 E2E: те же данные на выходе, что и до оптимизации.
 
-- [ ] **R9-12. README: устаревший бейдж тестов и статистика**
+- [x] **R9-12. README: устаревший бейдж тестов и статистика**
+  ✅ 2026-08-02. Бейдж 229/229 + changelog Round 9.
   📍 `README.md`: `tests-155/155` → актуальное число (212+n), секция «Что нового»
   — добавить строку Round 9 (или свести к актуальному состоянию).
+
+---
+
+## 🏁 ИТОГ ROUND 9 (2026-08-02)
+
+Закрыто 11 из 12 задач (R9-1..R9-7, R9-9..R9-12); R9-8 отклонена владельцем (проверено: дубликат SafeStreamHandler, живой — pre-encode). **229/229 тестов**, 12 атомарных коммитов.
 
 ---
 
