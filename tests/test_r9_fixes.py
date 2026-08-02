@@ -1262,3 +1262,52 @@ async def test_r10_late_checkin_cancels_no_reply_tasks(tmp_path, monkeypatch):
     assert no_reply and no_reply[0]["status"] == "cancelled", "no_reply должен быть отменён"
     fallback = [r for r in rows if r["action"] == "checkin_late_fallback"]
     assert fallback and fallback[0]["status"] == "pending", "fallback должен остаться"
+
+
+# ── Самоаудит: чужая кнопка не работает ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_r10_foreign_actor_cannot_press_checkin_button(tmp_path, monkeypatch):
+    """Самоаудит: пересланную кнопку чек-ина не может нажать чужой аккаунт."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    await UserRepository("albion.db").create("777", "parent", "Родитель")
+    await UserRepository("albion.db").create("999", "coordinator", "Координатор")
+    from src.bot.handlers import handle_callback
+
+    wid = await WorkflowRepository("albion.db").create("prelesson_parent", "running", {
+        "class_id": "C9", "actor_type": "parent", "actor_telegram_id": "777",
+        "student_name": "Миша", "tutor_name": "Анна",
+        "start_time": "2099-08-02T15:00:00+00:00", "nonce": "nnf"})
+
+    # Чужой аккаунт (не 777) жмёт кнопку
+    upd = _CBUpd(_CBUser(888, "Чужой"), f"checkin:{wid}:nnf:ready")
+    await handle_callback(upd, _FakeCtx())
+    assert any("не для вас" in (a[0] or "") for a in upd.callback_query.answers), upd.callback_query.answers
+    # Workflow не тронут
+    wf = await WorkflowRepository("albion.db").get(wid)
+    assert wf["state"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_r10_foreign_actor_cannot_resolve_incident(tmp_path, monkeypatch):
+    """Самоаудит: пересланную кнопку «Всё в порядке» не может нажать не-родитель."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    engine.repo = WorkflowRepository("albion.db")
+    engine.scheduler = ScheduledActionRepository("albion.db")
+    await UserRepository("albion.db").create("777", "parent", "Родитель")
+
+    inc_id = await IncidentRepository("albion.db").create(lesson_ref="C9", type="absence", status="pending")
+    await engine.start_workflow("absence_notification", {
+        "incident_id": inc_id, "parent_telegram_id": "777",
+        "student_name": "Миша", "lesson_ref": "C9", "parent_callback_nonce": "nnz"})
+
+    from src.bot.handlers import handle_callback
+    upd = _CBUpd(_CBUser(666, "Чужой"), f"resolve:{inc_id}:nnz:ok")
+    await handle_callback(upd, _FakeCtx())
+    assert any("не для вас" in (a[0] or "") for a in upd.callback_query.answers)
+    inc = await IncidentRepository("albion.db").get(inc_id)
+    assert inc["status"] == "pending", "чужой не должен закрыть инцидент"

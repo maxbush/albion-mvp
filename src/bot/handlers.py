@@ -528,13 +528,14 @@ async def cmd_kill_switch(upd: Update, _ctx) -> None:
         return
     if not _ctx.args:
         # UX U3: уровни кнопками вместо запоминания 0|1|2 (recognition, не recall).
-        labels = {0: "ВСЁ ВЫКЛ", 1: "Только координаторам", 2: "Полностью"}
+        # П10: единые человеческие подписи (как в /status и callback-кнопках).
+        labels = {0: "🔴 Всё остановлено", 1: "🟡 Только алерты координаторам", 2: "🟢 Всё работает"}
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔴 Всё выкл", callback_data="killswitch:0"),
+            InlineKeyboardButton("🔴 Всё остановлено", callback_data="killswitch:0"),
         ], [
-            InlineKeyboardButton("🟡 Только координаторам", callback_data="killswitch:1"),
+            InlineKeyboardButton("🟡 Только алерты координаторам", callback_data="killswitch:1"),
         ], [
-            InlineKeyboardButton("🟢 Полностью", callback_data="killswitch:2"),
+            InlineKeyboardButton("🟢 Всё работает", callback_data="killswitch:2"),
         ]])
         await upd.message.reply_text(
             f"🔌 Kill Switch. Сейчас: *{labels.get(_kill_switch_level, '?')}*",
@@ -549,7 +550,7 @@ async def cmd_kill_switch(upd: Update, _ctx) -> None:
         await upd.message.reply_text("Уровень: 0, 1 или 2")
         return
     set_kill_switch_level(lvl)
-    labels = {0: "ВСЁ ВЫКЛ", 1: "Только координаторам", 2: "Полностью"}
+    labels = {0: "Всё остановлено", 1: "Только алерты координаторам", 2: "Всё работает"}
     await upd.message.reply_text(f"🔌 Kill Switch: {labels[lvl]}")
     logger.info("Kill switch set to %d", lvl)
 
@@ -991,6 +992,10 @@ async def handle_callback(upd: Update, _ctx) -> None:
         if expected_nonce and expected_nonce != nonce:
             await query.answer("⛔ Кнопка устарела", show_alert=True)
             return
+        expected_parent = wf_data.get("parent_telegram_id")
+        if expected_parent and str(expected_parent) != str(query.from_user.id):
+            await query.answer("⛔ Это сообщение не для вас", show_alert=True)
+            return
 
         wf = AbsenceWorkflow()
         await wf.resolve_absence(inc_id, str(query.from_user.id), resolution="parent_late")
@@ -1071,6 +1076,11 @@ async def handle_callback(upd: Update, _ctx) -> None:
         if expected_nonce and expected_nonce != nonce:
             await query.answer("⛔ Кнопка устарела", show_alert=True)
             return
+        # Самоаудит: кнопку уведомления о неявке может нажать только родитель
+        expected_parent = wf_data.get("parent_telegram_id")
+        if expected_parent and str(expected_parent) != str(query.from_user.id):
+            await query.answer("⛔ Это сообщение не для вас", show_alert=True)
+            return
 
         # R9-14: «⏰ Опоздаем» — сначала уточняем, НА СКОЛЬКО минут (тот же
         # микро-шаг, что в prelesson-checkin R8-10). Инцидент не резолвим,
@@ -1150,6 +1160,12 @@ async def handle_callback(upd: Update, _ctx) -> None:
         expected_nonce = wf_data.get("nonce")
         if expected_nonce and expected_nonce != nonce:
             await query.answer("⛔ Кнопка устарела", show_alert=True)
+            return
+        # Самоаудит: кнопку может нажать только адресат (пересланные кнопки
+        # не должны работать от чужого аккаунта)
+        expected_actor = wf_data.get("actor_telegram_id")
+        if expected_actor and str(expected_actor) != str(query.from_user.id):
+            await query.answer("⛔ Это сообщение не для вас", show_alert=True)
             return
 
         ops = LessonOpsWorkflow()

@@ -37,6 +37,7 @@ class CancellationWorkflow:
         # merithub-сервиса нет — вендор create-only («import & observe»).
         sn = tn = "—"
         subject = "—"
+        subject_full = False  # True: subject уже содержит имена (title класса)
         tutor_tg = None
         parent_tgs: list[str] = []  # П1: родители, которых нужно уведомить об отмене
         reason = event.data.get("reason", "Не указана")
@@ -48,6 +49,7 @@ class CancellationWorkflow:
             sn = student.name if student else "Ученик"
             tn = tutor.name if tutor else "Репетитор"
             subject = lesson.subject
+            subject_full = False  # предмет — короткий, префикс с именем нужен
             tutor_tg = await self._get_tutor_telegram(lesson.tutor_id)
             if student and student.parent_telegram_id:
                 parent_tgs = [student.parent_telegram_id]
@@ -75,6 +77,7 @@ class CancellationWorkflow:
                      for e in enr if (e.get("role") or "student") == "student"]
             sn = ", ".join(names[:3]) or "Ученик"
             subject = cls.get("title") or lid
+            subject_full = bool(cls.get("title"))  # title уже содержит имена
             # П1: родители зачисленных учеников тоже должны узнать об отмене
             parent_tgs = list({e["parent_telegram_id"] for e in enr
                                if e.get("parent_telegram_id")})
@@ -104,12 +107,15 @@ class CancellationWorkflow:
                 "message": tr("class_cancelled_parent", "ru", label=subject),
             }))
 
-        # Уведомляем репетитора (если есть TG) — на его языке (i18n)
+        # Уведомляем репетитора (если есть TG) — на его языке (i18n).
+        # Самоаудит: для merithub-классов title уже содержит имена учеников —
+        # не дублируем их префиксом («Миша — Миша — математика»).
         if tutor_tg:
+            subject_tutor = subject if subject_full else f"{sn} — {subject}"
             await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
                 "telegram_id": tutor_tg,
                 "message": tr("tutor_cancelled", await lang_of(tutor_tg),
-                              subject=f"{sn} — {subject}", reason=reason),
+                              subject=subject_tutor, reason=reason),
             }))
 
         # Уведомляем всех координаторов
