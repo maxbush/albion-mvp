@@ -341,3 +341,55 @@ async def test_r9_2_again_button_restarts_schedule_wizard(tmp_path, monkeypatch)
     # Новое состояние визарда создано (шаг tutor)
     st = await WizardStateRepository("albion.db").get("42")
     assert st is not None and st["step"] == "tutor" and st["flow"] == "schedule"
+
+
+# ── R9-3: webhook-режим поднимает локальный приёмник апдейтов ─────────
+
+@pytest.mark.asyncio
+async def test_r9_3_webhook_mode_starts_local_receiver(tmp_path, monkeypatch):
+    """R9-3: --webhook теперь регистрирует URL И запускает updater.start_webhook
+    (раньше апдейты было некому принимать — бот молчал на VPS)."""
+    monkeypatch.chdir(tmp_path)
+    from src.config import settings
+    monkeypatch.setattr(settings, "telegram_webhook_url", "https://bot.example.com/tg/secret-path")
+    monkeypatch.setattr(settings, "telegram_webhook_host", "0.0.0.0")
+    monkeypatch.setattr(settings, "telegram_webhook_port", 8443)
+    monkeypatch.setattr(settings, "telegram_webhook_secret", "s3cret")
+
+    calls = {}
+
+    class FakeBot:
+        async def set_webhook(self, url=None, secret_token=None):
+            calls["set_webhook"] = (url, secret_token)
+
+    class FakeUpdater:
+        async def start_webhook(self, **kw):
+            calls["start_webhook"] = kw
+
+    class FakeApp:
+        bot = FakeBot()
+        updater = FakeUpdater()
+
+    from src.main import _configure_webhook
+    await _configure_webhook(FakeApp())
+
+    assert calls["set_webhook"][0] == "https://bot.example.com/tg/secret-path"
+    assert calls["set_webhook"][1] == "s3cret"
+    sw = calls["start_webhook"]
+    assert sw["url_path"] == "/tg/secret-path"       # путь из WEBHOOK_URL
+    assert sw["port"] == 8443 and sw["listen"] == "0.0.0.0"
+    assert sw["secret_token"] == "s3cret"
+    assert sw["allowed_updates"] == ["message", "callback_query"]
+    assert sw["drop_pending_updates"] is True
+
+
+@pytest.mark.asyncio
+async def test_r9_3_webhook_mode_requires_url(tmp_path, monkeypatch):
+    """R9-3: без TELEGRAM_WEBHOOK_URL webhook-режим падает с понятной ошибкой."""
+    monkeypatch.chdir(tmp_path)
+    from src.config import settings
+    monkeypatch.setattr(settings, "telegram_webhook_url", None)
+
+    from src.main import _configure_webhook
+    with pytest.raises(SystemExit):
+        await _configure_webhook(object())

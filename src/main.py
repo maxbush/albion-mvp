@@ -5,6 +5,8 @@ ALBION MVP — точка входа.
 """
 
 import argparse, asyncio, logging, sys
+from urllib.parse import urlparse
+
 from telegram.ext import ApplicationBuilder
 
 from src.config import settings
@@ -66,6 +68,31 @@ async def scheduler_wrapper():
             await asyncio.sleep(5)
 
 
+async def _configure_webhook(app) -> None:
+    """Настраивает webhook-режим: регистрирует URL у Telegram И поднимает
+    локальный приёмник апдейтов (R9-3).
+
+    Раньше вызывался только set_webhook — Telegram POSTил апдейты на URL,
+    а принимать их было некому: бот в webhook-режиме молчал (и блокировал
+    getUpdates, пока webhook зарегистрирован)."""
+    url = settings.telegram_webhook_url
+    if not url:
+        logger.error("WEBHOOK_URL required")
+        sys.exit(1)
+    await app.bot.set_webhook(url=url, secret_token=settings.telegram_webhook_secret)
+    path = urlparse(url).path or "/"
+    await app.updater.start_webhook(
+        listen=settings.telegram_webhook_host,
+        port=settings.telegram_webhook_port,
+        url_path=path,
+        secret_token=settings.telegram_webhook_secret,
+        allowed_updates=["message", "callback_query"],
+        drop_pending_updates=True,
+    )
+    logger.info("Webhook: %s (listening %s:%d%s)",
+                url, settings.telegram_webhook_host, settings.telegram_webhook_port, path)
+
+
 async def main(webhook: bool = False):
     setup_logging()
     logger.info("Start %s (webhook=%s, demo=%s)", settings.app_name, webhook, settings.albion_demo_mode)
@@ -89,11 +116,7 @@ async def main(webhook: bool = False):
     async with app:
         await app.start()
         if webhook:
-            url = settings.telegram_webhook_url
-            if not url:
-                logger.error("WEBHOOK_URL required"); sys.exit(1)
-            await app.bot.set_webhook(url=url, secret_token=settings.telegram_webhook_secret)
-            logger.info("Webhook: %s", url)
+            await _configure_webhook(app)
             await asyncio.gather(scheduler_wrapper(), cleanup_idempotency(),
                                  wizard_expiry_loop(app.bot))
         else:
