@@ -137,3 +137,75 @@ async def test_r9_1_find_by_json_works_for_strings_and_ints(tmp_path, monkeypatc
         "incident_id", 5, state="cancelled")] == []
     assert [r["id"] for r in await repo.find_by_json(
         "incident_id", 5, state="running")] == [w1]
+
+
+# ── R9-13: notify_late_detail — actor-aware ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_r9_13_late_detail_parent_says_student_late(tmp_path, monkeypatch):
+    """R9-13: родитель жмёт «Опоздаю» → координатору «Ученик опоздает на N мин»,
+    а НЕ «Репетитор задержится» (прежняя ложь)."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    await UserRepository("albion.db").create("999", "coordinator", "Координатор")
+
+    from src.workflows.lesson_ops import LessonOpsWorkflow
+    wid = await WorkflowRepository("albion.db").create("prelesson_parent", "running", {
+        "class_id": "C9",
+        "actor_type": "parent",
+        "actor_telegram_id": "777",
+        "student_name": "Миша",
+        "tutor_name": "Анна",
+        "start_time": "2099-08-02T15:00:00+00:00",
+    })
+
+    captured = []
+    async def cap(ev):
+        captured.append(ev.data)
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await LessonOpsWorkflow("albion.db").notify_late_detail(wid, "15")
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    msgs = [d["message"] for d in captured if d.get("telegram_id") == "999"]
+    assert msgs, "координатор должен получить уведомление"
+    text = msgs[0]
+    assert "Уточнение по опозданию ученика" in text
+    assert "Ученик: Миша опоздает на 15 мин" in text
+    assert "задержится" not in text
+
+
+@pytest.mark.asyncio
+async def test_r9_13_late_detail_tutor_says_tutor_late(tmp_path, monkeypatch):
+    """R9-13: репетитор жмёт «Опоздаю» → координатору «Репетитор задержится на N мин»."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    await UserRepository("albion.db").create("999", "coordinator", "Координатор")
+
+    from src.workflows.lesson_ops import LessonOpsWorkflow
+    wid = await WorkflowRepository("albion.db").create("prelesson_tutor", "running", {
+        "class_id": "C9",
+        "actor_type": "tutor",
+        "actor_telegram_id": "555",
+        "tutor_name": "Анна",
+        "student_names": ["Миша"],
+        "start_time": "2099-08-02T15:00:00+00:00",
+    })
+
+    captured = []
+    async def cap(ev):
+        captured.append(ev.data)
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await LessonOpsWorkflow("albion.db").notify_late_detail(wid, "30+")
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    msgs = [d["message"] for d in captured if d.get("telegram_id") == "999"]
+    text = msgs[0]
+    assert "Уточнение по опозданию репетитора" in text
+    assert "Репетитор: Анна задержится на 30+ мин" in text
+    assert "опоздает" not in text

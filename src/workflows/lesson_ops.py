@@ -371,21 +371,37 @@ class LessonOpsWorkflow:
         await self._save_workflow(wid, "completed", data)
 
     async def notify_late_detail(self, wid: int, mins_str: str) -> None:
-        """R8-10: Отправляет координаторам точное время опоздания репетитора."""
+        """R8-10/R9-13: точное время опоздания координаторам — от ФАКТИЧЕСКОГО актора.
+
+        Раньше хардкодился «репетитор»: когда «⏰ Опоздаю» жал родитель, координаторы
+        получали ложь «репетитор задержится». mins_str — raw-значение кнопки
+        ('5' | '15' | '30+'); текст координаторам всегда RU."""
         wf, data = await self._load_workflow(wid)
         if not wf:
             return
         class_id = data.get("class_id", "—")
         tutor_name = data.get("tutor_name") or "Репетитор"
         student_name = data.get("student_name") or ", ".join(data.get("student_names") or []) or "Ученик"
-        await self.notify_coordinators(
-            "ℹ️ Уточнение по опозданию репетитора",
-            [
-                f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
-                f"Репетитор: {tutor_name} задержится {mins_str}",
-                f"Ученики: {student_name}",
-            ],
-        )
+        delay = f"на {mins_str} мин"
+        label = _format_class_label(class_id, data.get("start_time"))
+        if data.get("actor_type") == "parent":
+            await self.notify_coordinators(
+                "ℹ️ Уточнение по опозданию ученика",
+                [
+                    f"Занятие: {label}",
+                    f"Ученик: {student_name} опоздает {delay}",
+                    f"Репетитор: {tutor_name}",
+                ],
+            )
+        else:
+            await self.notify_coordinators(
+                "ℹ️ Уточнение по опозданию репетитора",
+                [
+                    f"Занятие: {label}",
+                    f"Репетитор: {tutor_name} задержится {delay}",
+                    f"Ученики: {student_name}",
+                ],
+            )
 
     async def _send_parent_prelesson_reminder(self, wid: int) -> None:
         wf, data = await self._load_workflow(wid)

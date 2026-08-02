@@ -1050,8 +1050,10 @@ async def handle_callback(upd: Update, _ctx) -> None:
         from src.utils.i18n import lang_of, tr
         lang = await lang_of(str(query.from_user.id))
         ops = LessonOpsWorkflow()
-        time_label = tr(f"tutor_btn_late_{mins_str.replace('+','')}", lang)
-        await ops.notify_late_detail(wid, time_label)
+        # R9-13: координаторам передаём raw-минуты (текст формирует workflow
+        # по actor_type); пользователю — локализованный ack.
+        time_label = tr(f"tutor_btn_late_{mins_str.replace('+', '')}", lang)
+        await ops.notify_late_detail(wid, mins_str)
         await idem.save(idem_key, "telegram_checkin_late_time", response=mins_str)
         ack = tr("ack_late_detail", lang, mins=time_label)
         await query.edit_message_text(ack)
