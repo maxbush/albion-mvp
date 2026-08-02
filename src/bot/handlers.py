@@ -189,14 +189,17 @@ async def _demo_solo_absence(upd: Update, _ctx) -> None:
 # COMMAND HANDLERS
 # =====================================================================
 
-def _coordinator_help_text() -> str:
+def _coordinator_help_text(admin: bool = False) -> str:
     """Единый список команд координатора (было два расходящихся списка —
     в /start и в регистрации по кнопке). Underscore в командах экранируем
     для Markdown V1, иначе парные '_' ломают отображение.
 
     Порядок — по частоте использования (UX-аудит П2): сначала ежедневные
-    визарды и обзор, технические mh_* — свёрнуты в «Служебные»."""
-    return (
+    визарды и обзор, технические mh_* — свёрнуты в «Служебные».
+
+    R9-4: секции «Демо»/«Владельцу»/«Служебные» показываются ТОЛЬКО админам —
+    иначе UI обещает команды, которые бэкенд отвергает («⛔ Только владелец/админ»)."""
+    text = (
         "📋 *Ваши команды:*\n\n"
         "*Расписание:*\n"
         "/schedule — новое занятие (пошагово)\n"
@@ -210,21 +213,27 @@ def _coordinator_help_text() -> str:
         "/status — состояние системы\n\n"
         "*Инциденты:*\n"
         "/ok <ID> — закрыть инцидент\n"
-        "/cancel\\_lesson <ID> — отмена по ID (обычно не нужно — родители отменяют сами)\n\n"
-        "*Демо:*\n"
-        "/pilot\\_absent — тест: сценарий неявки\n"
-        "/demo\\_reset — сброс между прогонами\n\n"
-        "*Владельцу:*\n"
-        "/kill\\_switch — аварийный стоп/ограничение рассылок\n"
-        "/roles — участники и роли\n"
-        "/leads — заявки (последние 10 + счётчик)\n\n"
-        "*Служебные (MeritHub):*\n"
-        "/seed10 <parentTG> — создать 10 учеников\n"
-        "/mh\\_schedule <tutor> <start> <min> <students...>\n"
-        "/mh\\_tutor <cuid> <tg> <имя>\n"
-        "/mh\\_students — список учеников\n"
-        "/mh\\_events — последние webhook'и"
+        "/cancel\\_lesson <ID> — отмена по ID (обычно не нужно — родители отменяют сами)\n"
     )
+    if admin:
+        text += (
+            "\n*Демо:*\n"
+            "/pilot\\_absent — тест: сценарий неявки\n"
+            "/demo\\_reset — сброс между прогонами\n\n"
+            "*Владельцу:*\n"
+            "/kill\\_switch — аварийный стоп/ограничение рассылок\n"
+            "/roles — участники и роли\n"
+            "/leads — заявки (последние 10 + счётчик)\n\n"
+            "*Служебные (MeritHub):*\n"
+            "/seed10 <parentTG> — создать 10 учеников\n"
+            "/mh\\_schedule <tutor> <start> <min> <students...>\n"
+            "/mh\\_tutor <cuid> <tg> <имя>\n"
+            "/mh\\_students — список учеников\n"
+            "/mh\\_events — последние webhook'и"
+        )
+    else:
+        text += "\nПолный список команд владельца — в его меню."
+    return text
 
 
 def _role_expectations(role: str) -> str:
@@ -704,7 +713,8 @@ async def handle_callback(upd: Update, _ctx) -> None:
         if data == "help_commands":
             if role == "coordinator":
                 await query.edit_message_text(
-                    _coordinator_help_text(), parse_mode="Markdown", reply_markup=back_kb)
+                    _coordinator_help_text(is_admin(query.from_user.id)),
+                    parse_mode="Markdown", reply_markup=back_kb)
             else:
                 await query.edit_message_text(
                     f"Ваши возможности:\n\n{_role_expectations(role)}\n\n"

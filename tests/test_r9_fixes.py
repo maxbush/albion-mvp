@@ -393,3 +393,72 @@ async def test_r9_3_webhook_mode_requires_url(tmp_path, monkeypatch):
     from src.main import _configure_webhook
     with pytest.raises(SystemExit):
         await _configure_webhook(object())
+
+
+# ── R9-4: help-карточка не обещает недоступное ────────────────────────
+
+@pytest.mark.asyncio
+async def test_r9_4_help_commands_hides_admin_section_for_coordinator(tmp_path, monkeypatch):
+    """R9-4: кнопка «📋 Команды» у не-админа-координатора не показывает
+    /kill_switch, /roles, /mh_* (UI не обещает то, что backend отвергает)."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    from src.config import settings
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
+    from src.db.repository import UserRepository
+    await UserRepository("albion.db").create("200", "coordinator", "Координатор Оля")
+    await UserRepository("albion.db").create("100", "coordinator", "Админ Макс")
+
+    from src.bot.handlers import handle_callback
+
+    class _U:
+        def __init__(self, id, full_name="X"):
+            self.id = id
+            self.full_name = full_name
+            self.username = None
+
+    class _M:
+        def __init__(self):
+            self.text = ""
+
+    class _Q:
+        def __init__(self, data, user):
+            self.data = data
+            self.from_user = user
+            self.message = _M()
+            self.answers = []
+            self.edits = []
+
+        async def answer(self, *a, **k):
+            pass
+
+        async def edit_message_text(self, text, **kw):
+            self.edits.append((text, kw))
+
+    class _C:
+        def __init__(self, id):
+            self.id = id
+
+    class _Upd:
+        def __init__(self, user, data):
+            self.effective_user = user
+            self.effective_chat = _C(42)
+            self.callback_query = _Q(data, user)
+
+    class _Ctx:
+        args = []
+        bot = None
+
+    # Не-админ координатор: владельческих команд нет
+    upd = _Upd(_U(200), "help_commands")
+    await handle_callback(upd, _Ctx())
+    text = upd.callback_query.edits[-1][0]
+    assert "/kill" not in text and "/roles" not in text and "/mh_" not in text
+    assert "/schedule" in text and "/incidents" in text
+
+    # Админ: секция владельца присутствует
+    upd2 = _Upd(_U(100), "help_commands")
+    await handle_callback(upd2, _Ctx())
+    text2 = upd2.callback_query.edits[-1][0]
+    assert "/kill" in text2 and "/roles" in text2

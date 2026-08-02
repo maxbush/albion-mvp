@@ -38,7 +38,8 @@
   🧪 E2E: тест-репро «инцидент 5 vs 55» (resolve_absence(5) не трогает workflow 55) +
   существующие сценарии ответа родителя/эскалации остаются зелёными.
 
-- [~] **R9-2. Мёртвая кнопка «➕ Ещё занятие» (`wz:sched:again`) в визарде `/schedule`**
+- [x] **R9-2. Мёртвая кнопка «➕ Ещё занятие» (`wz:sched:again`) в визарде `/schedule`**
+  ✅ 2026-08-02. Stateless-обработчик `wz:sched:again` в `handle_wz_callback` (по образцу `wz:person:toschedule`). E2E-тест полного цикла, 219/219.
   🐛 После успешного создания `WizardStateRepository.delete(chat_id)` удаляет состояние,
   а `handle_wz_callback` обрабатывает `wz:sched:again` ТОЛЬКО через `_load(chat_id)` →
   state=None → «Этот сценарий уже закрыт. Начните заново.» Кнопка с финальной карточки
@@ -64,7 +65,8 @@
 
 ## 🟡 P1 — UI/Backend синхронизация и недовоплощённое
 
-- [ ] **R9-3. Режим `--webhook` бота не поднимает сервер обновлений — бот глухой**
+- [x] **R9-3. Режим `--webhook` бота не поднимает сервер обновлений — бот глухой**
+  ✅ 2026-08-02. `_configure_webhook()`: set_webhook + `app.updater.start_webhook` (listen/port/url_path/secret/allowed_updates). Новые настройки `TELEGRAM_WEBHOOK_HOST` (0.0.0.0) и `TELEGRAM_WEBHOOK_PORT` (8443) в config/.env.example. 2 теста, 221/221.
   🐛 `src/main.py` webhook-ветка делает `set_webhook(url=...)`, но никогда не запускает
   локальный приёмник Telegram-апдейтов (в PTB это `app.updater.start_webhook`).
   Telegram POSTит на URL, слушать некому → в прод-режиме бот молчит. `start_polling`
@@ -76,7 +78,7 @@
   🧪 E2E: тест вспомогательной функции (мок `bot.set_webhook`/`updater.start_webhook`,
   проверка порта/хоста/пути/секрета).
 
-- [ ] **R9-4. Help-карточка координатора обещает команды, которые не работают (dead-ends)**
+- [~] **R9-4. Help-карточка координатора обещает команды, которые не работают (dead-ends)**
   🐛 `_coordinator_help_text()` показывает секцию «*Владельцу:*» (`/kill_switch`, `/roles`,
   `/seed10`, `/mh_*`) ВСЕМ координаторам. Не-админ получает «⛔ Только владелец/админ».
   UI обещает → backend отказывает (миссматч, против принципа U1 «показываем только то,

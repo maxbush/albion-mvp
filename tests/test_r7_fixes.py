@@ -466,13 +466,18 @@ async def test_r7_6_coordinator_lessons_org_wide_view(tmp_path, monkeypatch):
 # ── R7-7: help-карточка покрывает команды владельца ──────────────────
 
 def test_r7_7_help_card_covers_owner_commands():
-    """kill_switch и /roles находимы из help; ежедневные визарды наверху."""
+    """R9-4 (правка): help админа покрывает команды владельца; help координатора —
+    только его команды (раньше не-админ видел /kill_switch, /roles, /mh_* и получал
+    «⛔ Только владелец/админ» — UI/Backend миссматч)."""
     from src.bot.handlers import _coordinator_help_text
-    text = _coordinator_help_text()
-    # команды аварийного дня и обзора команды — находимы (R7-7)
-    assert "/kill\\_switch" in text and "/roles" in text
+    text_admin = _coordinator_help_text(admin=True)
+    text = _coordinator_help_text(admin=False)
+    # команды аварийного дня и обзора — находимы только у админа (R7-7 + R9-4)
+    assert "/kill\\_switch" in text_admin and "/roles" in text_admin
+    assert "/kill\\_switch" not in text and "/roles" not in text
+    assert "/mh\\_schedule" not in text
     # ежедневные визарды — в первой секции (Hick: частое — наверху)
-    assert text.index("/schedule") < text.index("/mh\\_schedule")
+    assert text.index("/schedule") < text.index("/ok")
     for cmd in ("/add\\_student", "/add\\_tutor", "/today", "/morning",
                 "/incidents", "/lessons", "/status", "/ok"):
         assert cmd in text, cmd
