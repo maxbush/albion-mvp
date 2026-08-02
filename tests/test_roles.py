@@ -129,7 +129,7 @@ async def test_cmd_role_gating_and_assignment(tmp_path, monkeypatch):
     # whoami показывает назначенную роль
     wa = FakeUpdate(FakeUser(200, "bob"))
     await cmd_whoami(wa, FakeContext([]))
-    assert any("tutor" in r for r in wa.message.replies)
+    assert any("репетитор" in r for r in wa.message.replies)
 
     # roles (админ) видит участника
     rl = FakeUpdate(FakeUser(100, "admin"))

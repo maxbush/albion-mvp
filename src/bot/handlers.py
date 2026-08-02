@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -40,7 +41,6 @@ _demo_waiting_messages: dict[int, int] = {}
 
 async def can_send_async(telegram_id: str) -> bool:
     """Проверка с доступом к БД и kill switch."""
-    global _kill_switch_level
     if _kill_switch_level == 2:
         return True
     if _kill_switch_level <= 0:
@@ -189,14 +189,17 @@ async def _demo_solo_absence(upd: Update, _ctx) -> None:
 # COMMAND HANDLERS
 # =====================================================================
 
-def _coordinator_help_text() -> str:
+def _coordinator_help_text(admin: bool = False) -> str:
     """Единый список команд координатора (было два расходящихся списка —
     в /start и в регистрации по кнопке). Underscore в командах экранируем
     для Markdown V1, иначе парные '_' ломают отображение.
 
     Порядок — по частоте использования (UX-аудит П2): сначала ежедневные
-    визарды и обзор, технические mh_* — свёрнуты в «Служебные»."""
-    return (
+    визарды и обзор, технические mh_* — свёрнуты в «Служебные».
+
+    R9-4: секции «Демо»/«Владельцу»/«Служебные» показываются ТОЛЬКО админам —
+    иначе UI обещает команды, которые бэкенд отвергает («⛔ Только владелец/админ»)."""
+    text = (
         "📋 *Ваши команды:*\n\n"
         "*Расписание:*\n"
         "/schedule — новое занятие (пошагово)\n"
@@ -210,21 +213,27 @@ def _coordinator_help_text() -> str:
         "/status — состояние системы\n\n"
         "*Инциденты:*\n"
         "/ok <ID> — закрыть инцидент\n"
-        "/cancel\\_lesson <ID> — отмена по ID (обычно не нужно — родители отменяют сами)\n\n"
-        "*Демо:*\n"
-        "/pilot\\_absent — тест: сценарий неявки\n"
-        "/demo\\_reset — сброс между прогонами\n\n"
-        "*Владельцу:*\n"
-        "/kill\\_switch — аварийный стоп/ограничение рассылок\n"
-        "/roles — участники и роли\n"
-        "/leads — заявки (последние 10 + счётчик)\n\n"
-        "*Служебные (MeritHub):*\n"
-        "/seed10 <parentTG> — создать 10 учеников\n"
-        "/mh\\_schedule <tutor> <start> <min> <students...>\n"
-        "/mh\\_tutor <cuid> <tg> <имя>\n"
-        "/mh\\_students — список учеников\n"
-        "/mh\\_events — последние webhook'и"
+        "/cancel\\_lesson <ID> — отмена по ID (обычно не нужно — родители отменяют сами)\n"
     )
+    if admin:
+        text += (
+            "\n*Демо:*\n"
+            "/pilot\\_absent — тест: сценарий неявки\n"
+            "/demo\\_reset — сброс между прогонами\n\n"
+            "*Владельцу:*\n"
+            "/kill\\_switch — аварийный стоп/ограничение рассылок\n"
+            "/roles — участники и роли\n"
+            "/leads — заявки (последние 10 + счётчик)\n\n"
+            "*Служебные (MeritHub):*\n"
+            "/seed10 <parentTG> — создать 10 учеников\n"
+            "/mh\\_schedule <tutor> <start> <min> <students...>\n"
+            "/mh\\_tutor <cuid> <tg> <имя>\n"
+            "/mh\\_students — список учеников\n"
+            "/mh\\_events — последние webhook'и"
+        )
+    else:
+        text += "\nПолный список команд владельца — в его меню."
+    return text
 
 
 def _role_expectations(role: str) -> str:
@@ -301,8 +310,7 @@ async def cmd_start(upd: Update, _ctx) -> None:
 
 
 async def cmd_status(upd: Update, _ctx) -> None:
-    global _kill_switch_level
-    labels = {0: "ВСЁ ВЫКЛ", 1: "Только координаторам", 2: "Полностью"}
+    labels = {0: "🔴 Всё остановлено", 1: "🟡 Только алерты координаторам", 2: "🟢 Всё работает"}
     sched = ScheduledActionRepository()
     p = await sched._fetchone("SELECT COUNT(*) as cnt FROM scheduled_actions WHERE status='pending'")
     cnt = p["cnt"] if p else 0
@@ -515,19 +523,19 @@ async def cmd_mock_demo(upd: Update, _ctx) -> None:
 
 
 async def cmd_kill_switch(upd: Update, _ctx) -> None:
-    global _kill_switch_level
     if not is_admin(upd.effective_user.id):
         await upd.message.reply_text("⛔ Только владелец/админ может менять kill switch.")
         return
     if not _ctx.args:
         # UX U3: уровни кнопками вместо запоминания 0|1|2 (recognition, не recall).
-        labels = {0: "ВСЁ ВЫКЛ", 1: "Только координаторам", 2: "Полностью"}
+        # П10: единые человеческие подписи (как в /status и callback-кнопках).
+        labels = {0: "🔴 Всё остановлено", 1: "🟡 Только алерты координаторам", 2: "🟢 Всё работает"}
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔴 Всё выкл", callback_data="killswitch:0"),
+            InlineKeyboardButton("🔴 Всё остановлено", callback_data="killswitch:0"),
         ], [
-            InlineKeyboardButton("🟡 Только координаторам", callback_data="killswitch:1"),
+            InlineKeyboardButton("🟡 Только алерты координаторам", callback_data="killswitch:1"),
         ], [
-            InlineKeyboardButton("🟢 Полностью", callback_data="killswitch:2"),
+            InlineKeyboardButton("🟢 Всё работает", callback_data="killswitch:2"),
         ]])
         await upd.message.reply_text(
             f"🔌 Kill Switch. Сейчас: *{labels.get(_kill_switch_level, '?')}*",
@@ -542,10 +550,9 @@ async def cmd_kill_switch(upd: Update, _ctx) -> None:
         await upd.message.reply_text("Уровень: 0, 1 или 2")
         return
     set_kill_switch_level(lvl)
-    labels = {0: "ВСЁ ВЫКЛ", 1: "Только координаторам", 2: "Полностью"}
+    labels = {0: "Всё остановлено", 1: "Только алерты координаторам", 2: "Всё работает"}
     await upd.message.reply_text(f"🔌 Kill Switch: {labels[lvl]}")
     logger.info("Kill switch set to %d", lvl)
-    await bus.publish(Event(EventTypes.SYSTEM_KILL_SWITCH, {"level": lvl}))
 
 
 async def cmd_cancel_lesson(upd: Update, _ctx) -> None:
@@ -626,7 +633,9 @@ async def cmd_ok(upd: Update, _ctx) -> None:
         await upd.message.reply_text("Уже закрыта.")
         return
     wf = AbsenceWorkflow()
-    await wf.resolve_absence(iid, str(upd.effective_user.id))
+    # R9-5: закрыл координатор — история должна говорить «координатором»,
+    # а не дефолтным «подтверждено родителем» (семантическая ложь в /incidents).
+    await wf.resolve_absence(iid, str(upd.effective_user.id), resolution="coordinator_closed")
     await upd.message.reply_text(f"Спасибо! Ситуация #{iid} закрыта!")
 
 
@@ -672,8 +681,10 @@ async def handle_callback(upd: Update, _ctx) -> None:
                 InlineKeyboardButton("📋 Команды", callback_data="help_commands"),
                 InlineKeyboardButton("🔄 Сменить роль", callback_data="change_role"),
             ]])
+        # П10: человеческое имя роли вместо внутреннего кода (parent/coordinator)
+        role_ru = {"parent": "родитель", "tutor": "репетитор", "coordinator": "координатор"}.get(role, role)
         await query.edit_message_text(
-            f"✅ Вы зарегистрированы как {emoji} *{role}*{admin_mark}.\n\n"
+            f"✅ Вы зарегистрированы как {emoji} *{role_ru}*{admin_mark}.\n\n"
             f"{_role_expectations(role)}",
             parse_mode="Markdown",
             reply_markup=markup,
@@ -704,7 +715,8 @@ async def handle_callback(upd: Update, _ctx) -> None:
         if data == "help_commands":
             if role == "coordinator":
                 await query.edit_message_text(
-                    _coordinator_help_text(), parse_mode="Markdown", reply_markup=back_kb)
+                    _coordinator_help_text(is_admin(query.from_user.id)),
+                    parse_mode="Markdown", reply_markup=back_kb)
             else:
                 await query.edit_message_text(
                     f"Ваши возможности:\n\n{_role_expectations(role)}\n\n"
@@ -753,10 +765,9 @@ async def handle_callback(upd: Update, _ctx) -> None:
             await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
             return
         set_kill_switch_level(lvl)
-        labels = {0: "🔴 ВСЁ ВЫКЛ", 1: "🟡 Только координаторам", 2: "🟢 Полностью"}
+        labels = {0: "🔴 Всё остановлено", 1: "🟡 Только алерты координаторам", 2: "🟢 Всё работает"}
         await query.edit_message_text(f"🔌 Kill Switch: {labels[lvl]}")
         logger.info("Kill switch set to %d via button by %s", lvl, query.from_user.id)
-        await bus.publish(Event(EventTypes.SYSTEM_KILL_SWITCH, {"level": lvl}))
         return
 
     # --- Демо: ответ родителя на кнопки ---
@@ -863,6 +874,43 @@ async def handle_callback(upd: Update, _ctx) -> None:
         logger.info("Cancel via button: class=%s date=%s by=%s", class_id, occ_date, query.from_user.id)
         return
 
+    # --- П1: координатор решает судьбу занятия после «не придём»/«can't teach» ---
+    if data.startswith("coord_cancel_class:"):
+        if not await is_coordinator_or_admin(query.from_user.id):
+            await query.answer("⛔ Только координатор/админ", show_alert=True)
+            return
+        parts = data.split(":")
+        class_id = parts[1] if len(parts) > 1 else ""
+        occ_date = parts[2] if len(parts) > 2 and parts[2] != "None" else None
+        if not class_id:
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
+            return
+        await bus.publish(Event(EventTypes.LESSON_CANCELLED, {
+            "lesson_id": class_id,
+            "reason": "Отмена координатором после уведомления о неявке",
+            "occurrence_date": occ_date,
+            "reported_by": str(query.from_user.id),
+        }))
+        await query.edit_message_text("✅ Отмена передана: репетитор и родители уведомлены.")
+        logger.info("Coordinator cancelled class %s (date=%s) via no-show decision", class_id, occ_date)
+        return
+
+    if data.startswith("coord_keep_class:"):
+        if not await is_coordinator_or_admin(query.from_user.id):
+            await query.answer("⛔ Только координатор/админ", show_alert=True)
+            return
+        parts = data.split(":")
+        class_id = parts[1] if len(parts) > 1 else ""
+        occ_date = parts[2] if len(parts) > 2 and parts[2] != "None" else None
+        if not class_id:
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
+            return
+        ops = LessonOpsWorkflow()
+        await ops._keep_class_notify(class_id, occ_date)
+        await query.edit_message_text("✅ Ок, занятие остаётся — репетитор и родители уведомлены.")
+        logger.info("Coordinator kept class %s (date=%s) after no-show decision", class_id, occ_date)
+        return
+
     # --- Координатор закрывает ситуацию прямо с эскалации (UX U2) ---
     if data.startswith("coord_resolve:"):
         parts = data.split(":")
@@ -898,6 +946,85 @@ async def handle_callback(upd: Update, _ctx) -> None:
         except Exception:
             await query.answer("✅ Закрыто", show_alert=False)
         logger.info("Incident %d closed by coordinator %s via escalation button", inc_id, query.from_user.id)
+        return
+
+    # --- R9-14: выбор «на сколько минут» после «⏰ Опоздаем» родителя ---
+    if data.startswith("resolve_late_time:"):
+        parts = data.split(":")
+        try:
+            inc_id = int(parts[1])
+            nonce = parts[2]
+            mins_str = parts[3]
+        except (IndexError, ValueError):
+            await query.edit_message_text("Не смог прочитать нажатие.")
+            return
+        idem_key = f"tg_callback:{data}"
+        idem = IdempotencyRepository()
+        if await idem.exists(idem_key):
+            await query.answer("✅ Уже обработано", show_alert=False)
+            return
+
+        inc_repo = IncidentRepository()
+        inc = await inc_repo.get(inc_id)
+        if not inc:
+            await query.edit_message_text("Ситуация не найдена.")
+            return
+        if inc["status"] == "resolved":
+            await query.answer("ℹ️ Эта ситуация уже закрыта", show_alert=False)
+            try:
+                await query.edit_message_reply_markup(None)
+            except Exception:
+                pass
+            return
+        was_escalated = inc["status"] == "escalated"
+
+        wf_repo = WorkflowRepository()
+        wf_rows = await wf_repo.find_by_json("incident_id", inc_id, limit=1)
+        wf_row = wf_rows[0] if wf_rows else None
+        if not wf_row:
+            await query.edit_message_text("Ситуация уже закрыта или workflow не найден.")
+            return
+        try:
+            wf_data = json.loads(wf_row.get("data") or "{}")
+        except Exception:
+            wf_data = {}
+        expected_nonce = wf_data.get("parent_callback_nonce")
+        if expected_nonce and expected_nonce != nonce:
+            await query.answer("⛔ Кнопка устарела", show_alert=True)
+            return
+        expected_parent = wf_data.get("parent_telegram_id")
+        if expected_parent and str(expected_parent) != str(query.from_user.id):
+            await query.answer("⛔ Это сообщение не для вас", show_alert=True)
+            return
+
+        wf = AbsenceWorkflow()
+        await wf.resolve_absence(inc_id, str(query.from_user.id), resolution="parent_late")
+        await wf.notify_coordinators_parent_reply(
+            inc_id, "late", late_minutes=mins_str,
+            parent_telegram_id=str(query.from_user.id),
+        )
+
+        await idem.save(idem_key, "telegram_callback", response="resolved_late")
+        # Блокируем остальные кнопки этого инцидента (включая другие интервалы)
+        for other_action in ("ok", "no", "late"):
+            other_key = f"tg_callback:resolve:{inc_id}:{nonce}:{other_action}"
+            await idem.save(other_key, "telegram_callback_blocked", response="blocked_by_resolve_late")
+        for other_mins in ("5", "15", "30+"):
+            if other_mins != mins_str:
+                other_key = f"tg_callback:resolve_late_time:{inc_id}:{nonce}:{other_mins}"
+                await idem.save(other_key, "telegram_callback_blocked", response="blocked_by_resolve_late")
+
+        from src.utils.i18n import lang_of, tr
+        lang = await lang_of(str(query.from_user.id))
+        # '15' → '15 мин', '30+' → '30+ мин' (без «на» — его добавляет шаблон)
+        mins_label = f"{mins_str} мин"
+        parent_ack = tr("ack_late_detail_parent", lang, mins=mins_label)
+        if was_escalated:
+            parent_ack += "\n\nℹ️ Координатор уже был уведомлён об отсутствии ответа. Ваш ответ передан — инцидент закрыт."
+        student_label = wf_data.get("student_name") or "Ученик"
+        parent_ack += "\n\nОшиблись? Напишите текстом — координатор поможет."
+        await query.edit_message_text(f"{parent_ack}\nОтметили: {student_label} · вопрос закрыт.")
+        logger.info("Incident %d resolved via late_time=%s (parent %s)", inc_id, mins_str, query.from_user.id)
         return
 
     # --- Реальный resolve (из уведомления) ---
@@ -936,10 +1063,8 @@ async def handle_callback(upd: Update, _ctx) -> None:
         was_escalated = inc["status"] == "escalated"
 
         wf_repo = WorkflowRepository()
-        wf_row = await wf_repo._fetchone(
-            "SELECT * FROM workflow_instances WHERE data LIKE ? ORDER BY id DESC LIMIT 1",
-            (f'%\"incident_id\": {inc_id}%',),
-        )
+        wf_rows = await wf_repo.find_by_json("incident_id", inc_id, limit=1)
+        wf_row = wf_rows[0] if wf_rows else None
         if not wf_row:
             await query.edit_message_text("Ситуация уже закрыта или workflow не найден.")
             return
@@ -950,6 +1075,25 @@ async def handle_callback(upd: Update, _ctx) -> None:
         expected_nonce = wf_data.get("parent_callback_nonce")
         if expected_nonce and expected_nonce != nonce:
             await query.answer("⛔ Кнопка устарела", show_alert=True)
+            return
+        # Самоаудит: кнопку уведомления о неявке может нажать только родитель
+        expected_parent = wf_data.get("parent_telegram_id")
+        if expected_parent and str(expected_parent) != str(query.from_user.id):
+            await query.answer("⛔ Это сообщение не для вас", show_alert=True)
+            return
+
+        # R9-14: «⏰ Опоздаем» — сначала уточняем, НА СКОЛЬКО минут (тот же
+        # микро-шаг, что в prelesson-checkin R8-10). Инцидент не резолвим,
+        # пока родитель не выбрал интервал (эскалация по таймеру — страховка).
+        if action == "late":
+            from src.utils.i18n import lang_of, tr
+            lang = await lang_of(str(query.from_user.id))
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("на 5 мин", callback_data=f"resolve_late_time:{inc_id}:{nonce}:5"),
+                InlineKeyboardButton("на 15 мин", callback_data=f"resolve_late_time:{inc_id}:{nonce}:15"),
+                InlineKeyboardButton("на 30+ мин", callback_data=f"resolve_late_time:{inc_id}:{nonce}:30+"),
+            ]])
+            await query.edit_message_text(tr("ack_late_ask_mins_parent", lang), reply_markup=kb)
             return
 
         action_map = {
@@ -980,10 +1124,12 @@ async def handle_callback(upd: Update, _ctx) -> None:
                 other_key = f"tg_callback:resolve:{inc_id}:{nonce}:{other_action}"
                 await idem.save(other_key, "telegram_callback_blocked", response="blocked_by_resolve")
 
-        # UX U5: имя ученика вместо голого номера + без серверного времени
-        # (родителю важно ЧТО он подтвердил, а не id инцидента и чужой часовой пояс).
+        # UX U5 + П10: имя ученика, без внутреннего номера инцидента и без
+        # серверного времени (номер нужен координатору, не родителю).
         student_label = wf_data.get("student_name") or "Ученик"
-        await query.edit_message_text(f"{parent_ack}\nОтметили: {student_label} · ситуация #{inc_id} закрыта.")
+        # П8: подсказка на случай случайного нажатия
+        parent_ack += "\n\nОшиблись? Напишите текстом — координатор поможет."
+        await query.edit_message_text(f"{parent_ack}\nОтметили: {student_label} · вопрос закрыт.")
         logger.info("Incident %d resolved via button action=%s (was_escalated=%s)", inc_id, action, was_escalated)
         return
 
@@ -1015,15 +1161,38 @@ async def handle_callback(upd: Update, _ctx) -> None:
         if expected_nonce and expected_nonce != nonce:
             await query.answer("⛔ Кнопка устарела", show_alert=True)
             return
+        # Самоаудит: кнопку может нажать только адресат (пересланные кнопки
+        # не должны работать от чужого аккаунта)
+        expected_actor = wf_data.get("actor_telegram_id")
+        if expected_actor and str(expected_actor) != str(query.from_user.id):
+            await query.answer("⛔ Это сообщение не для вас", show_alert=True)
+            return
 
         ops = LessonOpsWorkflow()
-        await ops.record_checkin_response(wid, actor_tg=str(query.from_user.id), action=action)
-        await idem.save(idem_key, "telegram_checkin", response=action)
-        # Подтверждение — на языке нажавшего (тьюторы — EN).
-        from src.utils.i18n import lang_of, tr
-        lang = await lang_of(str(query.from_user.id))
+        actor_type = wf_data.get("actor_type")
+        # R10 (П5): для «⏰ Опоздаю» НЕ шлём мгновенный алерт координатору —
+        # дождёмся выбора минут и отправим ОДНО итоговое сообщение. Пока выбор
+        # не сделан, workflow остаётся running; fallback-алерт через 10 минут —
+        # страховка, что факт опоздания не потеряется.
         if action == "late":
-            msg_text = tr("ack_late_ask_mins", lang)
+            wf_data["response_status"] = "late"
+            wf_data["responded_at"] = datetime.now(timezone.utc).isoformat()
+            await repo.update_data(wid, wf_data)
+            # Самоаудит R10: отменяем остальные будущие действия workflow
+            # (parent/tutor_prelesson_no_reply и т.п.) — иначе координатор
+            # получит ложное «Родитель/репетитор не ответил» в добавок к
+            # «опоздает». Fallback создаём ПОСЛЕ отмены, чтобы он остался.
+            await ScheduledActionRepository().cancel_by_workflow(wid)
+            await ScheduledActionRepository().create(
+                wid,
+                (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+                "checkin_late_fallback", {"workflow_id": wid})
+            await idem.save(idem_key, "telegram_checkin", response=action)
+            from src.utils.i18n import lang_of, tr
+            lang = await lang_of(str(query.from_user.id))
+            # П3: родителю — «на сколько минут УЧЕНИК опоздает», а не «задержитесь ВЫ»
+            msg_key = "ack_late_ask_mins_parent" if actor_type == "parent" else "ack_late_ask_mins"
+            msg_text = tr(msg_key, lang)
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton(tr("tutor_btn_late_5", lang), callback_data=f"checkin_late_time:{wid}:{nonce}:5"),
                 InlineKeyboardButton(tr("tutor_btn_late_15", lang), callback_data=f"checkin_late_time:{wid}:{nonce}:15"),
@@ -1031,6 +1200,12 @@ async def handle_callback(upd: Update, _ctx) -> None:
             ]])
             await query.edit_message_text(msg_text, reply_markup=kb)
             return
+
+        await ops.record_checkin_response(wid, actor_tg=str(query.from_user.id), action=action)
+        await idem.save(idem_key, "telegram_checkin", response=action)
+        # Подтверждение — на языке нажавшего (тьюторы — EN).
+        from src.utils.i18n import lang_of, tr
+        lang = await lang_of(str(query.from_user.id))
         ack = tr(f"ack_{action}", lang)
         await query.edit_message_text(ack if ack != f"ack_{action}" else "✅ Ответ принят.")
         return
@@ -1052,10 +1227,25 @@ async def handle_callback(upd: Update, _ctx) -> None:
         from src.utils.i18n import lang_of, tr
         lang = await lang_of(str(query.from_user.id))
         ops = LessonOpsWorkflow()
-        time_label = tr(f"tutor_btn_late_{mins_str.replace('+','')}", lang)
-        await ops.notify_late_detail(wid, time_label)
+        # R9-13: координаторам передаём raw-минуты (текст формирует workflow
+        # по actor_type); пользователю — локализованный ack.
+        # R10 (П5): одно итоговое сообщение координатору; fallback отменяем,
+        # workflow завершаем.
+        wf_row2 = await WorkflowRepository().get(wid)
+        try:
+            wf_data2 = json.loads(wf_row2.get("data") or "{}") if wf_row2 else {}
+        except Exception:
+            wf_data2 = {}
+        actor_type = wf_data2.get("actor_type")
+        await ScheduledActionRepository().cancel_by_workflow(wid)
+        await ops.notify_late_detail(wid, mins_str)
+        await WorkflowRepository().update_state(
+            wid, "completed",
+            {**wf_data2, "response_status": "late", "late_minutes": mins_str})
         await idem.save(idem_key, "telegram_checkin_late_time", response=mins_str)
-        ack = tr("ack_late_detail", lang, mins=time_label)
+        mins_label = f"{mins_str} мин"
+        ack_key = "ack_late_detail_parent" if actor_type == "parent" else "ack_late_detail"
+        ack = tr(ack_key, lang, mins=mins_label)
         await query.edit_message_text(ack)
         return
 
@@ -1165,12 +1355,34 @@ async def handle_message(upd: Update, _ctx) -> None:
                 "late": "⏰ Спасибо! Отметили, что ученик опоздает. Координатор уведомлён.",
                 "other": "💬 Спасибо! Передали ответ координатору для ручной обработки.",
             }
+            # R9-14: из свободного текста «опоздаем на 15 минут» вытаскиваем минуты
+            late_minutes = None
+            if status == "late":
+                m = re.search(r"(\d{1,3})\s*мин", text)
+                if m:
+                    late_minutes = m.group(1)
+            if status == "other":
+                # П4: непонятный ответ НЕ закрывает инцидент — он остаётся
+                # активным (review) до разбора координатором. Эскалация по
+                # таймеру отменяется (мы уже эскалируем вручную), workflow
+                # остаётся running, чтобы поздние ответы родителя перехватывались.
+                await wf.incidents.update_status(inc_id, "review")
+                wf_rows_r = await WorkflowRepository().find_by_json(
+                    "incident_id", inc_id, limit=1)
+                if wf_rows_r:
+                    await ScheduledActionRepository().cancel_by_workflow(wf_rows_r[0]["id"])
+                await wf.notify_coordinators_parent_reply(
+                    inc_id, "free_text", parent_text=text,
+                    parent_telegram_id=tg_id, review=True)
+                await upd.message.reply_text(reply_map["other"])
+                return
             await wf.resolve_absence(inc_id, tg_id, resolution=resolution_map.get(status, "parent_text_reply"))
             await wf.notify_coordinators_parent_reply(
                 inc_id,
                 status if status in {"ok", "no_show", "late"} else "free_text",
                 parent_text=text,
                 parent_telegram_id=tg_id,
+                late_minutes=late_minutes,
             )
             await upd.message.reply_text(reply_map.get(status, reply_map["other"]))
             return
@@ -1267,7 +1479,6 @@ def setup_handlers(app: Application) -> None:
                 nid = event.data.get("notification_id")
                 if nid:
                     await NotificationRepository().mark_sent(nid)
-                await bus.publish(Event(EventTypes.NOTIFICATION_DELIVERED, {"telegram_id": tg, "notification_id": nid}))
                 return
             except Exception as e:
                 last_error = e
@@ -1282,7 +1493,6 @@ def setup_handlers(app: Application) -> None:
         wf_id = event.data.get("workflow_id")
         if wf_id:
             await WorkflowRepository().update_state(wf_id, "failed", {"error": str(last_error)})
-        await bus.publish(Event(EventTypes.NOTIFICATION_FAILED, {"telegram_id": tg, "notification_id": nid, "error": str(last_error)}))
 
     bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, notif_handler)
 

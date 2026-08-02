@@ -63,7 +63,6 @@ ROLE_COMMAND_MENUS: dict[str, list[tuple[str, str]]] = {
         ("lessons", "Занятия и ссылки"),
         ("morning", "Утренняя сводка"),
         ("incidents", "Инциденты"),
-        ("cancel_lesson", "Отмена урока"),
         ("status", "Состояние системы"),
         ("whoami", "Мой профиль"),
     ],
@@ -167,6 +166,9 @@ async def cmd_whoami(upd: Update, _ctx) -> None:
     rec = await UserRepository().get_by_telegram_id(str(user.id))
     if rec:
         role, emoji = rec["role"], ROLE_EMOJI.get(rec["role"], "")
+        # П10: человеческое имя роли (parent → родитель и т.п.)
+        role = {"parent": "родитель", "tutor": "репетитор",
+                "coordinator": "координатор", "student": "ученик"}.get(role, role)
     else:
         role, emoji = "не назначена", ""
     admin = "✅ да" if is_admin(user.id) else "нет"

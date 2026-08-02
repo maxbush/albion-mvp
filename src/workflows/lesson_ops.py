@@ -233,10 +233,10 @@ class LessonOpsWorkflow:
 
     async def find_active_checkin(self, actor_tg: str, actor_types: tuple[str, ...]) -> tuple[int, dict, str] | None:
         for wf_type in ("tutor_start_check", "prelesson_parent", "prelesson_tutor"):
-            wf = await self.repo._fetchone(
-                "SELECT * FROM workflow_instances WHERE workflow_type=? AND state='running' AND data LIKE ? ORDER BY id DESC LIMIT 1",
-                (wf_type, f'%"actor_telegram_id": "{actor_tg}"%'),
-            )
+            wf_rows = await self.repo.find_by_json(
+                "actor_telegram_id", actor_tg, state="running",
+                workflow_type=wf_type, limit=1)
+            wf = wf_rows[0] if wf_rows else None
             if not wf:
                 continue
             try:
@@ -288,27 +288,31 @@ class LessonOpsWorkflow:
         status_label = action_labels.get(action, action)
 
         if actor_type == "parent":
-            await self.notify_coordinators(
-                "📣 Ответ родителя",
-                [
-                    f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
-                    f"Ученик: {student_name}",
-                    f"Репетитор: {tutor_name}",
-                    f"Статус: {status_label}",
-                    *( [f"Текст: {free_text[:300]}"] if free_text else [] ),
-                ],
-            )
+            # П1: «Не придём» — отдельный decision-алерт с кнопками, без дубля
+            if action != "no_show":
+                await self.notify_coordinators(
+                    "📣 Ответ родителя",
+                    [
+                        f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
+                        f"Ученик: {student_name}",
+                        f"Репетитор: {tutor_name}",
+                        f"Статус: {status_label}",
+                        *( [f"💬 «{free_text[:500]}»"] if free_text else [] ),
+                    ],
+                )
         elif actor_type == "tutor":
-            await self.notify_coordinators(
-                "🧑‍🏫 Ответ репетитора",
-                [
-                    f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
-                    f"Репетитор: {tutor_name}",
-                    f"Ученики: {student_name}",
-                    f"Статус: {status_label}",
-                    *( [f"Текст: {free_text[:300]}"] if free_text else [] ),
-                ],
-            )
+            # П1: «Can't teach» — отдельный decision-алерт с кнопками, без дубля
+            if action != "no_show":
+                await self.notify_coordinators(
+                    "🧑‍🏫 Ответ репетитора",
+                    [
+                        f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
+                        f"Репетитор: {tutor_name}",
+                        f"Ученики: {student_name}",
+                        f"Статус: {status_label}",
+                        *( [f"💬 «{free_text[:500]}»"] if free_text else [] ),
+                    ],
+                )
         elif actor_type == "tutor_start":
             if action == "class_started":
                 await self.notify_coordinators(
@@ -343,12 +347,10 @@ class LessonOpsWorkflow:
                 )
                 # Отменяем class_live_check workflow (отдельный workflow, свой wid)
                 # — чтобы не было лишнего алерта через 5 мин, раз ученик уже отмечен отсутствующим.
-                live_check_wf = await self.repo._fetchone(
-                    "SELECT * FROM workflow_instances "
-                    "WHERE workflow_type='class_live_check' AND state='running' AND data LIKE ? "
-                    "ORDER BY id DESC LIMIT 1",
-                    (f'%"class_id": "{class_id}"%',),
-                )
+                live_rows = await self.repo.find_by_json(
+                    "class_id", class_id, state="running",
+                    workflow_type="class_live_check", limit=1)
+                live_check_wf = live_rows[0] if live_rows else None
                 if live_check_wf:
                     await self.scheduler.cancel_by_workflow(live_check_wf["id"])
                     await self.repo.cancel(live_check_wf["id"])
@@ -365,29 +367,155 @@ class LessonOpsWorkflow:
                         f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
                         f"Репетитор: {tutor_name}",
                         f"Ученики: {student_name}",
-                        *( [f"Текст: {free_text[:300]}"] if free_text else [] ),
+                        *( [f"💬 «{free_text[:500]}»"] if free_text else [] ),
                     ],
                 )
+
+        # П1: «Не придём»/«Can't teach» — вторая сторона + решение координатора
+        if action == "no_show" and actor_type in ("parent", "tutor"):
+            await self._no_show_notify(data, actor_type)
 
         await self._cancel_future_actions(wid)
         await self._save_workflow(wid, "completed", data)
 
-    async def notify_late_detail(self, wid: int, mins_str: str) -> None:
-        """R8-10: Отправляет координаторам точное время опоздания репетитора."""
+    async def _checkin_late_fallback(self, wid: int) -> None:
+        """R10 (П5): пользователь нажал «Опоздаю», но не выбрал минуты —
+        алерт координаторам без деталей (иначе факт опоздания терялся бы)."""
         wf, data = await self._load_workflow(wid)
-        if not wf:
+        if not wf or wf["state"] != "running":
             return
         class_id = data.get("class_id", "—")
         tutor_name = data.get("tutor_name") or "Репетитор"
         student_name = data.get("student_name") or ", ".join(data.get("student_names") or []) or "Ученик"
-        await self.notify_coordinators(
-            "ℹ️ Уточнение по опозданию репетитора",
-            [
-                f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
-                f"Репетитор: {tutor_name} задержится {mins_str}",
-                f"Ученики: {student_name}",
-            ],
+        if data.get("actor_type") == "parent":
+            title = "⏰ Родитель сообщил об опоздании ученика (без деталей)"
+            lines = [f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
+                     f"Ученик: {student_name}",
+                     f"Репетитор: {tutor_name}"]
+        else:
+            title = "⏰ Репетитор сообщил об опоздании (без деталей)"
+            lines = [f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
+                     f"Репетитор: {tutor_name}",
+                     f"Ученики: {student_name}"]
+        await self.notify_coordinators(title, lines)
+        data["response_status"] = "late_no_mins"
+        await self._cancel_future_actions(wid)
+        await self._save_workflow(wid, "completed", data)
+
+    async def _class_party(self, class_id: str) -> tuple[str | None, list[str]]:
+        """(tutor_tg, parent_tgs) для класса — по локальным таблицам."""
+        if not class_id:
+            return None, []
+        from src.db.repository import (
+            MeritHubClassRepository, MeritHubContactRepository, MeritHubEnrollmentRepository,
         )
+        crepo = MeritHubClassRepository(self.repo.db_path)
+        cls = await crepo.get(class_id)
+        tcuid = (cls or {}).get("tutor_client_user_id")
+        tutor_tg = None
+        if tcuid:
+            trow = await MeritHubContactRepository(self.repo.db_path).get(tcuid)
+            tutor_tg = (trow or {}).get("telegram_id")
+        enr = await MeritHubEnrollmentRepository(self.repo.db_path).list_by_class(class_id)
+        parents = list({e["parent_telegram_id"] for e in enr if e.get("parent_telegram_id")})
+        return tutor_tg, parents
+
+    async def _no_show_notify(self, data: dict, actor_type: str) -> None:
+        """П1: «Не придём»/«Can't teach» — уведомить ВТОРУЮ сторону и дать
+        координатору кнопки решения (отменить / урок в силе)."""
+        from src.utils.i18n import lang_of, tr
+        class_id = data.get("class_id", "")
+        start_time = data.get("start_time")
+        label = _format_class_label(class_id, start_time)
+        occ_date = (start_time or "")[:10] or None
+        tutor_tg, parent_tgs = await self._class_party(class_id)
+
+        if actor_type == "parent":
+            # Репетитору — предупреждение
+            student = data.get("student_name") or "Ученик"
+            if tutor_tg:
+                await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                    "telegram_id": tutor_tg,
+                    "message": tr("no_show_tutor_notice", await lang_of(tutor_tg),
+                                  student=student, label=label),
+                }))
+            title = "👤 Родитель сообщил: ученик не придёт"
+            lines = [
+                f"Занятие: {label}",
+                f"Ученик: {student}",
+                f"Репетитор: {data.get('tutor_name') or '—'}",
+                "Решение: отменить занятие или оставить в силе.",
+            ]
+        else:
+            # Родителям — предупреждение
+            tutor = data.get("tutor_name") or "Репетитор"
+            for ptg in parent_tgs:
+                await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                    "telegram_id": ptg,
+                    "message": tr("no_show_parent_notice", "ru",
+                                  tutor=tutor, label=label),
+                }))
+            title = "🧑‍🏫 Репетитор сообщил: не сможет провести занятие"
+            lines = [
+                f"Занятие: {label}",
+                f"Репетитор: {tutor}",
+                f"Ученики: {', '.join(data.get('student_names') or []) or '—'}",
+                "Решение: отменить занятие или оставить в силе.",
+            ]
+
+        buttons = [{"text": "✅ Отменить занятие",
+                    "callback_data": f"coord_cancel_class:{class_id}:{occ_date}"},
+                   {"text": "◀️ Урок в силе",
+                    "callback_data": f"coord_keep_class:{class_id}:{occ_date}"}]
+        await self.notify_coordinators(title, lines, buttons=buttons)
+
+    async def _keep_class_notify(self, class_id: str, occ_date: str | None) -> None:
+        """П1: координатор оставил занятие в силе — уведомить обе стороны."""
+        from src.utils.i18n import lang_of, tr
+        tutor_tg, parent_tgs = await self._class_party(class_id)
+        if tutor_tg:
+            await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                "telegram_id": tutor_tg,
+                "message": tr("class_kept_tutor", await lang_of(tutor_tg), label=class_id)}))
+        for ptg in parent_tgs:
+            await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                "telegram_id": ptg,
+                "message": tr("class_kept_parent", "ru", label=class_id)}))
+
+    async def notify_late_detail(self, wid: int, mins_str: str) -> None:
+        """R8-10/R9-13: точное время опоздания координаторам — от ФАКТИЧЕСКОГО актора.
+
+        Раньше хардкодился «репетитор»: когда «⏰ Опоздаю» жал родитель, координаторы
+        получали ложь «репетитор задержится». mins_str — raw-значение кнопки
+        ('5' | '15' | '30+'); текст координаторам всегда RU."""
+        wf, data = await self._load_workflow(wid)
+        # Самоаудит R10: если fallback уже завершил workflow (минуты выбраны
+        # позже 10-минутного окна) — не шлём второе уведомление координатору.
+        if not wf or wf["state"] != "running":
+            return
+        class_id = data.get("class_id", "—")
+        tutor_name = data.get("tutor_name") or "Репетитор"
+        student_name = data.get("student_name") or ", ".join(data.get("student_names") or []) or "Ученик"
+        delay = f"на {mins_str} мин"
+        label = _format_class_label(class_id, data.get("start_time"))
+        if data.get("actor_type") == "parent":
+            await self.notify_coordinators(
+                "ℹ️ Уточнение по опозданию ученика",
+                [
+                    f"Занятие: {label}",
+                    f"Ученик: {student_name} опоздает {delay}",
+                    f"Репетитор: {tutor_name}",
+                ],
+            )
+        else:
+            await self.notify_coordinators(
+                "ℹ️ Уточнение по опозданию репетитора",
+                [
+                    f"Занятие: {label}",
+                    f"Репетитор: {tutor_name} задержится {delay}",
+                    f"Ученики: {student_name}",
+                ],
+            )
 
     async def _send_parent_prelesson_reminder(self, wid: int) -> None:
         wf, data = await self._load_workflow(wid)
@@ -414,6 +542,19 @@ class LessonOpsWorkflow:
         ]
         user = await self.users.get_by_telegram_id(data["actor_telegram_id"])
         if not user:
+            # П9: не молчим — координатор узнаёт, что напоминания не уходят
+            await self.notify_coordinators(
+                "⚠️ Родитель не зарегистрирован в боте",
+                [f"Занятие: {_format_class_label(data.get('class_id', '—'), data.get('start_time'))}",
+                 f"Ученик: {data.get('student_name', '—')}",
+                 "Напоминание не отправлено. Попросите родителя написать боту /start."],
+                buttons=[{"text": "👤 Написать родителю",
+                          "url": f"tg://user?id={data['actor_telegram_id']}"}]
+                if data.get("actor_telegram_id") else None,
+            )
+            data["response_status"] = "not_registered"
+            await self._cancel_future_actions(wid)
+            await self._save_workflow(wid, "completed", data)
             return
         nid = await self.notifications.create(user["id"], "parent_prelesson_reminder", msg)
         await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
@@ -451,6 +592,19 @@ class LessonOpsWorkflow:
         ]
         user = await self.users.get_by_telegram_id(data["actor_telegram_id"])
         if not user:
+            # П9: не молчим — координатор узнаёт, что напоминания не уходят
+            await self.notify_coordinators(
+                "⚠️ Репетитор не зарегистрирован в боте",
+                [f"Занятие: {_format_class_label(data.get('class_id', '—'), data.get('start_time'))}",
+                 f"Репетитор: {data.get('tutor_name', '—')}",
+                 "Напоминание не отправлено. Попросите репетитора написать боту /start."],
+                buttons=[{"text": "👤 Написать репетитору",
+                          "url": f"tg://user?id={data['actor_telegram_id']}"}]
+                if data.get("actor_telegram_id") else None,
+            )
+            data["response_status"] = "not_registered"
+            await self._cancel_future_actions(wid)
+            await self._save_workflow(wid, "completed", data)
             return
         nid = await self.notifications.create(user["id"], "tutor_prelesson_reminder", msg)
         await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
@@ -529,12 +683,9 @@ class LessonOpsWorkflow:
         # Контекст: проверяем, ответил ли tutor на start check.
         # Это помогает координатору понять, в чём проблема.
         tutor_status = "не ответил"
-        tutor_start_wf = await self.repo._fetchone(
-            "SELECT * FROM workflow_instances "
-            "WHERE workflow_type='tutor_start_check' AND data LIKE ? "
-            "ORDER BY id DESC LIMIT 1",
-            (f'%"class_id": "{class_id}"%',),
-        )
+        ts_rows = await self.repo.find_by_json(
+            "class_id", class_id, workflow_type="tutor_start_check", limit=1)
+        tutor_start_wf = ts_rows[0] if ts_rows else None
         if tutor_start_wf:
             try:
                 start_data = json.loads(tutor_start_wf.get("data") or "{}")
@@ -608,6 +759,8 @@ class LessonOpsWorkflow:
             await self._send_tutor_start_check(wid)
         elif action == "class_live_check":
             await self._check_class_live(wid)
+        elif action == "checkin_late_fallback":
+            await self._checkin_late_fallback(wid)
         elif action == MORNING_DIGEST_ACTION:
             await self._send_morning_digest_auto(wid)
 
@@ -629,11 +782,9 @@ class LessonOpsWorkflow:
         class_id = event.data.get("class_id")
         if not class_id:
             return
-        rows = await self.repo._fetchall(
-            "SELECT * FROM workflow_instances "
-            "WHERE workflow_type='class_live_check' AND state='running' AND data LIKE ?",
-            (f'%"class_id": "{class_id}"%',),
-        )
+        rows = await self.repo.find_by_json(
+            "class_id", class_id, state="running",
+            workflow_type="class_live_check", limit=100)
         for row in rows:
             wid = row["id"]
             try:
@@ -650,12 +801,11 @@ class LessonOpsWorkflow:
         class_id = event.data.get("class_id")
         if not class_id:
             return
-        rows = await self.repo._fetchall(
-            "SELECT * FROM workflow_instances "
-            "WHERE workflow_type IN ('prelesson_parent','prelesson_tutor','tutor_start_check','class_live_check') "
-            "AND state='running' AND data LIKE ?",
-            (f'%"class_id": "{class_id}"%',),
-        )
+        rows = await self.repo.find_by_json(
+            "class_id", class_id, state="running",
+            workflow_types=("prelesson_parent", "prelesson_tutor",
+                            "tutor_start_check", "class_live_check"),
+            limit=100)
         for row in rows:
             wid = row["id"]
             try:

@@ -43,7 +43,7 @@ class LeadCaptureWorkflow:
                 "message": tr("lead_ack", await lang_of(str(tg))),
             }))
 
-        msg = f"📥 Новая заявка! #{lid}\nПредмет: {subj}\n\n{text[:150]}"
+        msg = f"📥 Новая заявка! #{lid}\nПредмет: {subj}\n\n💬 «{text[:500]}»"
 
         # Уведомляем всех координаторов (без хардкода)
         coord_ids = await get_coordinator_ids(self._db_path)

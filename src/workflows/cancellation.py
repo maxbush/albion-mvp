@@ -37,7 +37,9 @@ class CancellationWorkflow:
         # merithub-сервиса нет — вендор create-only («import & observe»).
         sn = tn = "—"
         subject = "—"
+        subject_full = False  # True: subject уже содержит имена (title класса)
         tutor_tg = None
+        parent_tgs: list[str] = []  # П1: родители, которых нужно уведомить об отмене
         reason = event.data.get("reason", "Не указана")
         lesson = await self.airtable.get_lesson(lid)
         if lesson:
@@ -47,7 +49,10 @@ class CancellationWorkflow:
             sn = student.name if student else "Ученик"
             tn = tutor.name if tutor else "Репетитор"
             subject = lesson.subject
+            subject_full = False  # предмет — короткий, префикс с именем нужен
             tutor_tg = await self._get_tutor_telegram(lesson.tutor_id)
+            if student and student.parent_telegram_id:
+                parent_tgs = [student.parent_telegram_id]
         else:
             from src.db.repository import (
                 MeritHubClassRepository, MeritHubContactRepository,
@@ -72,6 +77,10 @@ class CancellationWorkflow:
                      for e in enr if (e.get("role") or "student") == "student"]
             sn = ", ".join(names[:3]) or "Ученик"
             subject = cls.get("title") or lid
+            subject_full = bool(cls.get("title"))  # title уже содержит имена
+            # П1: родители зачисленных учеников тоже должны узнать об отмене
+            parent_tgs = list({e["parent_telegram_id"] for e in enr
+                               if e.get("parent_telegram_id")})
             trow = await MeritHubContactRepository(self.users.db_path).get(
                 cls.get("tutor_client_user_id") or "")
             tutor_tg = (trow or {}).get("telegram_id")
@@ -81,23 +90,32 @@ class CancellationWorkflow:
         from src.db.repository import ScheduledActionRepository, WorkflowRepository
         sched = ScheduledActionRepository(self.users.db_path) if self.users.db_path else ScheduledActionRepository()
         wf_repo = WorkflowRepository(self.users.db_path) if self.users.db_path else WorkflowRepository()
-        # Находим все running workflow для этого class_id
-        active_wfs = await wf_repo._fetchall(
-            "SELECT id FROM workflow_instances WHERE state='running' AND data LIKE ?",
-            (f'%"class_id": "{lid}"%',),
-        )
+        # Находим все running workflow для этого class_id (R9-1: json_extract)
+        active_wfs = await wf_repo.find_by_json(
+            "class_id", lid, state="running", limit=100)
         for wf in active_wfs:
             await sched.cancel_by_workflow(wf["id"])
             await wf_repo.cancel(wf["id"])
             logger.info("Cancelled workflow %d for cancelled lesson %s", wf["id"], lid)
 
-        # Уведомляем репетитора (если есть TG) — на его языке (i18n)
+        # П1: уведомляем родителей (если отмена инициирована не ими — сообщение
+        # закрывает цикл; если родитель отменил сам — это подтверждение).
+        from src.utils.i18n import lang_of, tr
+        for ptg in parent_tgs:
+            await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+                "telegram_id": ptg,
+                "message": tr("class_cancelled_parent", "ru", label=subject),
+            }))
+
+        # Уведомляем репетитора (если есть TG) — на его языке (i18n).
+        # Самоаудит: для merithub-классов title уже содержит имена учеников —
+        # не дублируем их префиксом («Миша — Миша — математика»).
         if tutor_tg:
-            from src.utils.i18n import lang_of, tr
+            subject_tutor = subject if subject_full else f"{sn} — {subject}"
             await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
                 "telegram_id": tutor_tg,
                 "message": tr("tutor_cancelled", await lang_of(tutor_tg),
-                              subject=f"{sn} — {subject}", reason=reason),
+                              subject=subject_tutor, reason=reason),
             }))
 
         # Уведомляем всех координаторов

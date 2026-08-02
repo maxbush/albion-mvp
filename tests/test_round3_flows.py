@@ -595,11 +595,13 @@ async def test_p24_coordinator_help_is_unified(tmp_path, monkeypatch):
     await handle_callback(upd2, FakeContext([]))
     help_from_button = upd2.callback_query.edits[-1][0]
 
-    assert help_from_start == help_from_button == _coordinator_help_text()
+    # R9-4 (правка): 321 и 654 — не админы, поэтому help равен не-админской
+    # версии (владельческие /pilot_*, /mh_* туда больше не входят — раньше
+    # UI обещал недоступное).
+    assert help_from_start == help_from_button == _coordinator_help_text(admin=False)
     # Underscore в командах экранирован (Markdown V1), иначе текст ломается.
-    assert "/pilot\\_absent" in help_from_start
     assert "/cancel\\_lesson <ID>" in help_from_start
-    assert "/mh\\_schedule" in help_from_start
+    assert "/pilot" not in help_from_start and "/mh_" not in help_from_start
     for line in help_from_start.splitlines():
         if line.strip().startswith("/"):
             assert "\\_" in line or "_" not in line, line

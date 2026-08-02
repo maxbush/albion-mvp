@@ -43,7 +43,7 @@ class FallbackWorkflow:
         author = (user or {}).get("name") or "—"
         role = (user or {}).get("role") or "?"
         await notify_all_coordinators(
-            f"💬 Сообщение из чата ({role}: {author})\nТекст: {text[:300]}",
+            f"💬 Сообщение из чата ({role}: {author})\n💬 «{text[:500]}»",
             notification_type="user_question",
             db_path=self._db_path,
             buttons=[{"text": "👤 Написать пользователю", "url": f"tg://user?id={tg}"}],

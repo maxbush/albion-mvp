@@ -10,6 +10,7 @@
 Когда подключим реальный MeritHub API, ученики будут браться уже оттуда.
 """
 
+import json
 import logging
 from datetime import datetime, timezone, timedelta
 
@@ -20,7 +21,7 @@ from src.config import settings
 from src.db.repository import (
     UserRepository, IncidentRepository, ScheduledActionRepository, WebhookEventRepository,
     MeritHubStudentRepository, MeritHubClassRepository, MeritHubContactRepository,
-    MeritHubEnrollmentRepository,
+    MeritHubEnrollmentRepository, WorkflowRepository,
 )
 from src.workflows.engine import engine
 from src.workflows.lesson_ops import LessonOpsWorkflow
@@ -103,7 +104,18 @@ async def trigger_absence(
 
     Реальный TG родителя передаётся в данных workflow — `_notify_parent` берёт
     его оттуда. Используется и командой /pilot_absent, и webhook attendance.
-    Возвращает (incident_id, workflow_id)."""
+    Возвращает (incident_id, workflow_id). (None, None) — если активный
+    сценарий для (lesson, student) уже существует (R9-7: идемпотентность —
+    ретрай webhook/пересечение источников не плодит дубли)."""
+    if source != "pilot_command":
+        dup = await WorkflowRepository().find_by_json(
+            "lesson_ref", lesson_ref, state="running",
+            workflow_type="absence_notification", limit=100)
+        dup = [d for d in dup if json.loads(d.get("data") or "{}").get("student_id") == student_id]
+        if dup:
+            logger.info("Absence dedup (%s): active workflow for lesson=%s student=%s — skip",
+                        source, lesson_ref, student_id)
+            return None, None
     inc_id = await IncidentRepository().create(
         lesson_ref=lesson_ref, student_id=student_id, tutor_id=tutor_id,
         type="absence", status="pending",
@@ -337,7 +349,6 @@ async def cmd_mh_enroll(upd: Update, ctx) -> None:
     if settings.merithub_use_real and students and class_meta and class_meta.get("participant_link"):
         try:
             from src.integrations.factory import get_merithub_service
-            from src.integrations.merithub_client import MeritHubClient
             client = get_merithub_service()
             users = [{
                 "userId": s["merithub_user_id"],
@@ -825,7 +836,7 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
 
     # Активные (pending + escalated)
     active = await repo._fetchall(
-        "SELECT * FROM incidents WHERE status IN ('pending', 'escalated', 'open') "
+        "SELECT * FROM incidents WHERE status IN ('pending', 'escalated', 'open', 'review') "
         "ORDER BY created_at DESC LIMIT 20"
     )
     # Последние закрытые
@@ -838,16 +849,18 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
         "SELECT "
         "  COUNT(CASE WHEN status='pending' THEN 1 END) as pending, "
         "  COUNT(CASE WHEN status='escalated' THEN 1 END) as escalated, "
+        "  COUNT(CASE WHEN status='review' THEN 1 END) as review, "
         "  COUNT(CASE WHEN status='resolved' THEN 1 END) as resolved, "
         "  COUNT(*) as total "
         "FROM incidents"
     )
 
-    lines = [f"📋 Инциденты\n"]
+    lines = ["📋 Инциденты\n"]
     if stats:
         lines.append(
             f"⏳ Ожидают: {stats['pending']}  |  "
             f"🚨 Эскалации: {stats['escalated']}  |  "
+            f"💬 Нужен разбор: {stats['review']}  |  "
             f"✅ Закрыто: {stats['resolved']}  |  "
             f"Всего: {stats['total']}\n"
         )
@@ -859,35 +872,47 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
 
     _TYPE_RU = {"absence": "неявка", "late": "опоздание",
                 "cancellation": "отмена", "other": "прочее"}
-    _STATUS_RU = {"pending": "ожидает ответа", "escalated": "ЭСКАЛАЦИЯ", "open": "открыт"}
+    _STATUS_RU = {"pending": "ожидает ответа", "escalated": "ЭСКАЛАЦИЯ",
+                  "open": "открыт", "review": "💬 нужен разбор"}
 
-    async def _student_name(inc_id: int) -> str | None:
-        """Имя ученика из данных workflow инцидента (если сценарий его знал)."""
-        row = await repo._fetchone(
-            "SELECT data FROM workflow_instances WHERE data LIKE ? ORDER BY id DESC LIMIT 1",
-            (f'%"incident_id": {inc_id}%',),
-        )
-        if not row:
-            return None
-        try:
-            return _json.loads(row["data"]).get("student_name")
-        except Exception:
-            return None
+    # R9-11: батч вместо N+1 — имена учеников одним запросом (json_extract),
+    # карточки классов — get_many. Раньше на каждый инцидент (до 25) шло
+    # 2 отдельных запроса.
+    async def _student_names(inc_ids: list[int]) -> dict[int, str]:
+        ids = [int(i) for i in dict.fromkeys(inc_ids) if i]
+        if not ids:
+            return {}
+        ph = ", ".join("?" for _ in ids)
+        rows = await WorkflowRepository(repo.db_path)._fetchall(
+            "SELECT json_extract(data, '$.incident_id') AS inc_id, data "
+            "FROM workflow_instances WHERE json_extract(data, '$.incident_id') IN (" + ph + ")",
+            tuple(ids))
+        out: dict[int, str] = {}
+        for r in rows:
+            try:
+                out[int(r["inc_id"])] = _json.loads(r["data"]).get("student_name")
+            except Exception:
+                pass
+        return out
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     buttons = []
     if active:
         lines.append("─── Активные ───")
+        active_names = await _student_names([i["id"] for i in active])
+        cls_map = await MeritHubClassRepository().get_many(
+            [i["lesson_ref"] for i in active if i.get("lesson_ref")])
         for inc in active:
-            status_emoji = {"pending": "⏳", "escalated": "🚨", "open": "📌"}.get(inc["status"], "❓")
+            status_emoji = {"pending": "⏳", "escalated": "🚨", "open": "📌",
+                             "review": "💬"}.get(inc["status"], "❓")
             label = _format_class_label(
                 inc.get("lesson_ref") or "—", None)
             # Уточняем время занятия из карточки класса, если знаем ID
             if inc.get("lesson_ref"):
-                cls = await MeritHubClassRepository().get(inc["lesson_ref"])
+                cls = cls_map.get(inc["lesson_ref"])
                 if cls:
                     label = _format_class_label(inc["lesson_ref"], cls.get("start_time"))
-            who = await _student_name(inc["id"])
+            who = active_names.get(inc["id"])
             who_part = f" · {who}" if who else ""
             lines.append(
                 f"{status_emoji} #{inc['id']} {_TYPE_RU.get(inc['type'], inc['type'])}"
@@ -900,8 +925,9 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
 
     if closed:
         lines.append("\n─── Последние закрытые ───")
+        closed_names = await _student_names([i["id"] for i in closed])
         for inc in closed:
-            who = await _student_name(inc["id"])
+            who = closed_names.get(inc["id"])
             who_part = f" · {who}" if who else ""
             resolution = {
                 "parent_ok": "всё в порядке", "parent_not_coming": "не пришли",
@@ -969,24 +995,27 @@ async def cmd_today(upd: Update, _ctx) -> None:
     from src.db.repository import (
         MeritHubClassRepository,
         MeritHubEnrollmentRepository, MeritHubClassStatusRepository,
+        IncidentRepository,
     )
     from src.workflows.lesson_ops import _format_class_label
-    from datetime import datetime as _dt
+    from src.utils.recurrence import (
+        org_now, org_zone_label, class_occurs_on, org_day_utc_bounds,
+    )
 
     # Классы
     classes = await MeritHubClassRepository().list_all()
-    # Инциденты за сегодня
-    from src.db.repository import IncidentRepository
-    from src.utils.recurrence import org_now, org_zone_label, class_occurs_on
-    inc_repo = IncidentRepository()
-    today_str = _dt.now().strftime("%Y-%m-%d")
-    today_incidents = await inc_repo._fetchall(
-        "SELECT * FROM incidents WHERE created_at LIKE ? ORDER BY created_at",
-        (f"{today_str}%",),
-    )
     # «Сегодня» — по канонической зоне организации (H4/P4.1), occurrence-aware:
     # perma-серии материализуются из паттерна дней, oneTime — по дате start_time.
+    # Единая точка: и занятия, и инциденты считаются по org-дню (R9-6).
     today_org = org_now().date()
+    # Инциденты за сегодня (R9-6: границы org-дня в UTC, а не naive-серверная
+    # LIKE-подстрока — иначе «сегодня» занятий и инцидентов расходились)
+    inc_repo = IncidentRepository()
+    _start, _end = org_day_utc_bounds(today_org)
+    today_incidents = await inc_repo._fetchall(
+        "SELECT * FROM incidents WHERE created_at >= ? AND created_at < ? ORDER BY created_at",
+        (_start, _end),
+    )
 
     lines = ["📅 Обзор системы\n"]
 
@@ -1024,6 +1053,10 @@ async def cmd_today(upd: Update, _ctx) -> None:
         lines.append(f"📚 Сегодня занятий нет. Всего классов: {len(classes)}")
     else:
         lines.append("📚 Классов пока нет. Создайте: /schedule")
+    # П6: легенда статусов — эмодзи без пояснений = угадывание
+    if today_classes:
+        lines.append("")
+        lines.append("🟢 идёт · ✅ прошло · ❌ отменён · ⌛ скоро · ⚪ нет данных")
 
     # Инциденты за сегодня
     lines.append("")
@@ -1275,7 +1308,7 @@ async def cmd_import_customers(upd: Update, ctx) -> None:
             skipped += 1
             continue
 
-        learner_name = parts[0].strip()
+        # learner_name = parts[0]  # имя ученика не сохраняем
         # learner_email = parts[1]
         learner_id = parts[2].strip()
         customer_name = parts[3].strip() if len(parts) > 3 else ""

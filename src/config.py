@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     telegram_bot_token: str = "test_token"
     telegram_webhook_secret: str = "test_secret"
     telegram_webhook_url: str | None = None
+    # R9-3: локальный приёмник апдейтов для webhook-режима (бот слушает этот
+    # порт/путь, Telegram POSTит на него). url_path берётся из WEBHOOK_URL.
+    telegram_webhook_host: str = "0.0.0.0"
+    telegram_webhook_port: int = 8443
 
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"

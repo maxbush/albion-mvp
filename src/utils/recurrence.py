@@ -150,3 +150,19 @@ def participant_time_line(dt: datetime, name: str, user_tz: str | None,
     sign = "+" if diff > 0 else ""
     shown = int(diff) if diff == int(diff) else round(diff, 1)
     return f"• {name} — {loc.strftime('%H:%M')} ({tz}, {sign}{shown}ч{note})"
+
+
+def org_day_utc_bounds(d: date) -> tuple[str, str]:
+    """UTC-границы org-дня d для created_at (R9-6).
+
+    Возвращает (start, end) в формате 'YYYY-MM-DD HH:MM:SS' (UTC, naive) —
+    том же, в котором SQLite хранит CURRENT_TIMESTAMP, поэтому сравнение
+    строк корректно. Раньше 'сегодня' в /today считалось по серверной naive-
+    зоне через LIKE 'YYYY-MM-DD%' — при сервере не в org-зоне списки занятий
+    и инцидентов расходились."""
+    zone = settings.org_zone()
+    start = datetime(d.year, d.month, d.day, tzinfo=zone)
+    end = start + timedelta(days=1)
+    fmt = "%Y-%m-%d %H:%M:%S"
+    return (start.astimezone(timezone.utc).strftime(fmt),
+            end.astimezone(timezone.utc).strftime(fmt))

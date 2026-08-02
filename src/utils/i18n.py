@@ -57,8 +57,17 @@ T: dict[str, dict[str, str]] = {
     "tutor_btn_late_15": {"ru": "на 15 мин", "en": "15 min"},
     "tutor_btn_late_30": {"ru": "на 30+ мин", "en": "30+ min"},
     "ack_late_detail": {
-        "ru": "✅ Спасибо! Передали координатору, что вы задержитесь {mins}.",
+        "ru": "✅ Спасибо! Передали координатору, что вы задержитесь на {mins}.",
         "en": "✅ Thanks! Informed the coordinator you'll be {mins} late.",
+    },
+    # R9-14: вопрос и ack для РОДИТЕЛЯ (опаздывает ученик, не родитель)
+    "ack_late_ask_mins_parent": {
+        "ru": "⏰ Спасибо! На сколько минут ученик опоздает?",
+        "en": "⏰ Thanks! How many minutes will the student be late?",
+    },
+    "ack_late_detail_parent": {
+        "ru": "⏰ Спасибо! Отметили, что ученик опоздает на {mins}.",
+        "en": "⏰ Thanks! Noted the student will be {mins} late.",
     },
     # ── Ответы на free-text тьютора ──
     "ft_tutor_ready": {"ru": "✅ Спасибо! Отметили, что вы готовы.", "en": "✅ Thanks! Noted you're ready."},
@@ -112,6 +121,27 @@ T: dict[str, dict[str, str]] = {
     "absence_report_ack": {
         "ru": "✅ Спасибо, передали координатору — он всё увидит.",
         "en": "✅ Thanks, we've passed it to the coordinator.",
+    },
+    # ── П1: «Не придём» / «Can't teach» — вторая сторона + решение координатора ──
+    "no_show_tutor_notice": {
+        "ru": "⚠️ {student} не придёт на занятие ({label}).\nЖдём подтверждение координатора — если занятие отменят, сообщим.",
+        "en": "⚠️ {student} will miss the lesson ({label}).\nWaiting for the coordinator's confirmation — we'll let you know.",
+    },
+    "no_show_parent_notice": {
+        "ru": "⚠️ Репетитор {tutor} сообщил, что не сможет провести занятие {label}.\nЖдём подтверждение координатора.",
+        "en": "⚠️ Tutor {tutor} said they can't run the lesson ({label}).\nWaiting for the coordinator's confirmation.",
+    },
+    "class_kept_tutor": {
+        "ru": "✅ Занятие ({label}) состоится.",
+        "en": "✅ The lesson ({label}) is on.",
+    },
+    "class_kept_parent": {
+        "ru": "✅ Занятие ({label}) состоится.",
+        "en": "✅ The lesson ({label}) is on.",
+    },
+    "class_cancelled_parent": {
+        "ru": "❌ Занятие ({label}) отменено.",
+        "en": "❌ The lesson ({label}) was cancelled.",
     },
 }
 

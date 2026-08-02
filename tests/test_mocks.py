@@ -1,5 +1,6 @@
 import pytest
-from src.integrations.airtable_mock import MockAirtableService, Lead
+from src.integrations.airtable_mock import MockAirtableService
+from src.integrations.base import Lead
 from src.integrations.merithub_mock import MockMeritHubService
 
 @pytest.mark.asyncio

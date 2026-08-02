@@ -103,8 +103,11 @@ async def test_u1_menu_applied_on_registration(tmp_path, monkeypatch):
     chat_id, items = ctx.bot.menus[-1]
     assert chat_id == 501
     names = {c for c, _ in items}
-    # Координаторское меню содержит операционные команды (R8-9: команда "ok" удалена из меню).
-    assert {"today", "incidents", "morning", "cancel_lesson"} <= names
+    # Координаторское меню содержит операционные команды (R8-9: "ok" удалена;
+    # R10-П2: "cancel_lesson" удалена — для координатора она вела в тупик,
+    # отмены он делает кнопками на алертах П1).
+    assert {"today", "incidents", "morning", "schedule"} <= names
+    assert "cancel_lesson" not in names
 
 
 @pytest.mark.asyncio
@@ -525,7 +528,7 @@ async def test_u5_resolve_confirmation_names_student(tmp_path, monkeypatch):
 
     text = upd.callback_query.edits[-1][0]
     assert "Миша Иванов" in text
-    assert "закрыта" in text
+    assert "вопрос закрыт" in text  # П10: без внутреннего номера инцидента
     assert "закрыта в " not in text, "серверное время убрано из подтверждения"
 
 

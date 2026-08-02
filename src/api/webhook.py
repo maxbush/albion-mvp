@@ -129,7 +129,7 @@ async def _dispatch_attendance(payload: dict) -> None:
         if not e.get("parent_telegram_id"):
             logger.info("Attendance: пропуск %s (нет TG родителя)", e.get("client_user_id"))
             continue
-        await trigger_absence(
+        inc_id, _wid = await trigger_absence(
             lesson_ref=class_id,
             student_id=e.get("client_user_id") or mh_id or "?",
             student_name=e.get("student_name") or "Ученик",
@@ -137,7 +137,8 @@ async def _dispatch_attendance(payload: dict) -> None:
             tutor_id="merithub",
             source="merithub_attendance_webhook",
         )
-        fired += 1
+        if inc_id:
+            fired += 1  # R9-7: dedup-скип (None, None) не считается новой неявкой
     logger.info("Attendance class=%s: авто-неявок=%d (зачислено=%d присутств.=%d)",
                 class_id, fired, len(enrolled), len(attended))
 

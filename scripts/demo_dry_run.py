@@ -326,6 +326,12 @@ async def run_demo(workdir: str | None = None) -> str:
         await H.handle_callback(FakeUpdate(PARENT_TG, PARENT_NAME, query=query), FakeCtx())
         if query.edits:
             rec.message(PARENT_TG, query.edits[-1], edited=True)
+        # R9-14: бот спрашивает, на сколько минут, и родитель выбирает интервал
+        rec.press(PARENT_TG, "на 15 мин")
+        query = FakeQuery(f"resolve_late_time:{inc_id}:{nonce}:15", FakeUser(PARENT_TG, PARENT_NAME))
+        await H.handle_callback(FakeUpdate(PARENT_TG, PARENT_NAME, query=query), FakeCtx())
+        if query.edits:
+            rec.message(PARENT_TG, query.edits[-1], edited=True)
 
         # ── Сцена 2c: свободный текст ────────────────────────────────
         rec.scene(
