@@ -199,6 +199,8 @@ async def test_cmd_ok_uses_workflow_resolution_and_cancels_future_actions(tmp_pa
         "SELECT status FROM scheduled_actions WHERE workflow_id=?", (wid,)
     )
     assert inc["status"] == "resolved"
+    # R9-5: /ok закрывает как координатор (раньше дефолт писал «подтверждено родителем»)
+    assert inc["resolution"] == "coordinator_closed"
     assert wf["state"] == "cancelled"
     assert actions[0]["status"] == "cancelled"
     assert any("закрыта" in r for r in upd.message.replies)

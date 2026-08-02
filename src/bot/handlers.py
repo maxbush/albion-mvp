@@ -635,7 +635,9 @@ async def cmd_ok(upd: Update, _ctx) -> None:
         await upd.message.reply_text("Уже закрыта.")
         return
     wf = AbsenceWorkflow()
-    await wf.resolve_absence(iid, str(upd.effective_user.id))
+    # R9-5: закрыл координатор — история должна говорить «координатором»,
+    # а не дефолтным «подтверждено родителем» (семантическая ложь в /incidents).
+    await wf.resolve_absence(iid, str(upd.effective_user.id), resolution="coordinator_closed")
     await upd.message.reply_text(f"Спасибо! Ситуация #{iid} закрыта!")
 
 
