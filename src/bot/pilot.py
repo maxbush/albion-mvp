@@ -349,7 +349,6 @@ async def cmd_mh_enroll(upd: Update, ctx) -> None:
     if settings.merithub_use_real and students and class_meta and class_meta.get("participant_link"):
         try:
             from src.integrations.factory import get_merithub_service
-            from src.integrations.merithub_client import MeritHubClient
             client = get_merithub_service()
             users = [{
                 "userId": s["merithub_user_id"],
@@ -855,7 +854,7 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
         "FROM incidents"
     )
 
-    lines = [f"📋 Инциденты\n"]
+    lines = ["📋 Инциденты\n"]
     if stats:
         lines.append(
             f"⏳ Ожидают: {stats['pending']}  |  "
@@ -986,7 +985,6 @@ async def cmd_today(upd: Update, _ctx) -> None:
     from src.utils.recurrence import (
         org_now, org_zone_label, class_occurs_on, org_day_utc_bounds,
     )
-    from datetime import datetime as _dt
 
     # Классы
     classes = await MeritHubClassRepository().list_all()
@@ -1290,7 +1288,7 @@ async def cmd_import_customers(upd: Update, ctx) -> None:
             skipped += 1
             continue
 
-        learner_name = parts[0].strip()
+        # learner_name = parts[0]  # имя ученика не сохраняем
         # learner_email = parts[1]
         learner_id = parts[2].strip()
         customer_name = parts[3].strip() if len(parts) > 3 else ""

@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from src.integrations.base import Tutor, Student, Lesson, Lead
+from src.integrations.base import Tutor, Student, Lesson
 logger = logging.getLogger(__name__)
 
 class MockAirtableService:

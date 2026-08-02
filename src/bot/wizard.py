@@ -32,7 +32,7 @@ from src.db.repository import (
     UserRepository,
     WizardStateRepository,
 )
-from src.bot.roles import is_admin, is_coordinator_or_admin
+from src.bot.roles import is_coordinator_or_admin
 from src.events.bus import bus
 from src.events.types import Event, EventTypes
 from src.integrations.factory import get_merithub_service
@@ -286,7 +286,7 @@ async def _sched_view(step: str, d: dict) -> tuple[str, InlineKeyboardMarkup | N
     if step == "date":
         today = org_now().date()
         from datetime import timedelta as _td
-        rows, labels = [], []
+        rows = []
         for i in range(5):
             dd = today + _td(days=i)
             if i == 0:
@@ -1063,7 +1063,7 @@ async def _person_cb(state: dict, args: list, upd: Update, ctx, ack: dict) -> No
 
 
 async def _person_text(state: dict, upd: Update, ctx) -> bool:
-    flow, d = state["flow"], state["data"]
+    d = state["data"]
     text = (upd.message.text or "").strip()
     step = state["step"]
 

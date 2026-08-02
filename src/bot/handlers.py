@@ -40,7 +40,6 @@ _demo_waiting_messages: dict[int, int] = {}
 
 async def can_send_async(telegram_id: str) -> bool:
     """Проверка с доступом к БД и kill switch."""
-    global _kill_switch_level
     if _kill_switch_level == 2:
         return True
     if _kill_switch_level <= 0:
@@ -310,7 +309,6 @@ async def cmd_start(upd: Update, _ctx) -> None:
 
 
 async def cmd_status(upd: Update, _ctx) -> None:
-    global _kill_switch_level
     labels = {0: "ВСЁ ВЫКЛ", 1: "Только координаторам", 2: "Полностью"}
     sched = ScheduledActionRepository()
     p = await sched._fetchone("SELECT COUNT(*) as cnt FROM scheduled_actions WHERE status='pending'")
@@ -524,7 +522,6 @@ async def cmd_mock_demo(upd: Update, _ctx) -> None:
 
 
 async def cmd_kill_switch(upd: Update, _ctx) -> None:
-    global _kill_switch_level
     if not is_admin(upd.effective_user.id):
         await upd.message.reply_text("⛔ Только владелец/админ может менять kill switch.")
         return

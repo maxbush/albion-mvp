@@ -3,7 +3,7 @@
 Отложенные действия теперь через SQLite (scheduled_actions), не через JSON _delayed.
 """
 
-import json, logging
+import logging
 from datetime import datetime, timezone, timedelta
 
 from src.db.repository import WorkflowRepository, ScheduledActionRepository
