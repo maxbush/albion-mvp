@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-MVP-yellow" alt="Status">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python">
-  <img src="https://img.shields.io/badge/tests-155%2F155-green" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-229%2F229-green" alt="Tests">
   <img src="https://img.shields.io/badge/LLM-Claude%20%7C%20GPT%20%7C%20any-orange" alt="LLM">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
@@ -36,6 +36,15 @@ ALBION автоматизирует **повторяющиеся задачи к
 | 📨 **Честные статусы уведомлений** | `requested → delivered / failed` |
 | 🗄 **WAL-mode SQLite** | Нет ошибок `database is locked` при конкурентном доступе |
 | ❌ **Отмена эскалаций** | При закрытии ситуации будущие уведомления отменяются |
+
+**Что нового в v2.5 (Round 9, 2026-08-02):**
+🔒 точный поиск workflow по JSON-полям (`json_extract` — LIKE-подстрока могла
+отменить чужой сценарий) · ⏱ `--webhook`-режим теперь реально принимает апдейты
+(бот не молчит на VPS) · ➕ кнопка «Ещё занятие» в визарде работает ·
+честная help-карточка по ролям · `/ok` пишет «закрыто координатором» ·
+`/today` считает «сегодня» в org-зоне · attendance-webhook идемпотентен ·
+уточнение опоздания называет настоящего актора · чистка фантомных событий и
+мёртвого кода.
 
 **Что нового в v2.4 (Round 4 UX, 2026-07-31):**
 меню «/» по роли · кнопки действий прямо на эскалации (`✅ Закрыть` / `👤 Написать
