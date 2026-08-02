@@ -64,7 +64,6 @@ ROLE_COMMAND_MENUS: dict[str, list[tuple[str, str]]] = {
         ("morning", "Утренняя сводка"),
         ("incidents", "Инциденты"),
         ("cancel_lesson", "Отмена урока"),
-        ("ok", "Закрыть ситуацию"),
         ("status", "Состояние системы"),
         ("whoami", "Мой профиль"),
     ],
@@ -101,6 +100,17 @@ def parse_admin_ids(raw: str | None = None) -> set[str]:
 
 def is_admin(telegram_id: str | int) -> bool:
     return str(telegram_id) in parse_admin_ids()
+
+
+async def is_coordinator_or_admin(telegram_id: str | int, db_path: str | None = None) -> bool:
+    """R8-2: проверка доступа для инструментов координатора (админам и координаторам)."""
+    if is_admin(telegram_id):
+        return True
+    try:
+        user = await UserRepository(db_path).get_by_telegram_id(str(telegram_id))
+        return bool(user and user.get("role") == "coordinator")
+    except Exception:
+        return False
 
 
 async def get_coordinator_ids(db_path: str | None = None) -> list[str]:
