@@ -106,7 +106,6 @@ class CancellationWorkflow:
 
         # Уведомляем репетитора (если есть TG) — на его языке (i18n)
         if tutor_tg:
-            from src.utils.i18n import lang_of, tr
             await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
                 "telegram_id": tutor_tg,
                 "message": tr("tutor_cancelled", await lang_of(tutor_tg),
