@@ -1189,6 +1189,17 @@ async def handle_wz_callback(upd: Update, ctx) -> None:
         await WizardStateRepository().delete(chat_id)
         await _begin_schedule(upd, ctx, chat_id, via_callback=True)
         return
+    # wz:sched:again — «➕ Ещё занятие» с финальной карточки создания (R9-2):
+    # состояние удалено при успешном создании, поэтому ветка в _sched_cb была
+    # недостижима — кнопка молча умирала. Обрабатываем без состояния.
+    if parts[1:3] == ["sched", "again"]:
+        if not await is_coordinator_or_admin(upd.effective_user.id):
+            await _ack(q, ack, "⛔ Только координатор/админ.", alert=True)
+            return
+        await _ack(q, ack)
+        await WizardStateRepository().delete(chat_id)
+        await _begin_schedule(upd, ctx, chat_id, via_callback=True)
+        return
     state, expired = await _load(chat_id)
     if state is None:
         if expired:

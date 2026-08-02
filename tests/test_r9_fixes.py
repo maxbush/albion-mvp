@@ -209,3 +209,135 @@ async def test_r9_13_late_detail_tutor_says_tutor_late(tmp_path, monkeypatch):
     assert "Уточнение по опозданию репетитора" in text
     assert "Репетитор: Анна задержится на 30+ мин" in text
     assert "опоздает" not in text
+
+
+# ── R9-2: мёртвая кнопка «➕ Ещё занятие» (wz:sched:again) ────────────
+
+class _FakeUser:
+    def __init__(self, id):
+        self.id = id
+        self.full_name = "Координатор"
+        self.username = None
+
+
+class _FakeMessage:
+    def __init__(self, text=None):
+        self.text = text
+        self.replies = []
+        self.message_id = 1
+
+    async def reply_text(self, text, **kw):
+        self.replies.append((text, kw))
+
+    async def delete(self):
+        pass
+
+
+class _FakeChat:
+    def __init__(self, id=42):
+        self.id = id
+        self.type = "private"
+
+
+class _FakeQuery:
+    def __init__(self, data, user):
+        self.data = data
+        self.from_user = user
+        self.message = None
+        self.edits = []
+        self.answers = []
+
+    async def answer(self, text=None, show_alert=False):
+        self.answers.append((text, show_alert))
+
+    async def edit_message_text(self, text, **kw):
+        self.edits.append((text, kw))
+
+    async def edit_message_reply_markup(self, *a, **k):
+        pass
+
+
+class _FakeBot:
+    async def send_message(self, chat_id=None, text=None, reply_markup=None, **kw):
+        return _FakeMessage(text)
+
+    async def edit_message_text(self, text=None, chat_id=None, message_id=None, **kw):
+        pass
+
+
+class _FakeCtx:
+    def __init__(self):
+        self.args = []
+        self.bot = _FakeBot()
+
+
+class _FakeUpd:
+    def __init__(self, user, chat_id=42, text=None):
+        self.effective_user = user
+        self.effective_chat = _FakeChat(chat_id)
+        self.message = _FakeMessage(text)
+        self.callback_query = None
+
+
+async def _wz_click(upd, ctx, data):
+    from src.bot.wizard import handle_wz_callback
+    upd.callback_query = _FakeQuery(data, upd.effective_user)
+    await handle_wz_callback(upd, ctx)
+    q = upd.callback_query
+    upd.callback_query = None
+    return q
+
+
+async def _wz_seed(db):
+    from src.db.repository import MeritHubStudentRepository
+    srepo = MeritHubStudentRepository(db)
+    await srepo.upsert("t01", merithub_user_id="mh_t01", name="Daniel John", role="tutor")
+    await srepo.upsert("s01", merithub_user_id="mh_s01", name="Sofia",
+                       parent_telegram_id="555", role="student")
+
+
+@pytest.mark.asyncio
+async def test_r9_2_again_button_restarts_schedule_wizard(tmp_path, monkeypatch):
+    """R9-2: после успешного создания клик «➕ Ещё занятие» открывает новый
+    визард (шаг выбора репетитора), а не «Этот сценарий уже закрыт»."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    from src.config import settings
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "999")
+    from src.integrations.merithub_mock import MockMeritHubService
+    monkeypatch.setattr("src.bot.wizard.get_merithub_service", lambda: MockMeritHubService())
+    await _wz_seed("albion.db")
+
+    from src.bot import wizard as wz
+    upd = _FakeUpd(_FakeUser(999))
+    ctx = _FakeCtx()
+
+    # Полный happy path до создания
+    await wz.cmd_schedule(upd, ctx)
+    await _wz_click(upd, ctx, "wz:sched:tutor:t01")
+    await _wz_click(upd, ctx, "wz:sched:student:s01")
+    await _wz_click(upd, ctx, "wz:sched:sdone")
+    await _wz_click(upd, ctx, "wz:sched:type:perma")
+    await _wz_click(upd, ctx, "wz:sched:day:1")
+    await _wz_click(upd, ctx, "wz:sched:ddone")
+    await _wz_click(upd, ctx, "wz:sched:hour:13")
+    await _wz_click(upd, ctx, "wz:sched:min:30")
+    await _wz_click(upd, ctx, "wz:sched:dur:60")
+    q = await _wz_click(upd, ctx, "wz:sched:confirm")
+    texts = [t for t, _ in q.edits]
+    assert any("Занятие создано" in t for t in texts)
+
+    # Состояние удалено — как в проде
+    from src.db.repository import WizardStateRepository
+    assert await WizardStateRepository("albion.db").get("42") is None
+
+    # Кнопка «➕ Ещё занятие» — ДОЛЖНА открыть новый визард
+    q = await _wz_click(upd, ctx, "wz:sched:again")
+    assert q.edits, "кнопка должна отредактировать сообщение"
+    last = q.edits[-1][0]
+    assert "Репетитор" in last and "Daniel John" in str(q.edits[-1][1].get("reply_markup"))
+    assert "закрыт" not in last and "прерван" not in last
+    # Новое состояние визарда создано (шаг tutor)
+    st = await WizardStateRepository("albion.db").get("42")
+    assert st is not None and st["step"] == "tutor" and st["flow"] == "schedule"
