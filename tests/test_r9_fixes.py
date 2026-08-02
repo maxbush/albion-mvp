@@ -716,3 +716,112 @@ async def test_r9_11_incidents_student_names_loaded_in_batch(tmp_path, monkeypat
     assert f"#{i1}" in text and f"#{i2}" in text and f"#{i3}" in text
     assert "Миша" in text and "Катя" in text
     assert "Sofia — Physics" in text or "15:00" in text  # label из карточки класса
+
+
+# ── R9-14: родительское «Опоздаем» — вопрос «на сколько минут» ─────────
+
+class _CBUser:
+    def __init__(self, id, full_name="Родитель"):
+        self.id = id
+        self.full_name = full_name
+        self.username = None
+
+
+class _CBMsg:
+    def __init__(self):
+        self.text = ""
+
+
+class _CBQuery:
+    def __init__(self, data, user):
+        self.data = data
+        self.from_user = user
+        self.message = _CBMsg()
+        self.answers = []
+        self.edits = []
+
+    async def answer(self, text=None, show_alert=False):
+        self.answers.append((text, show_alert))
+
+    async def edit_message_text(self, text, **kw):
+        self.edits.append((text, kw))
+
+    async def edit_message_reply_markup(self, *a, **k):
+        pass
+
+
+class _CBUpd:
+    def __init__(self, user, data, chat_id=1):
+        self.effective_user = user
+        self.effective_chat = _FakeChat(chat_id)
+        self.callback_query = _CBQuery(data, user)
+
+
+@pytest.mark.asyncio
+async def test_r9_14_parent_late_asks_minutes_then_resolves(tmp_path, monkeypatch):
+    """R9-14: родитель жмёт «⏰ Опоздаем» на уведомлении о неявке — бот
+    спрашивает интервал; после выбора резолвит и сообщает координатору минуты."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    engine.repo = WorkflowRepository("albion.db")
+    engine.scheduler = ScheduledActionRepository("albion.db")
+
+    await UserRepository("albion.db").create("777", "parent", "Родитель")
+    await UserRepository("albion.db").create("999", "coordinator", "Координатор")
+
+    inc_id = await IncidentRepository("albion.db").create(
+        lesson_ref="C9", type="absence", status="pending")
+    wid = await engine.start_workflow("absence_notification", {
+        "incident_id": inc_id, "parent_telegram_id": "777",
+        "student_name": "Миша", "lesson_ref": "C9",
+        "parent_callback_nonce": "nn1"})
+
+    from src.bot.handlers import handle_callback
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+
+    # Шаг 1: родитель жмёт «⏰ Опоздаем» → вопрос с кнопками интервалов
+    upd1 = _CBUpd(_CBUser(777), f"resolve:{inc_id}:nn1:late")
+    await handle_callback(upd1, _FakeCtx())
+    assert upd1.callback_query.edits, "должен быть вопрос"
+    q_text = upd1.callback_query.edits[-1][0]
+    assert "На сколько минут" in q_text
+    kb = upd1.callback_query.edits[-1][1].get("reply_markup")
+    cbs = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert f"resolve_late_time:{inc_id}:nn1:5" in cbs
+    assert f"resolve_late_time:{inc_id}:nn1:30+" in cbs
+    # Инцидент ещё НЕ закрыт (эскалация по таймеру — страховка)
+    inc = await IncidentRepository("albion.db").get(inc_id)
+    assert inc["status"] == "pending"
+
+    # Шаг 2: родитель выбирает «на 15 мин» → инцидент закрыт, координатор в курсе
+    captured = []
+    async def cap(ev):
+        captured.append(ev.data)
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        upd2 = _CBUpd(_CBUser(777), f"resolve_late_time:{inc_id}:nn1:15")
+        await handle_callback(upd2, _FakeCtx())
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    inc = await IncidentRepository("albion.db").get(inc_id)
+    assert inc["status"] == "resolved"
+    assert inc["resolution"] == "parent_late"
+    wf = await WorkflowRepository("albion.db").get(wid)
+    assert wf["state"] == "cancelled"
+
+    coord_msgs = [d["message"] for d in captured if d.get("telegram_id") == "999"]
+    assert coord_msgs
+    assert "ученик опоздает (на 15 мин)" in coord_msgs[0]
+    assert "Инцидент #%d" % inc_id in coord_msgs[0]
+
+    parent_ack = upd2.callback_query.edits[-1][0]
+    assert "опоздает на 15 мин" in parent_ack
+    assert f"ситуация #{inc_id} закрыта" in parent_ack
+
+    # Шаг 3: повторный тап — идемпотентно
+    upd3 = _CBUpd(_CBUser(777), f"resolve_late_time:{inc_id}:nn1:15")
+    await handle_callback(upd3, _FakeCtx())
+    assert any("Уже обработано" in (a[0] or "") for a in upd3.callback_query.answers)

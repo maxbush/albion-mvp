@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -907,6 +908,80 @@ async def handle_callback(upd: Update, _ctx) -> None:
         logger.info("Incident %d closed by coordinator %s via escalation button", inc_id, query.from_user.id)
         return
 
+    # --- R9-14: выбор «на сколько минут» после «⏰ Опоздаем» родителя ---
+    if data.startswith("resolve_late_time:"):
+        parts = data.split(":")
+        try:
+            inc_id = int(parts[1])
+            nonce = parts[2]
+            mins_str = parts[3]
+        except (IndexError, ValueError):
+            await query.edit_message_text("Не смог прочитать нажатие.")
+            return
+        idem_key = f"tg_callback:{data}"
+        idem = IdempotencyRepository()
+        if await idem.exists(idem_key):
+            await query.answer("✅ Уже обработано", show_alert=False)
+            return
+
+        inc_repo = IncidentRepository()
+        inc = await inc_repo.get(inc_id)
+        if not inc:
+            await query.edit_message_text("Ситуация не найдена.")
+            return
+        if inc["status"] == "resolved":
+            await query.answer("ℹ️ Эта ситуация уже закрыта", show_alert=False)
+            try:
+                await query.edit_message_reply_markup(None)
+            except Exception:
+                pass
+            return
+        was_escalated = inc["status"] == "escalated"
+
+        wf_repo = WorkflowRepository()
+        wf_rows = await wf_repo.find_by_json("incident_id", inc_id, limit=1)
+        wf_row = wf_rows[0] if wf_rows else None
+        if not wf_row:
+            await query.edit_message_text("Ситуация уже закрыта или workflow не найден.")
+            return
+        try:
+            wf_data = json.loads(wf_row.get("data") or "{}")
+        except Exception:
+            wf_data = {}
+        expected_nonce = wf_data.get("parent_callback_nonce")
+        if expected_nonce and expected_nonce != nonce:
+            await query.answer("⛔ Кнопка устарела", show_alert=True)
+            return
+
+        wf = AbsenceWorkflow()
+        await wf.resolve_absence(inc_id, str(query.from_user.id), resolution="parent_late")
+        await wf.notify_coordinators_parent_reply(
+            inc_id, "late", late_minutes=mins_str,
+            parent_telegram_id=str(query.from_user.id),
+        )
+
+        await idem.save(idem_key, "telegram_callback", response="resolved_late")
+        # Блокируем остальные кнопки этого инцидента (включая другие интервалы)
+        for other_action in ("ok", "no", "late"):
+            other_key = f"tg_callback:resolve:{inc_id}:{nonce}:{other_action}"
+            await idem.save(other_key, "telegram_callback_blocked", response="blocked_by_resolve_late")
+        for other_mins in ("5", "15", "30+"):
+            if other_mins != mins_str:
+                other_key = f"tg_callback:resolve_late_time:{inc_id}:{nonce}:{other_mins}"
+                await idem.save(other_key, "telegram_callback_blocked", response="blocked_by_resolve_late")
+
+        from src.utils.i18n import lang_of, tr
+        lang = await lang_of(str(query.from_user.id))
+        # '15' → '15 мин', '30+' → '30+ мин' (без «на» — его добавляет шаблон)
+        mins_label = f"{mins_str} мин"
+        parent_ack = tr("ack_late_detail_parent", lang, mins=mins_label)
+        if was_escalated:
+            parent_ack += "\n\nℹ️ Координатор уже был уведомлён об отсутствии ответа. Ваш ответ передан — инцидент закрыт."
+        student_label = wf_data.get("student_name") or "Ученик"
+        await query.edit_message_text(f"{parent_ack}\nОтметили: {student_label} · ситуация #{inc_id} закрыта.")
+        logger.info("Incident %d resolved via late_time=%s (parent %s)", inc_id, mins_str, query.from_user.id)
+        return
+
     # --- Реальный resolve (из уведомления) ---
     if data.startswith("resolve:"):
         parts = data.split(":")
@@ -955,6 +1030,20 @@ async def handle_callback(upd: Update, _ctx) -> None:
         expected_nonce = wf_data.get("parent_callback_nonce")
         if expected_nonce and expected_nonce != nonce:
             await query.answer("⛔ Кнопка устарела", show_alert=True)
+            return
+
+        # R9-14: «⏰ Опоздаем» — сначала уточняем, НА СКОЛЬКО минут (тот же
+        # микро-шаг, что в prelesson-checkin R8-10). Инцидент не резолвим,
+        # пока родитель не выбрал интервал (эскалация по таймеру — страховка).
+        if action == "late":
+            from src.utils.i18n import lang_of, tr
+            lang = await lang_of(str(query.from_user.id))
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("на 5 мин", callback_data=f"resolve_late_time:{inc_id}:{nonce}:5"),
+                InlineKeyboardButton("на 15 мин", callback_data=f"resolve_late_time:{inc_id}:{nonce}:15"),
+                InlineKeyboardButton("на 30+ мин", callback_data=f"resolve_late_time:{inc_id}:{nonce}:30+"),
+            ]])
+            await query.edit_message_text(tr("ack_late_ask_mins_parent", lang), reply_markup=kb)
             return
 
         action_map = {
@@ -1172,12 +1261,19 @@ async def handle_message(upd: Update, _ctx) -> None:
                 "late": "⏰ Спасибо! Отметили, что ученик опоздает. Координатор уведомлён.",
                 "other": "💬 Спасибо! Передали ответ координатору для ручной обработки.",
             }
+            # R9-14: из свободного текста «опоздаем на 15 минут» вытаскиваем минуты
+            late_minutes = None
+            if status == "late":
+                m = re.search(r"(\d{1,3})\s*мин", text)
+                if m:
+                    late_minutes = m.group(1)
             await wf.resolve_absence(inc_id, tg_id, resolution=resolution_map.get(status, "parent_text_reply"))
             await wf.notify_coordinators_parent_reply(
                 inc_id,
                 status if status in {"ok", "no_show", "late"} else "free_text",
                 parent_text=text,
                 parent_telegram_id=tg_id,
+                late_minutes=late_minutes,
             )
             await upd.message.reply_text(reply_map.get(status, reply_map["other"]))
             return

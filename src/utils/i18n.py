@@ -60,6 +60,15 @@ T: dict[str, dict[str, str]] = {
         "ru": "✅ Спасибо! Передали координатору, что вы задержитесь {mins}.",
         "en": "✅ Thanks! Informed the coordinator you'll be {mins} late.",
     },
+    # R9-14: вопрос и ack для РОДИТЕЛЯ (опаздывает ученик, не родитель)
+    "ack_late_ask_mins_parent": {
+        "ru": "⏰ Спасибо! На сколько минут ученик опоздает?",
+        "en": "⏰ Thanks! How many minutes will the student be late?",
+    },
+    "ack_late_detail_parent": {
+        "ru": "⏰ Спасибо! Отметили, что ученик опоздает на {mins}.",
+        "en": "⏰ Thanks! Noted the student will be {mins} late.",
+    },
     # ── Ответы на free-text тьютора ──
     "ft_tutor_ready": {"ru": "✅ Спасибо! Отметили, что вы готовы.", "en": "✅ Thanks! Noted you're ready."},
     "ft_tutor_late": {

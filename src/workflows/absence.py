@@ -232,7 +232,9 @@ class AbsenceWorkflow:
         *,
         parent_text: str | None = None,
         parent_telegram_id: str | None = None,
+        late_minutes: str | None = None,
     ) -> None:
+        """R9-14: late_minutes — '15'/'30+' → «ученик опоздает (на 15 мин)»."""
         labels = {
             "ok": "✅ Родитель подтвердил: всё в порядке",
             "no_show": "❌ Родитель подтвердил: сегодня занятия не будет",
@@ -248,6 +250,8 @@ class AbsenceWorkflow:
         lesson_ref = (inc or {}).get("lesson_ref") or wf_data.get("lesson_ref") or "—"
         class_label = await self._class_label(lesson_ref)
         base = labels.get(outcome, "ℹ️ Родитель обновил статус")
+        if outcome == "late" and late_minutes:
+            base += f" (на {late_minutes} мин)"
         msg = f"{base}\nИнцидент #{inc_id}\nУченик: {student_name}\nЗанятие: {class_label}"
         if parent_text:
             msg += f"\nОтвет: {parent_text[:300]}"
