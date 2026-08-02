@@ -968,24 +968,28 @@ async def cmd_today(upd: Update, _ctx) -> None:
     from src.db.repository import (
         MeritHubClassRepository,
         MeritHubEnrollmentRepository, MeritHubClassStatusRepository,
+        IncidentRepository,
     )
     from src.workflows.lesson_ops import _format_class_label
+    from src.utils.recurrence import (
+        org_now, org_zone_label, class_occurs_on, org_day_utc_bounds,
+    )
     from datetime import datetime as _dt
 
     # Классы
     classes = await MeritHubClassRepository().list_all()
-    # Инциденты за сегодня
-    from src.db.repository import IncidentRepository
-    from src.utils.recurrence import org_now, org_zone_label, class_occurs_on
-    inc_repo = IncidentRepository()
-    today_str = _dt.now().strftime("%Y-%m-%d")
-    today_incidents = await inc_repo._fetchall(
-        "SELECT * FROM incidents WHERE created_at LIKE ? ORDER BY created_at",
-        (f"{today_str}%",),
-    )
     # «Сегодня» — по канонической зоне организации (H4/P4.1), occurrence-aware:
     # perma-серии материализуются из паттерна дней, oneTime — по дате start_time.
+    # Единая точка: и занятия, и инциденты считаются по org-дню (R9-6).
     today_org = org_now().date()
+    # Инциденты за сегодня (R9-6: границы org-дня в UTC, а не naive-серверная
+    # LIKE-подстрока — иначе «сегодня» занятий и инцидентов расходились)
+    inc_repo = IncidentRepository()
+    _start, _end = org_day_utc_bounds(today_org)
+    today_incidents = await inc_repo._fetchall(
+        "SELECT * FROM incidents WHERE created_at >= ? AND created_at < ? ORDER BY created_at",
+        (_start, _end),
+    )
 
     lines = ["📅 Обзор системы\n"]
 
