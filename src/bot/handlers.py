@@ -554,7 +554,6 @@ async def cmd_kill_switch(upd: Update, _ctx) -> None:
     labels = {0: "ВСЁ ВЫКЛ", 1: "Только координаторам", 2: "Полностью"}
     await upd.message.reply_text(f"🔌 Kill Switch: {labels[lvl]}")
     logger.info("Kill switch set to %d", lvl)
-    await bus.publish(Event(EventTypes.SYSTEM_KILL_SWITCH, {"level": lvl}))
 
 
 async def cmd_cancel_lesson(upd: Update, _ctx) -> None:
@@ -768,7 +767,6 @@ async def handle_callback(upd: Update, _ctx) -> None:
         labels = {0: "🔴 ВСЁ ВЫКЛ", 1: "🟡 Только координаторам", 2: "🟢 Полностью"}
         await query.edit_message_text(f"🔌 Kill Switch: {labels[lvl]}")
         logger.info("Kill switch set to %d via button by %s", lvl, query.from_user.id)
-        await bus.publish(Event(EventTypes.SYSTEM_KILL_SWITCH, {"level": lvl}))
         return
 
     # --- Демо: ответ родителя на кнопки ---
@@ -1279,7 +1277,6 @@ def setup_handlers(app: Application) -> None:
                 nid = event.data.get("notification_id")
                 if nid:
                     await NotificationRepository().mark_sent(nid)
-                await bus.publish(Event(EventTypes.NOTIFICATION_DELIVERED, {"telegram_id": tg, "notification_id": nid}))
                 return
             except Exception as e:
                 last_error = e
@@ -1294,7 +1291,6 @@ def setup_handlers(app: Application) -> None:
         wf_id = event.data.get("workflow_id")
         if wf_id:
             await WorkflowRepository().update_state(wf_id, "failed", {"error": str(last_error)})
-        await bus.publish(Event(EventTypes.NOTIFICATION_FAILED, {"telegram_id": tg, "notification_id": nid, "error": str(last_error)}))
 
     bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, notif_handler)
 

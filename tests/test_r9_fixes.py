@@ -647,3 +647,13 @@ async def test_r9_7_attendance_webhook_double_delivery_single_notification(tmp_p
     rows = await NotificationRepository("albion.db")._fetchall(
         "SELECT content FROM notifications WHERE type='absence_warning'")
     assert len(rows) == 1, "родитель должен получить одно уведомление"
+
+
+# ── R9-9: фантомная эмиссия удалена ───────────────────────────────────
+
+def test_r9_9_no_phantom_event_types_published():
+    """R9-9: типы без подписчиков удалены из реестра (прецедент R7-13)."""
+    from src.events.types import EventTypes
+    for phantom in ("notification.delivered", "notification.failed",
+                    "system.kill_switch"):
+        assert not hasattr(EventTypes, phantom.upper().replace(".", "_")), phantom

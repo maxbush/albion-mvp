@@ -25,10 +25,10 @@ class EventTypes:
     # Leads
     LEAD_NEW = "lead.new"
 
-    # Notifications — честная стейт-машина
+    # Notifications — честная стейт-машина.
+    # R9-9: NOTIFICATION_DELIVERED/FAILED удалены — публиковались в никуда
+    # (0 подписчиков); статусы и так персистятся в БД (mark_sent/mark_failed).
     NOTIFICATION_REQUESTED = "notification.requested"
-    NOTIFICATION_DELIVERED = "notification.delivered"
-    NOTIFICATION_FAILED = "notification.failed"
 
     # Payments — ОТКЛЮЧЕНО (Round 3, решение владельца): ждём интеграцию Xero.
     # PAYMENT_RECEIVED/PAYMENT_LOW_BALANCE удалены в R7-13 (фантомы, 0 publish).
@@ -39,6 +39,7 @@ class EventTypes:
     WORKFLOW_FAILED = "workflow.failed"
 
     # System
+    # R9-9: SYSTEM_KILL_SWITCH удалён — публиковался в никуда (0 подписчиков);
+    # уровень kill switch хранится в памяти процесса (H6).
     SCHEDULER_TICK = "scheduler.tick"
     SYSTEM_DLQ_ALERT = "system.dlq_alert"
-    SYSTEM_KILL_SWITCH = "system.kill_switch"
