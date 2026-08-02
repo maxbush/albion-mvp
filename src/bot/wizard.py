@@ -67,8 +67,8 @@ MINUTES = [0, 15, 30, 45]
 DURATIONS = [30, 45, 60, 90]
 DAY_ORDER = [1, 2, 3, 4, 5, 6, 0]     # кнопки Пн..Вс в кодах MeritHub
 
-_TEXT_STEPS = {"tutor_search", "time_custom", "date_custom", "duration_custom",
-               "name", "tz_custom"}
+_TEXT_STEPS = {"tutor_search", "student_search", "time_custom", "date_custom",
+               "duration_custom", "name", "tz_custom"}
 
 
 # =====================================================================
@@ -249,6 +249,15 @@ async def _sched_view(step: str, d: dict) -> tuple[str, InlineKeyboardMarkup | N
     if step == "students":
         selected = {s["cuid"]: s["name"] for s in d.get("students", [])}
         students = await srepo.list_by_role("student")
+        # П7: поиск по ученикам (тот же паттерн, что у репетиторов)
+        q = (d.get("ssearch_q") or "").lower()
+        note = ""
+        if q:
+            students = [s for s in students if q in (s.get("name") or "").lower()]
+            note = f" (поиск: «{d.get('ssearch_q')}»)"
+            if not students:
+                rows = [[_btn("◀️ К полному списку", "wz:sched:sclear")], _back_cancel_row("sched")]
+                return (f"📅 Новое занятие\n\nПо запросу «{d.get('ssearch_q')}» учеников нет."), _kb(rows)
         page_items, page, total = _paged(students, int(d.get("student_page", 0)))
         rows = []
         for s in page_items:
@@ -258,11 +267,16 @@ async def _sched_view(step: str, d: dict) -> tuple[str, InlineKeyboardMarkup | N
         nav = _pager("sched", page, total, "spage")
         if nav:
             rows.append(nav)
+        rows.append([_btn("🔍 Найти", "wz:sched:ssearch")])
         rows.append([_btn(f"Готово · {len(selected)}", "wz:sched:sdone")])
         rows.append(_back_cancel_row("sched"))
         sel_line = "\nВыбрано: " + ", ".join(selected.values()) if selected else ""
         return (f"📅 Новое занятие\n\nРепетитор: {d.get('tutor_name')}\n"
-                f"Ученики (можно несколько):{sel_line}"), _kb(rows)
+                f"Ученики (можно несколько):{note}{sel_line}"), _kb(rows)
+
+    if step == "student_search":
+        rows = [[_btn("◀️ К списку", "wz:sched:sclear")], _cancel_row("sched")]
+        return "📅 Новое занятие\n\nВведите часть имени ученика:", _kb(rows)
 
     if step == "type":
         text = ("Тип занятия\n\n"
@@ -448,7 +462,8 @@ _NEXT = {
     "duration": "preview", "duration_custom": "preview",
 }
 _BACK = {
-    "students": "tutor", "tutor_search": "tutor", "type": "students",
+    "students": "tutor", "tutor_search": "tutor", "student_search": "students",
+    "type": "students",
     "days": "type", "date": "type", "date_custom": "date", "hour": None,  # зависит от типа
     "minute": "hour", "time_custom": "minute", "duration": "minute",
     "duration_custom": "duration", "preview": "duration",
@@ -727,6 +742,16 @@ async def _sched_cb(state: dict, args: list, upd: Update, ctx, ack: dict) -> Non
         d["student_page"] = int(args[1])
         await _sched_goto(upd, ctx, state, "students")
         return
+    if a == "ssearch":
+        await _ack(q, ack)
+        await _sched_goto(upd, ctx, state, "student_search")
+        return
+    if a == "sclear":
+        await _ack(q, ack)
+        d.pop("ssearch_q", None)
+        d["student_page"] = 0
+        await _sched_goto(upd, ctx, state, "students")
+        return
     if a == "sdone":
         if not d.get("students"):
             await _ack(q, ack, "Выберите хотя бы одного ученика")
@@ -828,6 +853,13 @@ async def _sched_text(state: dict, upd: Update, ctx) -> bool:
         d["tutor_page"] = 0
         await _delete_user_text(upd)
         await _sched_goto(upd, ctx, state, "tutor")
+        return True
+
+    if step == "student_search":
+        d["ssearch_q"] = text
+        d["student_page"] = 0
+        await _delete_user_text(upd)
+        await _sched_goto(upd, ctx, state, "students")
         return True
 
     if step == "time_custom":

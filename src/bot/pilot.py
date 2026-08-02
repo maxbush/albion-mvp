@@ -1053,6 +1053,10 @@ async def cmd_today(upd: Update, _ctx) -> None:
         lines.append(f"📚 Сегодня занятий нет. Всего классов: {len(classes)}")
     else:
         lines.append("📚 Классов пока нет. Создайте: /schedule")
+    # П6: легенда статусов — эмодзи без пояснений = угадывание
+    if today_classes:
+        lines.append("")
+        lines.append("🟢 идёт · ✅ прошло · ❌ отменён · ⌛ скоро · ⚪ нет данных")
 
     # Инциденты за сегодня
     lines.append("")

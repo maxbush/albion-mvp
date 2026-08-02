@@ -310,7 +310,7 @@ async def cmd_start(upd: Update, _ctx) -> None:
 
 
 async def cmd_status(upd: Update, _ctx) -> None:
-    labels = {0: "ВСЁ ВЫКЛ", 1: "Только координаторам", 2: "Полностью"}
+    labels = {0: "🔴 Всё остановлено", 1: "🟡 Только алерты координаторам", 2: "🟢 Всё работает"}
     sched = ScheduledActionRepository()
     p = await sched._fetchone("SELECT COUNT(*) as cnt FROM scheduled_actions WHERE status='pending'")
     cnt = p["cnt"] if p else 0
@@ -680,8 +680,10 @@ async def handle_callback(upd: Update, _ctx) -> None:
                 InlineKeyboardButton("📋 Команды", callback_data="help_commands"),
                 InlineKeyboardButton("🔄 Сменить роль", callback_data="change_role"),
             ]])
+        # П10: человеческое имя роли вместо внутреннего кода (parent/coordinator)
+        role_ru = {"parent": "родитель", "tutor": "репетитор", "coordinator": "координатор"}.get(role, role)
         await query.edit_message_text(
-            f"✅ Вы зарегистрированы как {emoji} *{role}*{admin_mark}.\n\n"
+            f"✅ Вы зарегистрированы как {emoji} *{role_ru}*{admin_mark}.\n\n"
             f"{_role_expectations(role)}",
             parse_mode="Markdown",
             reply_markup=markup,
@@ -762,7 +764,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
             await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
             return
         set_kill_switch_level(lvl)
-        labels = {0: "🔴 ВСЁ ВЫКЛ", 1: "🟡 Только координаторам", 2: "🟢 Полностью"}
+        labels = {0: "🔴 Всё остановлено", 1: "🟡 Только алерты координаторам", 2: "🟢 Всё работает"}
         await query.edit_message_text(f"🔌 Kill Switch: {labels[lvl]}")
         logger.info("Kill switch set to %d via button by %s", lvl, query.from_user.id)
         return
@@ -1015,7 +1017,8 @@ async def handle_callback(upd: Update, _ctx) -> None:
         if was_escalated:
             parent_ack += "\n\nℹ️ Координатор уже был уведомлён об отсутствии ответа. Ваш ответ передан — инцидент закрыт."
         student_label = wf_data.get("student_name") or "Ученик"
-        await query.edit_message_text(f"{parent_ack}\nОтметили: {student_label} · ситуация #{inc_id} закрыта.")
+        parent_ack += "\n\nОшиблись? Напишите текстом — координатор поможет."
+        await query.edit_message_text(f"{parent_ack}\nОтметили: {student_label} · вопрос закрыт.")
         logger.info("Incident %d resolved via late_time=%s (parent %s)", inc_id, mins_str, query.from_user.id)
         return
 
@@ -1111,10 +1114,12 @@ async def handle_callback(upd: Update, _ctx) -> None:
                 other_key = f"tg_callback:resolve:{inc_id}:{nonce}:{other_action}"
                 await idem.save(other_key, "telegram_callback_blocked", response="blocked_by_resolve")
 
-        # UX U5: имя ученика вместо голого номера + без серверного времени
-        # (родителю важно ЧТО он подтвердил, а не id инцидента и чужой часовой пояс).
+        # UX U5 + П10: имя ученика, без внутреннего номера инцидента и без
+        # серверного времени (номер нужен координатору, не родителю).
         student_label = wf_data.get("student_name") or "Ученик"
-        await query.edit_message_text(f"{parent_ack}\nОтметили: {student_label} · ситуация #{inc_id} закрыта.")
+        # П8: подсказка на случай случайного нажатия
+        parent_ack += "\n\nОшиблись? Напишите текстом — координатор поможет."
+        await query.edit_message_text(f"{parent_ack}\nОтметили: {student_label} · вопрос закрыт.")
         logger.info("Incident %d resolved via button action=%s (was_escalated=%s)", inc_id, action, was_escalated)
         return
 

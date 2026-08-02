@@ -540,6 +540,20 @@ class LessonOpsWorkflow:
         ]
         user = await self.users.get_by_telegram_id(data["actor_telegram_id"])
         if not user:
+            # П9: не молчим — координатор узнаёт, что напоминания не уходят
+            await self.notify_coordinators(
+                "⚠️ Родитель не зарегистрирован в боте",
+                [f"Занятие: {_format_class_label(data.get('class_id', '—'), data.get('start_time'))}",
+                 f"Ученик: {data.get('student_name', '—')}",
+                 "Напоминание не отправлено. Попросите родителя написать боту /start.",
+                 "👤 Написать родителю" if data.get("actor_telegram_id") else ""][:4],
+                buttons=[{"text": "👤 Написать родителю",
+                          "url": f"tg://user?id={data['actor_telegram_id']}"}]
+                if data.get("actor_telegram_id") else None,
+            )
+            data["response_status"] = "not_registered"
+            await self._cancel_future_actions(wid)
+            await self._save_workflow(wid, "completed", data)
             return
         nid = await self.notifications.create(user["id"], "parent_prelesson_reminder", msg)
         await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
@@ -577,6 +591,19 @@ class LessonOpsWorkflow:
         ]
         user = await self.users.get_by_telegram_id(data["actor_telegram_id"])
         if not user:
+            # П9: не молчим — координатор узнаёт, что напоминания не уходят
+            await self.notify_coordinators(
+                "⚠️ Репетитор не зарегистрирован в боте",
+                [f"Занятие: {_format_class_label(data.get('class_id', '—'), data.get('start_time'))}",
+                 f"Репетитор: {data.get('tutor_name', '—')}",
+                 "Напоминание не отправлено. Попросите репетитора написать боту /start."],
+                buttons=[{"text": "👤 Написать репетитору",
+                          "url": f"tg://user?id={data['actor_telegram_id']}"}]
+                if data.get("actor_telegram_id") else None,
+            )
+            data["response_status"] = "not_registered"
+            await self._cancel_future_actions(wid)
+            await self._save_workflow(wid, "completed", data)
             return
         nid = await self.notifications.create(user["id"], "tutor_prelesson_reminder", msg)
         await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {

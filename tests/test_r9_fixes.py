@@ -819,7 +819,7 @@ async def test_r9_14_parent_late_asks_minutes_then_resolves(tmp_path, monkeypatc
 
     parent_ack = upd2.callback_query.edits[-1][0]
     assert "опоздает на 15 мин" in parent_ack
-    assert f"ситуация #{inc_id} закрыта" in parent_ack
+    assert "вопрос закрыт" in parent_ack
 
     # Шаг 3: повторный тап — идемпотентно
     upd3 = _CBUpd(_CBUser(777), f"resolve_late_time:{inc_id}:nn1:15")
@@ -1146,3 +1146,88 @@ async def test_r10_unclear_parent_reply_keeps_incident_open_for_review(tmp_path,
     await handle_message(upd2, _FakeCtx())
     inc = await IncidentRepository("albion.db").get(inc_id)
     assert inc["status"] == "resolved"
+
+
+# ── R10 (П7): поиск учеников в визарде /schedule ───────────────────────
+
+@pytest.mark.asyncio
+async def test_r10_wizard_student_search_filters(tmp_path, monkeypatch):
+    """П7: на шаге «Ученики» поиск по имени фильтрует список (как у репетиторов)."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    from src.config import settings
+    monkeypatch.setattr(settings, "albion_admin_telegram_ids", "999")
+    from src.integrations.merithub_mock import MockMeritHubService
+    monkeypatch.setattr("src.bot.wizard.get_merithub_service", lambda: MockMeritHubService())
+
+    from src.db.repository import MeritHubStudentRepository
+    s = MeritHubStudentRepository("albion.db")
+    await s.upsert("t01", merithub_user_id="mh_t01", name="Анна", role="tutor")
+    await s.upsert("s01", merithub_user_id="mh_s01", name="София", role="student")
+    await s.upsert("s02", merithub_user_id="mh_s02", name="Иван", role="student")
+
+    from src.bot import wizard as wz
+    upd = _FakeUpd(_FakeUser(999))
+    ctx = _FakeCtx()
+    await wz.cmd_schedule(upd, ctx)
+    await _wz_click(upd, ctx, "wz:sched:tutor:t01")
+    q = await _wz_click(upd, ctx, "wz:sched:students" if False else "wz:sched:ssearch")
+    assert "Введите часть имени ученика" in q.edits[-1][0]
+
+    upd.message.text = "Иван"
+    upd.callback_query = None
+    from src.bot.wizard import try_handle_wz_text
+    handled = await try_handle_wz_text(upd, ctx)
+    assert handled
+    # Состояние вернулось на шаг students с фильтром
+    from src.db.repository import WizardStateRepository
+    st = await WizardStateRepository("albion.db").get("42")
+    assert st["step"] == "students"
+    # Рендер показал только Ивана
+    upd2 = _FakeUpd(_FakeUser(999))
+    upd2.callback_query = _FakeQuery("wz:sched:spage:0", upd2.effective_user)
+    from src.bot.wizard import handle_wz_callback
+    await handle_wz_callback(upd2, ctx)
+    last = upd2.callback_query.edits[-1][0]
+    assert "Иван" in last
+    assert "София" not in last
+    assert "поиск: «Иван»" in last
+
+
+# ── R10 (П9): не молчим, если родитель/тьютор не зарегистрирован ───────
+
+@pytest.mark.asyncio
+async def test_r10_unregistered_parent_reminder_alerts_coordinator(tmp_path, monkeypatch):
+    """П9: напоминание родителю без users-записи → алерт координатору,
+    workflow завершается (раньше — тихий return)."""
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
+    await UserRepository("albion.db").create("999", "coordinator", "Координатор")
+    # 777 НЕ зарегистрирован
+
+    from src.workflows.lesson_ops import LessonOpsWorkflow
+    from src.events.bus import bus
+    from src.events.types import Event, EventTypes
+
+    wid = await WorkflowRepository("albion.db").create("prelesson_parent", "running", {
+        "class_id": "C9", "actor_type": "parent", "actor_telegram_id": "777",
+        "student_name": "Миша", "tutor_name": "Анна",
+        "start_time": "2099-08-03T15:00:00+00:00", "nonce": "nnz"})
+
+    captured = []
+    async def cap(ev):
+        captured.append(ev.data)
+    bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+    try:
+        await LessonOpsWorkflow("albion.db")._send_parent_prelesson_reminder(wid)
+    finally:
+        bus.unsubscribe(EventTypes.NOTIFICATION_REQUESTED, cap)
+
+    coord_msgs = [d["message"] for d in captured if d.get("telegram_id") == "999"]
+    assert coord_msgs, "координатор должен узнать о проблеме"
+    assert "не зарегистрирован" in coord_msgs[0]
+    wf = await WorkflowRepository("albion.db").get(wid)
+    assert wf["state"] == "completed"
+    assert "not_registered" in wf["data"]
