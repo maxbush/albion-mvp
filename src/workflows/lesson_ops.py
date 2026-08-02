@@ -372,6 +372,23 @@ class LessonOpsWorkflow:
         await self._cancel_future_actions(wid)
         await self._save_workflow(wid, "completed", data)
 
+    async def notify_late_detail(self, wid: int, mins_str: str) -> None:
+        """R8-10: Отправляет координаторам точное время опоздания репетитора."""
+        wf, data = await self._load_workflow(wid)
+        if not wf:
+            return
+        class_id = data.get("class_id", "—")
+        tutor_name = data.get("tutor_name") or "Репетитор"
+        student_name = data.get("student_name") or ", ".join(data.get("student_names") or []) or "Ученик"
+        await self.notify_coordinators(
+            "ℹ️ Уточнение по опозданию репетитора",
+            [
+                f"Занятие: {_format_class_label(class_id, data.get('start_time'))}",
+                f"Репетитор: {tutor_name} задержится {mins_str}",
+                f"Ученики: {student_name}",
+            ],
+        )
+
     async def _send_parent_prelesson_reminder(self, wid: int) -> None:
         wf, data = await self._load_workflow(wid)
         if not wf or wf["state"] != "running":
@@ -608,9 +625,55 @@ class LessonOpsWorkflow:
             await _schedule_next_digest()
 
 
+    async def handle_lesson_started(self, event: Event) -> None:
+        class_id = event.data.get("class_id")
+        if not class_id:
+            return
+        rows = await self.repo._fetchall(
+            "SELECT * FROM workflow_instances "
+            "WHERE workflow_type='class_live_check' AND state='running' AND data LIKE ?",
+            (f'%"class_id": "{class_id}"%',),
+        )
+        for row in rows:
+            wid = row["id"]
+            try:
+                data = json.loads(row.get("data") or "{}")
+            except Exception:
+                data = {}
+            data["response_status"] = "class_live"
+            data["resolved_by"] = "webhook_lv"
+            await self._cancel_future_actions(wid)
+            await self._save_workflow(wid, "completed", data)
+            logger.info("LessonOps: class_live_check wid=%d completed reactively via LESSON_STARTED webhook (class_id=%s)", wid, class_id)
+
+    async def handle_lesson_completed(self, event: Event) -> None:
+        class_id = event.data.get("class_id")
+        if not class_id:
+            return
+        rows = await self.repo._fetchall(
+            "SELECT * FROM workflow_instances "
+            "WHERE workflow_type IN ('prelesson_parent','prelesson_tutor','tutor_start_check','class_live_check') "
+            "AND state='running' AND data LIKE ?",
+            (f'%"class_id": "{class_id}"%',),
+        )
+        for row in rows:
+            wid = row["id"]
+            try:
+                data = json.loads(row.get("data") or "{}")
+            except Exception:
+                data = {}
+            data["resolved_by"] = "webhook_cp"
+            await self._cancel_future_actions(wid)
+            await self._save_workflow(wid, "completed", data)
+            logger.info("LessonOps: wid=%d (%s) closed via LESSON_COMPLETED webhook (class_id=%s)",
+                        wid, row["workflow_type"], class_id)
+
+
 async def register_handlers() -> None:
     ops = LessonOpsWorkflow()
     bus.subscribe(EventTypes.SCHEDULER_TICK, ops.handle_scheduler_tick)
+    bus.subscribe(EventTypes.LESSON_STARTED, ops.handle_lesson_started)
+    bus.subscribe(EventTypes.LESSON_COMPLETED, ops.handle_lesson_completed)
     logger.info("Lesson ops workflow registered")
 
 

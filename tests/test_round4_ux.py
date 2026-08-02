@@ -103,8 +103,8 @@ async def test_u1_menu_applied_on_registration(tmp_path, monkeypatch):
     chat_id, items = ctx.bot.menus[-1]
     assert chat_id == 501
     names = {c for c, _ in items}
-    # Координаторское меню содержит операционные команды.
-    assert {"today", "incidents", "morning", "ok"} <= names
+    # Координаторское меню содержит операционные команды (R8-9: команда "ok" удалена из меню).
+    assert {"today", "incidents", "morning", "cancel_lesson"} <= names
 
 
 @pytest.mark.asyncio

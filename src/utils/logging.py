@@ -39,12 +39,31 @@ class JSONFormatter(logging.Formatter):
             obj["exception"] = self.formatException(record.exc_info)
         return json.dumps(obj, ensure_ascii=False)
 
+
+class SafeStreamHandler(logging.StreamHandler):
+    """StreamHandler that pre-encodes messages to the stream's encoding to prevent
+    UnicodeEncodeError and traceback spam in terminals with restricted encoding."""
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            stream = self.stream
+            encoding = getattr(stream, "encoding", None) or sys.getdefaultencoding() or "utf-8"
+            try:
+                safe_msg = msg.encode(encoding, errors="replace").decode(encoding, errors="replace")
+            except Exception:
+                safe_msg = msg.encode("ascii", errors="replace").decode("ascii", errors="replace")
+            stream.write(safe_msg + self.terminator)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+
 def setup_logging():
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
     root = logging.getLogger()
     root.setLevel(level)
 
-    # Console — human readable, safe for Windows cp1251
+    # Console — human readable, safe against UnicodeEncodeError in ascii streams
     console = SafeStreamHandler(sys.stdout)
     console.setLevel(level)
     console.setFormatter(logging.Formatter(

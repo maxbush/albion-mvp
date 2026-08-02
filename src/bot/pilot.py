@@ -24,7 +24,7 @@ from src.db.repository import (
 )
 from src.workflows.engine import engine
 from src.workflows.lesson_ops import LessonOpsWorkflow
-from src.bot.roles import is_admin, ROLE_EMOJI
+from src.bot.roles import is_admin, is_coordinator_or_admin, ROLE_EMOJI
 from src.events.bus import bus
 from src.events.types import Event, EventTypes
 
@@ -816,8 +816,8 @@ async def cmd_demo_reset(upd: Update, _ctx) -> None:
 
 async def cmd_incidents(upd: Update, _ctx) -> None:
     """Показывает активные инциденты для координатора."""
-    if not is_admin(upd.effective_user.id):
-        await upd.message.reply_text("⛔ Только владелец/админ.")
+    if not await is_coordinator_or_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только координатор/админ.")
         return
 
     from src.db.repository import IncidentRepository
@@ -874,6 +874,8 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
         except Exception:
             return None
 
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    buttons = []
     if active:
         lines.append("─── Активные ───")
         for inc in active:
@@ -892,6 +894,7 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
                 f"{who_part} · {label}\n"
                 f"   {_STATUS_RU.get(inc['status'], inc['status'])} · создан {_fmt_ts(inc.get('created_at'))}"
             )
+            buttons.append([InlineKeyboardButton(f"✅ Закрыть #{inc['id']}", callback_data=f"coord_resolve:{inc['id']}")])
     else:
         lines.append("✅ Активных инцидентов нет.")
 
@@ -911,7 +914,10 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
                 f"✅ #{inc['id']}{who_part} · {resolution} · {_fmt_ts(inc.get('resolved_at'))}"
             )
 
-    await upd.message.reply_text("\n".join(lines))
+    await upd.message.reply_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(buttons[:8]) if buttons else None,
+    )
 
 
 async def cmd_leads(upd: Update, _ctx) -> None:
@@ -919,8 +925,8 @@ async def cmd_leads(upd: Update, _ctx) -> None:
 
     Последние 10 со статусом + общий счётчик; время — в зоне организации,
     формулировки человеческие (тот же стандарт, что /incidents в R7-3)."""
-    if not is_admin(upd.effective_user.id):
-        await upd.message.reply_text("⛔ Только владелец/админ.")
+    if not await is_coordinator_or_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только координатор/админ.")
         return
 
     from src.db.repository import LeadRepository
@@ -956,8 +962,8 @@ async def cmd_today(upd: Update, _ctx) -> None:
 
     П5 аудита: интерьеры движка (pending actions, workflow id) убраны отсюда
     в /status — /today читается как продуктовый обзор, а не дашборд дебага."""
-    if not is_admin(upd.effective_user.id):
-        await upd.message.reply_text("⛔ Только владелец/админ.")
+    if not await is_coordinator_or_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только координатор/админ.")
         return
 
     from src.db.repository import (
@@ -1039,8 +1045,8 @@ async def cmd_morning_digest(upd: Update, _ctx) -> None:
     """Утренняя сводка по требованию. Текст общий с авто-рассылкой 07:30
     (build_morning_digest_text) — occurrence-aware: perma-серии материализуются
     из паттерна дней, а не ищутся по дате start_time (П6 аудита)."""
-    if not is_admin(upd.effective_user.id):
-        await upd.message.reply_text("⛔ Только владелец/админ.")
+    if not await is_coordinator_or_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только координатор/админ.")
         return
     from src.workflows.lesson_ops import build_morning_digest_text
     await upd.message.reply_text(await build_morning_digest_text())
