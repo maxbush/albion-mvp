@@ -678,17 +678,17 @@ async def register_handlers() -> None:
 
 
 # =====================================================================
-# АВТО-УТРЕННЯЯ СВОДКА (07:30 по зоне организации)
+# АВТО-УТРЕННЯЯ СВОДКА (09:00 по зоне организации)
 # =====================================================================
 
 MORNING_DIGEST_ACTION = "morning_digest_send"
 
 
 def _next_digest_exec() -> str:
-    """Следующие 07:30 по зоне организации → aware UTC ISO для scheduler."""
+    """Следующие 09:00 по зоне организации → aware UTC ISO для scheduler."""
     zone = settings.org_zone()
     now = datetime.now(zone)
-    cand = now.replace(hour=7, minute=30, second=0, microsecond=0)
+    cand = now.replace(hour=9, minute=0, second=0, microsecond=0)
     if cand <= now:
         cand += timedelta(days=1)
     return cand.astimezone(timezone.utc).isoformat()
