@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        @page { size: A4; margin: 2cm; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Helvetica, Arial, sans-serif; font-size: 11pt; line-height: 1.6; color: #2c3e50; }
+        h1 { font-size: 24pt; color: #667eea; margin-top: 20px; margin-bottom: 15px; page-break-before: always; border-bottom: 3px solid #667eea; padding-bottom: 5px; }
+        h2 { font-size: 16pt; color: #764ba2; margin-top: 15px; margin-bottom: 10px; border-left: 4px solid #764ba2; padding-left: 10px; }
+        h3 { font-size: 13pt; color: #2c3e50; margin-top: 12px; margin-bottom: 8px; font-weight: 600; }
+        p { margin-bottom: 10px; text-align: justify; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 10pt; page-break-inside: avoid; }
+        th { background: #667eea; color: white; padding: 8px; text-align: left; font-weight: 600; }
+        td { padding: 8px; border-bottom: 1px solid #e0e0e0; }
+        tr:nth-child(even) { background: #f8f9fa; }
+        ul, ol { margin: 10px 0 10px 20px; }
+        li { margin-bottom: 5px; }
+        code { background: #f5f5f5; padding: 2px 5px; border-radius: 3px; font-family: Courier, monospace; font-size: 10pt; color: #d63384; }
+        .warning, .info, .tip { padding: 10px; border-left: 4px solid; margin: 15px 0; page-break-inside: avoid; }
+        .warning { background: #fff3cd; border-color: #ffc107; }
+        .info { background: #d1ecf1; border-color: #17a2b8; }
+        .tip { background: #d4edda; border-color: #28a745; }
+        .button { display: inline-block; background: #667eea; color: white; padding: 3px 8px; border-radius: 3px; font-size: 10pt; font-weight: 600; margin: 2px; }
+        .command { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 5px; padding: 8px; margin: 8px 0; page-break-inside: avoid; }
+        .command code { font-size: 11pt; color: #667eea; font-weight: 600; }
+        .step { margin: 10px 0; padding-left: 15px; border-left: 3px solid #e0e0e0; }
+        .step-number { display: inline-block; background: #667eea; color: white; width: 20px; height: 20px; border-radius: 50%; text-align: center; line-height: 20px; font-weight: bold; margin-right: 8px; }
+        .page-break { page-break-after: always; }
+        .glossary-item { margin-bottom: 12px; padding-left: 15px; border-left: 2px solid #e0e0e0; }
+        .glossary-term { font-weight: 600; color: #667eea; font-size: 11pt; }
+        .glossary-def { margin-top: 3px; color: #555; }
+    </style>
+</head>
+<body>
+
+    <!-- 4. УПРАВЛЕНИЕ РАСПИСАНИЕМ -->
+    <h1>4. Управление расписанием</h1>
+    
+    <div class="info">
+        Этот раздел актуален для координаторов.
+    </div>
+    
+    <h2>4.1. Создание занятия</h2>
+    
+    <h3>Назначение</h3>
+    <p>Создание нового занятия (разового или регулярного) через пошаговый визард.</p>
+    
+    <h3>Когда использовать</h3>
+    <p>Когда нужно добавить новое занятие в расписание.</p>
+    
+    <h3>Как открыть</h3>
+    <div class="command"><code>/schedule</code></div>
+    
+    <h3>Пошаговая инструкция</h3>
+    
+    <div class="step">
+        <span class="step-number">1</span>
+        <p><strong>Выбор репетитора.</strong> Выберите преподавателя из списка.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">2</span>
+        <p><strong>Выбор учеников.</strong> Выберите одного или нескольких учеников.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">3</span>
+        <p><strong>Тип занятия.</strong> Выберите:</p>
+        <ul>
+            <li><span class="button">🔁 Регулярное</span> — повторяется по дням недели</li>
+            <li><span class="button">1️⃣ Разовое</span> — однократное занятие</li>
+        </ul>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">4</span>
+        <p><strong>Расписание.</strong></p>
+        <ul>
+            <li>Для регулярного: выберите дни недели (например, ср + пт)</li>
+            <li>Для разового: укажите дату</li>
+        </ul>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">5</span>
+        <p><strong>Время начала.</strong> Укажите время в часовом поясе организации.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">6</span>
+        <p><strong>Длительность.</strong> Укажите продолжительность урока.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">7</span>
+        <p><strong>Проверка.</strong> Проверьте итоговую карточку.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">8</span>
+        <p><strong>Подтверждение.</strong> Занятие создано в MeritHub.</p>
+    </div>
+    
+    <h3>Результат</h3>
+    <p>Занятие создано. Репетитор и родители получат ссылки на комнату.</p>
+    
+    <div class="tip">
+        После создания появится кнопка <span class="button">➕ Ещё занятие</span> для создания следующего.
+    </div>
+    
+    <div class="warning">
+        Тип занятия (разовое / регулярное) после создания изменить нельзя.
+    </div>
+    
+    <div class="tip">
+        На каждом шаге доступна кнопка <span class="button">« Назад</span> для возврата.
+    </div>
+    
+    <h2>4.2. Добавление ученика</h2>
+    
+    <h3>Назначение</h3>
+    <p>Регистрация нового ученика в системе.</p>
+    
+    <h3>Как открыть</h3>
+    <div class="command"><code>/add_student</code></div>
+    
+    <h3>Пошаговая инструкция</h3>
+    
+    <div class="step">
+        <span class="step-number">1</span>
+        <p>Введите имя ученика.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">2</span>
+        <p>Выберите часовой пояс.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">3</span>
+        <p>Привяжите к Telegram родителя (можно пропустить и привязать позже).</p>
+    </div>
+    
+    <h3>Результат</h3>
+    <p>Ученик добавлен в систему и доступен для создания занятий.</p>
+    
+    <h2>4.3. Добавление репетитора</h2>
+    
+    <h3>Назначение</h3>
+    <p>Регистрация нового репетитора в системе.</p>
+    
+    <h3>Как открыть</h3>
+    <div class="command"><code>/add_tutor</code></div>
+    
+    <h3>Пошаговая инструкция</h3>
+    
+    <div class="step">
+        <span class="step-number">1</span>
+        <p>Введите имя репетитора.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">2</span>
+        <p>Выберите часовой пояс.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">3</span>
+        <p>Укажите Telegram ID (можно позже).</p>
+    </div>
+    
+    <h3>Результат</h3>
+    <p>Репетитор добавлен в систему и доступен для создания занятий.</p>
+    
+    <h2>4.4. Просмотр расписания организации</h2>
+    
+    <h3>Назначение</h3>
+    <p>Просмотр расписания всей организации со ссылками для пересылки.</p>
+    
+    <h3>Как открыть</h3>
+    <div class="command"><code>/lessons</code></div>
+    
+    <h3>Что вы увидите</h3>
+    <p>Занятия всех учеников и репетиторов. Под каждым — ссылки для участников (удобно переслать родителю или репетитору).</p>
+    
+    <div class="page-break"></div>
+    
+    <!-- 5. КОНТРОЛЬ СИТУАЦИИ -->
+    <h1>5. Контроль ситуации</h1>
+    
+    <div class="info">
+        Этот раздел актуален для координаторов.
+    </div>
+    
+    <h2>5.1. Обработка инцидентов</h2>
+    
+    <h3>Назначение</h3>
+    <p>Просмотр и закрытие инцидентов (неявки, опоздания, отмены, техпроблемы).</p>
+    
+    <h3>Когда создаётся инцидент</h3>
+    <ul>
+        <li>Репетитор отметил отсутствие ученика</li>
+        <li>Родитель сообщил об опоздании или отмене</li>
+        <li>Репетитор не может провести занятие</li>
+        <li>Техническая проблема</li>
+    </ul>
+    
+    <h3>Как открыть</h3>
+    <div class="command"><code>/incidents</code></div>
+    
+    <h3>Что вы увидите</h3>
+    
+    <p><strong>Активные инциденты</strong> с эмодзи-статусами:</p>
+    <ul>
+        <li>⏳ — ожидает ответа</li>
+        <li>🚨 — эскалация (требуется действие)</li>
+        <li>📌 — на ручном разборе</li>
+    </ul>
+    
+    <p><strong>Закрытые инциденты</strong> с отметкой, кто закрыл.</p>
+    
+    <h3>Как закрыть инцидент</h3>
+    
+    <p>Нажмите кнопку <span class="button">✅ Закрыть #ID</span> под нужным инцидентом.</p>
+    
+    <h3>Результат</h3>
+    <p>Инцидент перейдёт в статус «resolved» с отметкой, кто его закрыл.</p>
+    
+    <h2>5.2. Эскалации</h2>
+    
+    <h3>Назначение</h3>
+    <p>Получение ситуаций, которые требуют вмешательства координатора.</p>
+    
+    <h3>Когда приходит эскалация</h3>
+    <p>Если родитель не отвечает на вопрос о неявке в заданное время, координатор получает эскалацию.</p>
+    
+    <h3>Что вы получите</h3>
+    
+    <p>Карточку с информацией:</p>
+    <ul>
+        <li>Имя ученика</li>
+        <li>Занятие (предмет, время)</li>
+        <li>Telegram родителя</li>
+        <li>Время создания инцидента</li>
+    </ul>
+    
+    <p>Кнопки:</p>
+    <ul>
+        <li><span class="button">✅ Закрыть ситуацию</span> — инцидент закрыт</li>
+        <li><span class="button">👤 Написать родителю</span> — прямой переход в чат с родителем</li>
+    </ul>
+    
+    <h3>Другие типы алертов</h3>
+    
+    <table>
+        <tr>
+            <th>Ситуация</th>
+            <th>Кнопки</th>
+        </tr>
+        <tr>
+            <td>Родитель сообщил: «Не придём»</td>
+            <td><span class="button">✅ Отменить занятие</span> / <span class="button">◀️ Урок в силе</span></td>
+        </tr>
+        <tr>
+            <td>Репетитор: «Can't teach»</td>
+            <td><span class="button">✅ Отменить занятие</span> / <span class="button">◀️ Урок в силе</span></td>
+        </tr>
+        <tr>
+            <td>Ответ не распознан</td>
+            <td><span class="button">✅ Разобрался</span></td>
+        </tr>
+    </table>
+    
+    <h2>5.3. Утренняя сводка</h2>
+    
+    <h3>Назначение</h3>
+    <p>Полная сводка на день: занятия, ученики, репетиторы, инциденты.</p>
+    
+    <h3>Когда приходит</h3>
+    <p>Автоматически — каждый день в <strong>09:00</strong> по времени организации.</p>
+    
+    <h3>Как запросить вручную</h3>
+    <div class="command"><code>/morning</code></div>
+    
+    <h2>5.4. Обзор дня</h2>
+    
+    <h3>Назначение</h3>
+    <p>Быстрый просмотр всех занятий текущего дня и статуса инцидентов.</p>
+    
+    <h3>Как открыть</h3>
+    <div class="command"><code>/today</code></div>
+    
+    <h3>Что вы увидите</h3>
+    
+    <p>Список занятий дня со статусами:</p>
+    
+    <table>
+        <tr>
+            <th>Статус</th>
+            <th>Значение</th>
+        </tr>
+        <tr>
+            <td>🟢</td>
+            <td>Идёт сейчас</td>
+        </tr>
+        <tr>
+            <td>✅</td>
+            <td>Прошло</td>
+        </tr>
+        <tr>
+            <td>❌</td>
+            <td>Отменено</td>
+        </tr>
+        <tr>
+            <td>⌛</td>
+            <td>Скоро начнётся</td>
+        </tr>
+        <tr>
+            <td>⚪</td>
+            <td>Нет данных от MeritHub</td>
+        </tr>
+    </table>
+    
+    <div class="tip">
+        Статус «⚪ нет данных» — это нормально для тестовой среды, когда вебхуки от MeritHub не приходят.
+    </div>
+    
+    <div class="page-break"></div>
+    
+    <!-- 6. УПРАВЛЕНИЕ СИСТЕМОЙ -->
+    <h1>6. Управление системой</h1>
+    
+    <div class="info">
+        Этот раздел актуален для администраторов (владельцев).
+    </div>
+    
+    <h2>6.1. Назначение ролей</h2>
+    
+    <h3>Назначение</h3>
+    <p>Управление ролями участников системы.</p>
+    
+    <h3>Как использовать</h3>
+    
+    <p><strong>Назначить роль:</strong></p>
+    <div class="command"><code>/role &lt;Telegram_ID&gt; &lt;роль&gt;</code></div>
+    
+    <p><strong>Пример:</strong></p>
+    <div class="command"><code>/role 123456789 coordinator</code></div>
+    
+    <p><strong>Посмотреть всех участников:</strong></p>
+    <div class="command"><code>/roles</code></div>
+    
+    <h3>Про права администратора</h3>
+    
+    <p>«Владелец» — это не отдельная роль, а <strong>права администратора</strong>, которые задаются в настройках. Координатор тоже может быть администратором одновременно — тогда он получает полный доступ.</p>
+    
+    <h2>6.2. Аварийный стоп (Kill Switch)</h2>
+    
+    <h3>Назначение</h3>
+    <p>Мгновенная остановка или ограничение всех уведомлений при технических работах.</p>
+    
+    <h3>Как открыть</h3>
+    <div class="command"><code>/kill_switch</code></div>
+    
+    <h3>Три режима</h3>
+    
+    <table>
+        <tr>
+            <th>Режим</th>
+            <th>Обозначение</th>
+            <th>Описание</th>
+            <th>Когда использовать</th>
+        </tr>
+        <tr>
+            <td>🔴</td>
+            <td>Всё остановлено</td>
+            <td>Никому ничего не отправляется</td>
+            <td>Что-то пошло не так, разбираемся</td>
+        </tr>
+        <tr>
+            <td>🟡</td>
+            <td>Только координаторам</td>
+            <td>Родители и репетиторы не получают сообщений</td>
+            <td>Мягкая отладка на живых данных</td>
+        </tr>
+        <tr>
+            <td>🟢</td>
+            <td>Всё работает</td>
+            <td>Штатный режим</td>
+            <td>Нормальная работа</td>
+        </tr>
+    </table>
+    
+    <h3>Как проверить текущий режим</h3>
+    <div class="command"><code>/status</code></div>
+    
+    <h2>6.3. Демо-инструменты</h2>
+    
+    <h3>/pilot_seed</h3>
+    <p>Проверка готовности пилота. Показывает, кто в какой роли зарегистрирован.</p>
+    
+    <h3>/pilot_absent</h3>
+    <p>Живой прогон сценария неявки:</p>
+    <ol>
+        <li>Родитель получает уведомление о неявке</li>
+        <li>Если молчит → координатор получает эскалацию</li>
+        <li>Можно проверить все варианты: кнопка, текст, молчание</li>
+    </ol>
+    
+    <h3>/demo_reset</h3>
+    <p>Сброс демо-данных между прогонами.</p>
+    
+    <div class="warning">
+        Требует подтверждения кнопкой. Все инциденты, workflow и тестовые данные будут очищены.
+    </div>
+    
+    <h3>/seed10</h3>
+    <p>Создание тестовых данных одной командой:</p>
+    
+    <div class="command"><code>/seed10 &lt;parentTG&gt;</code></div>
+    
+    <p>Создаёт 10 тестовых учеников и 3 тестовых репетитора.</p>
+    
+    <div class="page-break"></div>
+    
+    <!-- 7. ИНТЕГРАЦИЯ С MERITHUB -->
+    <h1>7. Интеграция с MeritHub</h1>
+    
+    <h3>Как работает интеграция</h3>
+    
+    <p>ALBION работает в связке с платформой MeritHub (онлайн-уроки). Бот автоматизирует коммуникацию, а MeritHub обеспечивает проведение самих занятий.</p>
+    
+    <h3>Важные ограничения</h3>
+    
+    <div class="warning">
+        <strong>MeritHub не отдаёт данные обратно.</strong> Платформа не возвращает списки учеников или занятия через API. Поэтому всё создаётся через бота — он хранит собственную копию данных.
+    </div>
+    
+    <p><strong>Что это значит на практике:</strong></p>
+    
+    <ul>
+        <li>Все занятия, ученики и репетиторы создаются через ALBION</li>
+        <li>Если создать что-то вручную в панели MeritHub — бот об этом не узнает</li>
+        <li>Бот сам выдаёт ссылки на виртуальные комнаты</li>
+    </ul>
+    
+    <h3>Статус занятий</h3>
+    
+    <p>Бот узнаёт, идёт занятие или закончилось, по сигналам от MeritHub (вебхуки).</p>
+    
+    <p>Если сигналы не приходят (например, в тестовой среде), в команде <code>/today</code> у занятия будет статус <strong>«⚪ нет данных»</strong>.</p>
+    
+    <div class="tip">
+        Это нормально для теста и не означает ошибку.
+    </div>
+    
+    <h3>Постоянные ссылки</h3>
+    
+    <p>Ссылки на виртуальные классы не меняются. В любой момент можно открыть <code>/lessons</code> и войти в комнату.</p>
+    
+    <div class="page-break"></div>
+    
+    <!-- 8. СОВЕТЫ -->
+    <h1>8. Советы по эффективной работе</h1>
+    
+    <h3>Для всех пользователей</h3>
+    
+    <div class="tip">
+        <strong>Всегда пишите /start первым.</strong> Чтобы получать напоминания, необходимо хотя бы раз написать боту <code>/start</code>. Иначе уведомления не дойдут.
+    </div>
+    
+    <div class="tip">
+        <strong>Используйте кнопки.</strong> Отвечать кнопками быстрее и надёжнее, чем писать текст. Но текст тоже работает — бот понимает смысл.
+    </div>
+    
+    <div class="tip">
+        <strong>Не теряйте ссылки.</strong> Ссылки на комнаты всегда доступны в <code>/lessons</code>. Не нужно сохранять их отдельно.
+    </div>
+    
+    <h3>Для родителей</h3>
+    
+    <div class="tip">
+        <strong>Отвечайте быстро.</strong> Если не ответить на вопрос о неявке, координатор получит эскалацию. Лучше нажать кнопку сразу.
+    </div>
+    
+    <div class="tip">
+        <strong>Можно писать текстом.</strong> Если кнопки неудобны, напишите сообщение: «Опоздаем на 15 минут». Бот поймёт.
+    </div>
+    
+    <h3>Для репетиторов</h3>
+    
+    <div class="tip">
+        <strong>Подтверждайте готовность.</strong> Кнопка <span class="button">✅ Ready</span> за 30 минут до урока помогает координатору контролировать ситуацию.
+    </div>
+    
+    <div class="tip">
+        <strong>Сообщайте о проблемах сразу.</strong> Если возникла техническая проблема, нажмите <span class="button">🛠 Platform issue</span>. Координатор поможет.
+    </div>
+    
+    <h3>Для координаторов</h3>
+    
+    <div class="tip">
+        <strong>Используйте визарды.</strong> Команды <code>/schedule</code>, <code>/add_student</code>, <code>/add_tutor</code> ведут пошагово кнопками. Не нужно учить синтаксис.
+    </div>
+    
+    <div class="tip">
+        <strong>Закрывайте инциденты в один тап.</strong> Кнопка <span class="button">✅ Закрыть #ID</span> под инцидентом — самый быстрый способ.
+    </div>
+    
+    <div class="tip">
+        <strong>Проверяйте /today утром.</strong> Команда показывает все занятия дня и их статусы.
+    </div>
+    
+    <h3>Для администраторов</h3>
+    
+    <div class="tip">
+        <strong>Используйте Kill Switch при работах.</strong> Если нужно что-то проверить или исправить, переключите в режим 🟡 (только координаторам) или 🔴 (всё выкл).
+    </div>
+    
+    <div class="tip">
+        <strong>Тестируйте на демо.</strong> Команды <code>/pilot_seed</code> и <code>/pilot_absent</code> позволяют проверить работу системы без влияния на реальных пользователей.
+    </div>
+    
+    <div class="page-break"></div>
+    
+    <!-- 9. ОГРАНИЧЕНИЯ -->
+    <h1>9. Ограничения системы</h1>
+    
+    <h3>Технические ограничения</h3>
+    
+    <table>
+        <tr>
+            <th>Ограничение</th>
+            <th>Пояснение</th>
+        </tr>
+        <tr>
+            <td>MeritHub не отдаёт данные</td>
+            <td>Всё создаётся через бота. Ручное создание в панели MeritHub не синхронизируется</td>
+        </tr>
+        <tr>
+            <td>Роль «ученик» не используется</td>
+            <td>В текущей версии интерфейса для учеников нет отдельных функций</td>
+        </tr>
+        <tr>
+            <td>Кнопки привязаны к аккаунту</td>
+            <td>Кнопки из пересланных сообщений не работают у другого пользователя</td>
+        </tr>
+        <tr>
+            <td>Статусы занятий зависят от вебхуков</td>
+            <td>Без сигналов от MeritHub статус будет «⚪ нет данных»</td>
+        </tr>
+    </table>
+    
+    <h3>Ограничения тестовой среды</h3>
+    
+    <ul>
+        <li>Статусы занятий могут отображаться как «⚪ нет данных» — это нормально</li>
+        <li>Некоторые функции (например, <code>/leads</code>) заполняются редко</li>
+        <li>Webhook'и от MeritHub могут не приходить в тестовой среде</li>
+    </ul>
+    
+    <div class="page-break"></div>
+    
+    <!-- 10. УСТРАНЕНИЕ НЕПОЛАДОК -->
+    <h1>10. Устранение неполадок</h1>
+    
+    <h3>Проблема: Напоминание не пришло</h3>
+    
+    <table>
+        <tr>
+            <th>Возможная причина</th>
+            <th>Решение</th>
+        </tr>
+        <tr>
+            <td>Пользователь не написал <code>/start</code></td>
+            <td>Попросите написать боту <code>/start</code></td>
+        </tr>
+        <tr>
+            <td>Роль не назначена</td>
+            <td>Администратор: <code>/role &lt;TG_ID&gt; &lt;роль&gt;</code></td>
+        </tr>
+        <tr>
+            <td>Kill Switch выключен</td>
+            <td>Проверьте <code>/status</code> — должен быть 🟢</td>
+        </tr>
+    </table>
+    
+    <h3>Проблема: Кнопка не работает</h3>
+    
+    <table>
+        <tr>
+            <th>Возможная причина</th>
+            <th>Решение</th>
+        </tr>
+        <tr>
+            <td>Сообщение переслано другому аккаунту</td>
+            <td>Кнопки работают только у адресата</td>
+        </tr>
+        <tr>
+            <td>Сценарий уже закрыт</td>
+            <td>Нажмите <code>/incidents</code> для проверки статуса</td>
+        </tr>
+        <tr>
+            <td>Запасной вариант</td>
+            <td>Координатор может закрыть через <code>/ok &lt;ID&gt;</code></td>
+        </tr>
+    </table>
+    
+    <h3>Проблема: В /today все занятия со статусом «⚪ нет данных»</h3>
+    
+    <p><strong>Это нормально для тестовой среды.</strong></p>
+    
+    <p>Бот получает данные от MeritHub через вебхуки. Если вебхуки не настроены или не приходят, статус будет пустым.</p>
+    
+    <h3>Проблема: Нужен чистый прогон демо</h3>
+    
+    <p><strong>Решение:</strong></p>
+    <div class="command"><code>/demo_reset</code></div>
+    <p>Подтвердите кнопкой. Все инциденты, workflow и тестовые данные будут очищены.</p>
+    
+    <h3>Проблема: Бот не отвечает</h3>
+    
+    <p><strong>Решение:</strong> Перезапустите бота. База данных и запланированные задачи сохранены в SQLite и переживают перезапуск.</p>
+    
+    <h3>Проблема: Занятие не отображается в /lessons</h3>
+    
+    <table>
+        <tr>
+            <th>Возможная причина</th>
+            <th>Решение</th>
+        </tr>
+        <tr>
+            <td>Занятие создано вручную в MeritHub</td>
+            <td>Создавайте занятия через бота (<code>/schedule</code>)</td>
+        </tr>
+        <tr>
+            <td>Занятие уже прошло</td>
+            <td>В <code>/lessons</code> отображаются только будущие занятия</td>
+        </tr>
+    </table>
+    
+    <div class="page-break"></div>
+    
+    <!-- 11. FAQ -->
+    <h1>11. Частые вопросы</h1>
+    
+    <h3>Можно ли сменить роль после выбора?</h3>
+    <p>Да. Отправьте <code>/start</code> и нажмите кнопку <span class="button">🔄 Сменить роль</span>.</p>
+    
+    <h3>Что делать, если напоминание не пришло?</h3>
+    <ol>
+        <li>Убедитесь, что вы написали боту <code>/start</code>.</li>
+        <li>Проверьте, назначена ли вам роль (<code>/whoami</code>).</li>
+        <li>Проверьте статус Kill Switch (<code>/status</code>) — он должен быть 🟢.</li>
+        <li>Если ничего не помогло — обратитесь к администратору.</li>
+    </ol>
+    
+    <h3>Почему в /today у занятия статус «⚪ нет данных»?</h3>
+    <p>Бот получает статус занятий от MeritHub через вебхуки. В тестовой среде эти сигналы могут не приходить. Это не ошибка — данные просто отсутствуют.</p>
+    
+    <h3>Я нажал кнопку, но ничего не произошло</h3>
+    <p>Кнопки работают только у того пользователя, которому адресовано сообщение. Если сообщение переслано другому аккаунту — кнопка не сработает.</p>
+    
+    <h3>Как создать занятие?</h3>
+    <p><strong>Координатор:</strong> команда <code>/schedule</code> → пошаговый визард.</p>
+    <p><strong>Администратор:</strong> можно через визард или через <code>/mh_schedule</code>.</p>
+    
+    <h3>Можно ли ответить текстом вместо кнопки?</h3>
+    <p>Да, родитель может написать ответ свободным текстом. Бот попытается понять смысл. Если не получится — вопрос будет передан координатору.</p>
+    
+    <h3>Родитель не отвечает на вопрос о неявке. Что делать?</h3>
+    <p>Ничего. Если родитель не ответит в заданное время, координатор автоматически получит эскалацию с полной информацией.</p>
+    
+    <h3>Как отменить занятие?</h3>
+    <ul>
+        <li><strong>Родитель:</strong> <code>/cancel_lesson</code> → выбор занятия → подтверждение.</li>
+        <li><strong>Репетитор:</strong> <code>/cancel_lesson</code> → выбор занятия → подтверждение.</li>
+        <li><strong>Координатор:</strong> кнопкой <span class="button">✅ Отменить занятие</span> на алерте или <code>/cancel_lesson</code>.</li>
+    </ul>
+    
+    <h3>Что такое «владелец» и чем он отличается от координатора?</h3>
+    <p>«Владелец» — это не роль, а <strong>права администратора</strong>, которые задаются в настройках. Координатор тоже может быть администратором — тогда он получает доступ к управлению ролями, Kill Switch и демо-инструментам.</p>
+    
+    <h3>Можно ли изменить тип занятия после создания?</h3>
+    <p>Нет. Тип занятия (разовое / регулярное) после создания изменить нельзя. Если нужно изменить — создайте новое занятие.</p>
+    
+    <h3>Как посмотреть все инциденты?</h3>
+    <p>Отправьте команду <code>/incidents</code>. Бот покажет активные и закрытые инциденты со статусами.</p>
+    
+    <div class="page-break"></div>
+    
+    <!-- 12. ГЛОССАРИЙ -->
+    <h1>12. Глоссарий</h1>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">ALBION</div>
+        <div class="glossary-def">Telegram-бот для координации репетиторских занятий</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">MeritHub</div>
+        <div class="glossary-def">Платформа для проведения онлайн-уроков (видео, доска, запись)</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">Роль</div>
+        <div class="glossary-def">Тип пользователя в системе: родитель, репетитор, координатор, ученик</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">Администратор (владелец)</div>
+        <div class="glossary-def">Пользователь с правами управления системой (не отдельная роль, а настройка)</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">Инцидент</div>
+        <div class="glossary-def">Нештатная ситуация: неявка, опоздание, отмена, техпроблема</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">Эскалация</div>
+        <div class="glossary-def">Передача ситуации координатору, когда автоматика не смогла решить сама</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">Визард</div>
+        <div class="glossary-def">Пошаговый кнопочный сценарий для создания данных (занятия, ученика, репетитора)</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">Kill Switch</div>
+        <div class="glossary-def">Аварийный рубильник отправки уведомлений (3 режима: 🔴 всё выкл, 🟡 только координаторам, 🟢 всё работает)</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">Webhook</div>
+        <div class="glossary-def">Сигнал от MeritHub о статусе занятия (началось, закончилось, посещаемость)</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">Часовой пояс организации (канонический)</div>
+        <div class="glossary-def">Единый часовой пояс расписания. Все занятия создаются в нём</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">Perma-серия (🔁)</div>
+        <div class="glossary-def">Регулярное занятие, хранится паттерном дней недели и разворачивается в даты автоматически</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">Лид (заявка)</div>
+        <div class="glossary-def">Обращение потенциального клиента через бота</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">DLQ (Dead Letter Queue)</div>
+        <div class="glossary-def">Журнал упавших событий — если обработка не удалась, событие не теряется</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">Mock-режим</div>
+        <div class="glossary-def">Работа на встроенных демо-данных вместо реального MeritHub</div>
+    </div>
+    
+    <div class="glossary-item">
+        <div class="glossary-term">Management by Exception</div>
+        <div class="glossary-def">Принцип: человек занимается только исключениями, рутину закрывает система</div>
+    </div>
+    
+    <div style="margin-top: 60px; padding-top: 20px; border-top: 2px solid #667eea; text-align: center; color: #666; font-size: 10pt;">
+        <p><strong>ALBION — Руководство пользователя</strong></p>
+        <p>Версия документа: 1.0 | Дата: 3 августа 2026</p>
+        <p style="margin-top: 10px;">Документ подготовлен для тестового прогона ALBION.</p>
+    </div>
+    
+</body>
+</html>

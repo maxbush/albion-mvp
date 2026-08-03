@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>ALBION — Руководство пользователя</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 2cm;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: Helvetica, Arial, sans-serif;
+            font-size: 11pt;
+            line-height: 1.6;
+            color: #2c3e50;
+        }
+        
+        /* Обложка */
+        .cover {
+            text-align: center;
+            padding-top: 150px;
+            background: #667eea;
+            color: white;
+            height: 100%;
+        }
+        
+        .cover h1 {
+            font-size: 48pt;
+            font-weight: 300;
+            margin-bottom: 20px;
+        }
+        
+        .cover .subtitle {
+            font-size: 18pt;
+            margin-bottom: 30px;
+        }
+        
+        .cover .version {
+            font-size: 12pt;
+            margin-top: 100px;
+        }
+        
+        /* Заголовки */
+        h1 {
+            font-size: 24pt;
+            color: #667eea;
+            margin-top: 20px;
+            margin-bottom: 15px;
+            page-break-before: always;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 5px;
+        }
+        
+        h2 {
+            font-size: 16pt;
+            color: #764ba2;
+            margin-top: 15px;
+            margin-bottom: 10px;
+            border-left: 4px solid #764ba2;
+            padding-left: 10px;
+        }
+        
+        h3 {
+            font-size: 13pt;
+            color: #2c3e50;
+            margin-top: 12px;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        
+        p {
+            margin-bottom: 10px;
+            text-align: justify;
+        }
+        
+        /* Таблицы */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+            font-size: 10pt;
+            page-break-inside: avoid;
+        }
+        
+        th {
+            background: #667eea;
+            color: white;
+            padding: 8px;
+            text-align: left;
+            font-weight: 600;
+        }
+        
+        td {
+            padding: 8px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        
+        tr:nth-child(even) {
+            background: #f8f9fa;
+        }
+        
+        /* Списки */
+        ul, ol {
+            margin: 10px 0 10px 20px;
+        }
+        
+        li {
+            margin-bottom: 5px;
+        }
+        
+        /* Код */
+        code {
+            background: #f5f5f5;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: Courier, monospace;
+            font-size: 10pt;
+            color: #d63384;
+        }
+        
+        pre {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            page-break-inside: avoid;
+        }
+        
+        /* Блоки */
+        .warning, .info, .tip {
+            padding: 10px;
+            border-left: 4px solid;
+            margin: 15px 0;
+            page-break-inside: avoid;
+        }
+        
+        .warning {
+            background: #fff3cd;
+            border-color: #ffc107;
+        }
+        
+        .info {
+            background: #d1ecf1;
+            border-color: #17a2b8;
+        }
+        
+        .tip {
+            background: #d4edda;
+            border-color: #28a745;
+        }
+        
+        /* Кнопки */
+        .button {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 10pt;
+            font-weight: 600;
+            margin: 2px;
+        }
+        
+        /* Команды */
+        .command {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 8px;
+            margin: 8px 0;
+            page-break-inside: avoid;
+        }
+        
+        .command code {
+            font-size: 11pt;
+            color: #667eea;
+            font-weight: 600;
+        }
+        
+        /* Шаги */
+        .step {
+            margin: 10px 0;
+            padding-left: 15px;
+            border-left: 3px solid #e0e0e0;
+        }
+        
+        .step-number {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 20px;
+            font-weight: bold;
+            margin-right: 8px;
+        }
+        
+        /* Разрыв страницы */
+        .page-break {
+            page-break-after: always;
+        }
+        
+        /* Глоссарий */
+        .glossary-item {
+            margin-bottom: 12px;
+            padding-left: 15px;
+            border-left: 2px solid #e0e0e0;
+        }
+        
+        .glossary-term {
+            font-weight: 600;
+            color: #667eea;
+            font-size: 11pt;
+        }
+        
+        .glossary-def {
+            margin-top: 3px;
+            color: #555;
+        }
+        
+        a {
+            color: #667eea;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <!-- ОБЛОЖКА -->
+    <div class="cover">
+        <h1>ALBION</h1>
+        <div class="subtitle">Руководство пользователя</div>
+        <div class="subtitle" style="font-size: 14pt;">Telegram-бот для координации репетиторских занятий</div>
+        <div class="version">
+            Версия документа: 1.0<br>
+            Дата: 3 августа 2026
+        </div>
+    </div>
+    
+    <div class="page-break"></div>
+    
+    <!-- СОДЕРЖАНИЕ -->
+    <h1 style="page-break-before: avoid;">Содержание</h1>
+    
+    <ol style="font-size: 11pt; line-height: 2;">
+        <li>Введение</li>
+        <li>Быстрый старт</li>
+        <li>Работа с занятиями</li>
+        <li>Управление расписанием</li>
+        <li>Контроль ситуации</li>
+        <li>Управление системой</li>
+        <li>Интеграция с MeritHub</li>
+        <li>Советы по эффективной работе</li>
+        <li>Ограничения системы</li>
+        <li>Устранение неполадок</li>
+        <li>Частые вопросы</li>
+        <li>Глоссарий</li>
+    </ol>
+    
+    <div class="page-break"></div>
+    
+    <!-- 1. ВВЕДЕНИЕ -->
+    <h1>1. Введение</h1>
+    
+    <h2>1.1. Что такое ALBION</h2>
+    
+    <p>ALBION — это Telegram-бот для автоматизации координации репетиторских занятий. Он работает через обычный чат в Telegram и берёт на себя рутинные задачи: напоминает о занятиях, опрашивает участников, фиксирует ситуации и поднимает тревогу только тогда, когда требуется вмешательство человека.</p>
+    
+    <p>Большинство действий выполняются нажатием кнопок — учить команды не нужно.</p>
+    
+    <div class="info">
+        ALBION работает в связке с платформой MeritHub (онлайн-уроки) и автоматизирует коммуникацию между координаторами, репетиторами и родителями.
+    </div>
+    
+    <h2>1.2. Основные принципы работы</h2>
+    
+    <p><strong>Management by Exception (Управление по отклонениям)</strong></p>
+    
+    <p>Система работает незаметно, когда всё идёт по плану. Координатор подключается только к исключениям — ситуациям, которые требуют человеческого решения.</p>
+    
+    <p><strong>Кнопки вместо команд</strong></p>
+    
+    <p>Пользователи отвечают нажатием кнопок или пишут обычным текстом. Система понимает смысл и принимает решения.</p>
+    
+    <p><strong>Всё создаётся через бота</strong></p>
+    
+    <div class="warning">
+        MeritHub не отдаёт данные обратно. Поэтому занятия, ученики и репетиторы создаются через ALBION. Если создать что-то вручную в панели MeritHub — бот об этом не узнает.
+    </div>
+    
+    <p><strong>Постоянные ссылки на комнаты</strong></p>
+    
+    <p>Ссылки на виртуальные классы не меняются. В любой момент можно открыть <span class="button">/lessons</span> и войти в комнату.</p>
+    
+    <h2>1.3. Для кого это руководство</h2>
+    
+    <p>Это руководство предназначено для:</p>
+    
+    <ul>
+        <li><strong>Родителей</strong> — клиентов репетиторских услуг</li>
+        <li><strong>Репетиторов</strong> — преподавателей, проводящих занятия</li>
+        <li><strong>Координаторов</strong> — сотрудников, управляющих расписанием</li>
+        <li><strong>Администраторов</strong> — владельцев системы</li>
+    </ul>
+    
+    <p>Каждый раздел помечен, для какой роли он актуален.</p>
+    
+    <div class="page-break"></div>
+    
+    <!-- 2. БЫСТРЫЙ СТАРТ -->
+    <h1>2. Быстрый старт</h1>
+    
+    <h2>2.1. Первый вход в систему</h2>
+    
+    <p>Для начала работы с ALBION выполните следующие шаги:</p>
+    
+    <div class="step">
+        <span class="step-number">1</span>
+        <p>Откройте Telegram и найдите бота ALBION.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">2</span>
+        <p>Нажмите кнопку <span class="button">Start</span> или отправьте команду:</p>
+        <div class="command"><code>/start</code></div>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">3</span>
+        <p>Выберите вашу роль нажатием кнопки:</p>
+        <ul>
+            <li><span class="button">🧑‍🏫 Репетитор</span> — если вы проводите занятия</li>
+            <li><span class="button">👨‍👩‍👦 Родитель</span> — если вы клиент (ученик)</li>
+            <li><span class="button">👨‍💼 Координатор</span> — если вы управляете расписанием</li>
+        </ul>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">4</span>
+        <p>Для проверки отправьте команду:</p>
+        <div class="command"><code>/whoami</code></div>
+        <p>Бот покажет ваш Telegram ID, имя пользователя и текущую роль.</p>
+    </div>
+    
+    <div class="warning">
+        Запишите ваш Telegram ID — он потребуется администратору для назначения ролей.
+    </div>
+    
+    <h2>2.2. Выбор роли</h2>
+    
+    <p>Если вы выбрали неверную роль или хотите её изменить:</p>
+    
+    <div class="step">
+        <span class="step-number">1</span>
+        <p>Отправьте команду <code>/start</code>.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">2</span>
+        <p>Нажмите кнопку <span class="button">🔄 Сменить роль</span>.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">3</span>
+        <p>Выберите новую роль.</p>
+    </div>
+    
+    <h3>Назначение ролей администратором</h3>
+    
+    <p>Роли раздаёт администратор командой:</p>
+    
+    <div class="command"><code>/role &lt;Telegram_ID&gt; &lt;роль&gt;</code></div>
+    
+    <p><strong>Пример:</strong></p>
+    <div class="command"><code>/role 123456789 coordinator</code></div>
+    
+    <p>Доступные роли:</p>
+    <ul>
+        <li><code>coordinator</code> — координатор</li>
+        <li><code>tutor</code> — репетитор</li>
+        <li><code>parent</code> — родитель</li>
+        <li><code>student</code> — ученик (пока не используется)</li>
+    </ul>
+    
+    <p>Посмотреть всех участников и их роли:</p>
+    <div class="command"><code>/roles</code></div>
+    
+    <h2>2.3. Первые действия</h2>
+    
+    <h3>Для родителей</h3>
+    
+    <p>После регистрации вам не нужно ничего настраивать. Все уведомления приходят автоматически.</p>
+    
+    <p>Доступные команды:</p>
+    <ul>
+        <li><span class="button">/lessons</span> — просмотр расписания и вход в комнаты</li>
+        <li><span class="button">/cancel_lesson</span> — отмена занятия</li>
+    </ul>
+    
+    <h3>Для репетиторов</h3>
+    
+    <p>Вам будут приходить напоминания о занятиях с кнопками подтверждения.</p>
+    
+    <p>Доступные команды:</p>
+    <ul>
+        <li><span class="button">/lessons</span> — просмотр расписания и ссылки ведущего</li>
+        <li><span class="button">/cancel_lesson</span> — отмена занятия</li>
+    </ul>
+    
+    <div class="info">
+        Интерфейс репетитора ведётся на английском языке.
+    </div>
+    
+    <h3>Для координаторов</h3>
+    
+    <p>Вам доступны инструменты управления расписанием и контроля ситуации:</p>
+    
+    <ul>
+        <li><span class="button">/schedule</span> — создание занятия</li>
+        <li><span class="button">/add_student</span> — добавление ученика</li>
+        <li><span class="button">/add_tutor</span> — добавление репетитора</li>
+        <li><span class="button">/today</span> — обзор дня</li>
+        <li><span class="button">/incidents</span> — управление инцидентами</li>
+        <li><span class="button">/lessons</span> — расписание организации</li>
+    </ul>
+    
+    <div class="tip">
+        Чтобы получать напоминания, необходимо хотя бы один раз написать боту <code>/start</code>.
+    </div>
+    
+    <div class="page-break"></div>
+    
+    <!-- 3. РАБОТА С ЗАНЯТИЯМИ -->
+    <h1>3. Работа с занятиями</h1>
+    
+    <h2>3.1. Просмотр расписания</h2>
+    
+    <h3>Назначение</h3>
+    <p>Просмотр списка предстоящих занятий и вход в виртуальные комнаты.</p>
+    
+    <h3>Когда использовать</h3>
+    <p>В любой момент, когда нужно посмотреть расписание или войти на урок.</p>
+    
+    <h3>Как открыть</h3>
+    <div class="command"><code>/lessons</code></div>
+    
+    <h3>Что вы увидите</h3>
+    
+    <p>Список ваших ближайших занятий (до 10 уроков). Для каждого занятия указаны:</p>
+    <ul>
+        <li>Дата и время</li>
+        <li>Имя ученика (для родителя) или преподавателя (для репетитора)</li>
+        <li>Кнопка-ссылка для входа в виртуальную комнату</li>
+    </ul>
+    
+    <div class="tip">
+        Ссылки на комнаты постоянные. Сохранять их отдельно не нужно — достаточно в любой момент открыть <code>/lessons</code>.
+    </div>
+    
+    <h2>3.2. Получение напоминаний</h2>
+    
+    <h3>Назначение</h3>
+    <p>Предупреждение о предстоящем занятии.</p>
+    
+    <h3>Когда приходит</h3>
+    <p>Автоматически — примерно за 15 минут до начала занятия.</p>
+    
+    <h3>Как выглядит</h3>
+    
+    <p>Бот присылает сообщение с кнопками:</p>
+    
+    <p><strong>Для родителей:</strong></p>
+    <ul>
+        <li><span class="button">✅ Будем</span> — подтверждаете участие</li>
+        <li><span class="button">⏰ Опоздаем</span> — сообщаете об опоздании</li>
+        <li><span class="button">❌ Не придём</span> — сообщаете об отсутствии</li>
+    </ul>
+    
+    <p><strong>Для репетиторов (на английском):</strong></p>
+    <ul>
+        <li><span class="button">✅ Ready</span> — подтверждаете готовность</li>
+        <li><span class="button">⏰ Running late</span> — сообщаете об опоздании</li>
+        <li><span class="button">❌ Can't teach</span> — сообщаете, что не сможете провести</li>
+        <li><span class="button">🛠 Platform issue</span> — сообщаете о технической проблеме</li>
+    </ul>
+    
+    <h2>3.3. Подтверждение участия</h2>
+    
+    <h3>Назначение</h3>
+    <p>Подтвердить, что занятие состоится по расписанию.</p>
+    
+    <h3>Как использовать</h3>
+    
+    <div class="step">
+        <span class="step-number">1</span>
+        <p>Получите напоминание о занятии.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">2</span>
+        <p>Нажмите кнопку:</p>
+        <ul>
+            <li>Родитель: <span class="button">✅ Будем</span></li>
+            <li>Репетитор: <span class="button">✅ Ready</span></li>
+        </ul>
+    </div>
+    
+    <h3>Результат</h3>
+    <p>Координатор получит уведомление о подтверждении. Занятие состоится по расписанию.</p>
+    
+    <h2>3.4. Сообщение об опоздании</h2>
+    
+    <h3>Назначение</h3>
+    <p>Сообщить об опоздании с указанием точного времени.</p>
+    
+    <h3>Как использовать</h3>
+    
+    <div class="step">
+        <span class="step-number">1</span>
+        <p>В напоминании нажмите кнопку:</p>
+        <ul>
+            <li>Родитель: <span class="button">⏰ Опоздаем</span></li>
+            <li>Репетитор: <span class="button">⏰ Running late</span></li>
+        </ul>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">2</span>
+        <p>Бот спросит: «На сколько минут опоздаете?»</p>
+        <p>Выберите вариант:</p>
+        <ul>
+            <li><span class="button">5 мин</span></li>
+            <li><span class="button">15 мин</span></li>
+            <li><span class="button">30+ мин</span></li>
+        </ul>
+    </div>
+    
+    <h3>Результат</h3>
+    <p>Координатор получит информацию о точном времени опоздания и сможет предупредить вторую сторону.</p>
+    
+    <div class="tip">
+        Можно ответить текстом вместо кнопок. Например: «Опоздаем на 15 минут — пробки». Бот распознает смысл.
+    </div>
+    
+    <h2>3.5. Отмена занятия</h2>
+    
+    <h3>Назначение</h3>
+    <p>Самостоятельная отмена занятия из расписания.</p>
+    
+    <h3>Когда использовать</h3>
+    <p>Когда нужно отменить занятие без звонков координатору.</p>
+    
+    <h3>Как использовать</h3>
+    
+    <div class="step">
+        <span class="step-number">1</span>
+        <p>Отправьте команду:</p>
+        <div class="command"><code>/cancel_lesson</code></div>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">2</span>
+        <p>Бот покажет список ваших ближайших занятий с кнопками выбора.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">3</span>
+        <p>Нажмите на занятие, которое хотите отменить.</p>
+    </div>
+    
+    <div class="step">
+        <span class="step-number">4</span>
+        <p>Подтвердите отмену:</p>
+        <ul>
+            <li><span class="button">✅ Да, отменить</span> — занятие отменено</li>
+            <li><span class="button">◀️ Не надо</span> — возврат без изменений</li>
+        </ul>
+    </div>
+    
+    <h3>Результат</h3>
+    <p>Занятие отменено. Координатор и вторая сторона получат уведомление.</p>
+    
+    <h3>Возможные ошибки</h3>
+    
+    <table>
+        <tr>
+            <th>Проблема</th>
+            <th>Причина</th>
+            <th>Решение</th>
+        </tr>
+        <tr>
+            <td>Кнопка не работает</td>
+            <td>Сообщение переслано другому аккаунту</td>
+            <td>Кнопки работают только у адресата</td>
+        </tr>
+        <tr>
+            <td>Занятие не отображается</td>
+            <td>Занятие создано вручную в MeritHub</td>
+            <td>Создавайте занятия через бота</td>
+        </tr>
+    </table>
+    
+    <div class="page-break"></div>
+    
+    <!-- Продолжение в следующем файле из-за ограничения длины -->
+    <!-- 4-12 будут в части 2 -->
+    
+</body>
+</html>
