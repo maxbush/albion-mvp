@@ -297,7 +297,6 @@ async def cmd_start(upd: Update, _ctx) -> None:
             f"👋 С возвращением, {user.full_name or '—'}!\n\n"
             f"Ваша роль: {emoji} {role}{admin_mark}\n\n"
             f"{_role_expectations(role)}",
-            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([buttons]),
         )
         return
