@@ -119,6 +119,18 @@ async def _ensure_role(upd: Update, role: str) -> dict:
     return await repo.get(uid)
 
 
+async def _forward_to_coordinator(upd: Update, text: str, tg_id: str, user_rec: dict | None = None) -> None:
+    """При ошибке обработки free-text — пересылаем координатору, уведомляем родителя."""
+    from src.bot.roles import notify_all_coordinators
+    name = (user_rec or {}).get("name") or upd.effective_user.full_name or tg_id
+    await notify_all_coordinators(
+        f"💬 Сообщение от {name} (tg {tg_id})\n\n«{text[:500]}»\n\n(Автоматическая обработка не удалась)",
+        notification_type="ops_alert",
+    )
+    await upd.message.reply_text(
+        "💬 Спасибо! Ваше сообщение передано координатору для ручной обработки.")
+
+
 # =====================================================================
 # DEMO: solo-сценарий "отсутствие" (только при ALBION_DEMO_MODE=true)
 # =====================================================================
@@ -1296,42 +1308,46 @@ async def handle_message(upd: Update, _ctx) -> None:
     if role == "parent":
         active_checkin = await ops.find_active_checkin(tg_id, ("parent",))
         if active_checkin:
-            wid, _data, _wf_type = active_checkin
-            interpreted = await llm_client.interpret_parent_reply(text)
-            status = interpreted.get("status", "other")
-            action = "ready" if status == "ok" else (status if status in {"late", "no_show"} else "other")
-            await ops.record_checkin_response(wid, actor_tg=tg_id, action=action, free_text=text)
-            reply_map = {
-                "ready": "✅ Спасибо! Отметили, что всё в порядке.",
-                "no_show": "❌ Спасибо! Отметили, что сегодня занятия не будет. Координатор уведомлён.",
-                "late": "⏰ Спасибо! Отметили, что ученик опоздает. Координатор уведомлён.",
-                "other": "💬 Спасибо! Передали ответ координатору для ручной обработки.",
-            }
-            await upd.message.reply_text(reply_map.get(action, reply_map["other"]))
+            try:
+                wid, _data, _wf_type = active_checkin
+                interpreted = await llm_client.interpret_parent_reply(text)
+                status = interpreted.get("status", "other")
+                action = "ready" if status == "ok" else (status if status in {"late", "no_show"} else "other")
+                await ops.record_checkin_response(wid, actor_tg=tg_id, action=action, free_text=text)
+                reply_map = {
+                    "ready": "✅ Спасибо! Отметили, что всё в порядке.",
+                    "no_show": "❌ Спасибо! Отметили, что сегодня занятия не будет. Координатор уведомлён.",
+                    "late": "⏰ Спасибо! Отметили, что ученик опоздает. Координатор уведомлён.",
+                    "other": "💬 Спасибо! Передали ответ координатору для ручной обработки.",
+                }
+                await upd.message.reply_text(reply_map.get(action, reply_map["other"]))
+            except Exception as e:
+                logger.error("Parent checkin processing failed: %s", e, exc_info=True)
+                await _forward_to_coordinator(upd, text, tg_id, user_rec)
             return
 
     if role == "tutor":
         active_checkin = await ops.find_active_checkin(tg_id, ("tutor", "tutor_start"))
         if active_checkin:
-            wid, data, _wf_type = active_checkin
-            actor_type = data.get("actor_type")
-            from src.utils.i18n import lang_of, tr
-            lang = await lang_of(tg_id)
-            if actor_type == "tutor_start":
-                # Для tutor_start используем кнопки (callback), а не free-text.
-                # Free-text сюда попадает только если репетитор пишет вместо нажатия кнопки.
-                # Не делаем auto-detect student_absent из текста — слишком опасно (ложные срабатывания).
-                # Передаём в координатор для ручной обработки.
-                await ops.record_checkin_response(wid, actor_tg=tg_id, action="other", free_text=text)
-                await upd.message.reply_text(tr("ft_tutor_start_hint", lang))
-                return
-            else:
-                interpreted = await llm_client.interpret_tutor_reply(text)
-                action = interpreted.get("status", "other")
-            await ops.record_checkin_response(wid, actor_tg=tg_id, action=action, free_text=text)
-            key = f"ft_tutor_{action}" if action in ("ready", "late", "no_show", "tech") else "ft_tutor_other"
-            reply = tr(key, lang)
-            await upd.message.reply_text(reply if reply != key else "✅ Ответ принят.")
+            try:
+                wid, data, _wf_type = active_checkin
+                actor_type = data.get("actor_type")
+                from src.utils.i18n import lang_of, tr
+                lang = await lang_of(tg_id)
+                if actor_type == "tutor_start":
+                    await ops.record_checkin_response(wid, actor_tg=tg_id, action="other", free_text=text)
+                    await upd.message.reply_text(tr("ft_tutor_start_hint", lang))
+                    return
+                else:
+                    interpreted = await llm_client.interpret_tutor_reply(text)
+                    action = interpreted.get("status", "other")
+                await ops.record_checkin_response(wid, actor_tg=tg_id, action=action, free_text=text)
+                key = f"ft_tutor_{action}" if action in ("ready", "late", "no_show", "tech") else "ft_tutor_other"
+                reply = tr(key, lang)
+                await upd.message.reply_text(reply if reply != key else "✅ Ответ принят.")
+            except Exception as e:
+                logger.error("Tutor checkin processing failed: %s", e, exc_info=True)
+                await _forward_to_coordinator(upd, text, tg_id, user_rec)
             return
 
     # Если это родитель и у него есть активный инцидент по неявке — считаем,
