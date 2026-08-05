@@ -680,6 +680,21 @@ async def handle_callback(upd: Update, _ctx) -> None:
             await repo.update_role(existing["id"], role)
         else:
             await repo.create(str(user.id), role, user.full_name or str(user.id), username=user.username)
+            # Уведомляем координаторов о новом пользователе
+            try:
+                from src.bot.roles import notify_all_coordinators
+                ru_role = {"parent": "родитель", "tutor": "репетитор", "coordinator": "координатор"}.get(role, role)
+                uname = f"Username: @{user.username}\n" if user.username else ""
+                await notify_all_coordinators(
+                    "👋 Новый пользователь зарегистрировался\n"
+                    f"Имя: {user.full_name or '—'}\n"
+                    f"Роль: {ru_role}\n"
+                    f"TG ID: {user.id}\n"
+                    f"{uname}",
+                    notification_type="ops_alert",
+                )
+            except Exception as _e:
+                logger.warning("Coordinator notify on register failed: %s", _e)
         # Язык интерфейса по роли (i18n): тьюторы — англоговорящие, остальные — RU.
         await repo.set_language(str(user.id), "en" if role == "tutor" else "ru")
         # Меню «/» под выбранную роль (UX U1).
