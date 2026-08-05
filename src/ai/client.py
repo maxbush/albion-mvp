@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 
@@ -47,9 +48,13 @@ class LLMClient:
             return {"is_lead": False}
 
     async def classify_intent(self, text):
-        r = await self.chat_cheap([
-            {"role": "user", "content": f'Classify intent: "{text}". Return JSON: intent (lead/cancellation/reschedule/absence_report/question/other), confidence.'}
-        ])
+        try:
+            r = await asyncio.wait_for(self.chat_cheap([
+                {"role": "user", "content": f'Classify intent: "{text}". Return JSON: intent (lead/cancellation/reschedule/absence_report/question/other), confidence.'}
+            ]), timeout=8.0)
+        except (asyncio.TimeoutError, Exception):
+            logger.warning("LLM classify_intent timed out or failed for text=%.40s", text)
+            return {"intent": "other", "confidence": 0.0}
         try:
             return json.loads(r)
         except Exception:
