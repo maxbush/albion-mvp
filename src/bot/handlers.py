@@ -710,9 +710,8 @@ async def handle_callback(upd: Update, _ctx) -> None:
         # П10: человеческое имя роли вместо внутреннего кода (parent/coordinator)
         role_ru = {"parent": "родитель", "tutor": "репетитор", "coordinator": "координатор"}.get(role, role)
         await query.edit_message_text(
-            f"✅ Вы зарегистрированы как {emoji} *{role_ru}*{admin_mark}.\n\n"
+            f"✅ Вы зарегистрированы как {emoji} {role_ru}{admin_mark}.\n\n"
             f"{_role_expectations(role)}",
-            parse_mode="Markdown",
             reply_markup=markup,
         )
         logger.info("User %s registered as %s", user.id, role)
