@@ -36,7 +36,7 @@ _WA_WINDOW = timedelta(hours=24)  # customer-service окно Meta (то же, �
 
 def _to_wa(address: str) -> str:
     """'+79991112233' → 'whatsapp:+79991112233'."""
-    a = address.strip().lstrip("whatsapp:")
+    a = address.strip().removeprefix("whatsapp:")
     return f"whatsapp:+{a.lstrip('+')}"
 
 
@@ -163,9 +163,10 @@ class TwilioSender(ChannelSender):
 
     async def _window_open(self, address: str) -> bool:
         """24h-окно: свежесть последнего входящего от адреса (wa_window:*)."""
+        from src.channels.inbound import normalize_phone
         from src.db.repository import SystemSettingsRepository
         raw = await SystemSettingsRepository(self._db_path).get(
-            f"wa_window:{address}")
+            f"wa_window:{normalize_phone(address)}")
         try:
             return (datetime.now(timezone.utc)
                     - datetime.fromisoformat(raw)) < _WA_WINDOW
