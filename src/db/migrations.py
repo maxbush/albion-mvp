@@ -1,5 +1,10 @@
-import aiosqlite
+import logging
+
+from src.config import settings
+from src.db.engine import asyncpg, ddl_pg, is_postgres, pg_dsn, PG_COMPAT_SQL
 from src.db.models import SCHEMA_SQL
+
+logger = logging.getLogger(__name__)
 
 # Миграции: новые колонки для существующих БД.
 # CREATE TABLE IF NOT EXISTS не трогает существующие таблицы,
@@ -29,10 +34,19 @@ MIGRATIONS = [
 DEAD_TABLES = ["conversations"]
 
 
-async def init_db(db_path: str = "albion.db") -> None:
+async def init_db(db_path: str | None = None) -> None:
+    """Применить схему + миграции. Аргумент — sqlite-путь или postgres:// DSN."""
+    dsn = db_path or settings.db_dsn
+    if is_postgres(dsn):
+        await _init_pg(dsn)
+        return
+    await _init_sqlite(dsn)
+
+
+async def _init_sqlite(db_path: str) -> None:
+    import aiosqlite
     async with aiosqlite.connect(db_path) as db:
         await db.executescript(SCHEMA_SQL)
-        # Миграции для существующих БД
         for table, columns in MIGRATIONS:
             try:
                 existing = await db.execute(f"PRAGMA table_info({table})")
@@ -45,3 +59,26 @@ async def init_db(db_path: str = "albion.db") -> None:
         for dead in DEAD_TABLES:
             await db.execute(f"DROP TABLE IF EXISTS {dead}")
         await db.commit()
+
+
+async def _init_pg(dsn: str) -> None:
+    """Схема на Postgres: compat-функции → DDL → миграции колонок."""
+    if asyncpg is None:
+        raise RuntimeError("asyncpg не установлен — DATABASE_URL указывает на Postgres")
+    conn = await asyncpg.connect(pg_dsn(dsn), server_settings={"TimeZone": "UTC"})
+    try:
+        await conn.execute(PG_COMPAT_SQL)
+        await conn.execute(ddl_pg(SCHEMA_SQL))
+        for table, columns in MIGRATIONS:
+            rows = await conn.fetch(
+                "SELECT column_name FROM information_schema.columns WHERE table_name=$1",
+                table)
+            existing_names = {r["column_name"] for r in rows}
+            for col_name, col_type in columns:
+                if col_name not in existing_names:
+                    await conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+        for dead in DEAD_TABLES:
+            await conn.execute(f"DROP TABLE IF EXISTS {dead}")
+    finally:
+        await conn.close()
+    logger.info("Postgres schema ready")

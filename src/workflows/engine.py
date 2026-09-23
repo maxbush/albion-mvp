@@ -43,4 +43,4 @@ class WorkflowEngine:
 
 # Global singleton
 from src.config import settings
-engine = WorkflowEngine(settings.database_path)
+engine = WorkflowEngine(settings.db_dsn)

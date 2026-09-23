@@ -122,5 +122,12 @@ class Settings(BaseSettings):
             return path or "albion.db"
         return "albion.db"
 
+    @property
+    def db_dsn(self) -> str:
+        """DSN хранилища: postgres:// URL для PG-деплоя, иначе путь sqlite-файла."""
+        if self.database_url.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://")):
+            return self.database_url
+        return self.database_path
+
 
 settings = Settings()
