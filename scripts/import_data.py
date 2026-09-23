@@ -13,7 +13,7 @@ merithub_enrollments. Идемпотентно: повторный прогон 
   enrollments — связка класс↔ученик → merithub_enrollments
 
 Колонки CSV (шаблон — --template KIND):
-  students/tutors: client_user_id,name,email,parent_telegram_id,phone,timezone,country
+  students/tutors: client_user_id,merithub_user_id,name,email,parent_telegram_id,phone,timezone,country
   classes:         class_id,title,class_type,schedule_days,start_time,
                    duration,tutor_client_user_id,end_date
   enrollments:     class_id,client_user_id,merithub_user_id,
@@ -48,10 +48,10 @@ from src.config import settings  # noqa: E402
 DAY_CODES = {"вс": 0, "пн": 1, "вт": 2, "ср": 3, "чт": 4, "пт": 5, "сб": 6}
 
 TEMPLATES = {
-    "students": ["client_user_id", "name", "email", "parent_telegram_id",
-                 "phone", "timezone", "country"],
-    "tutors": ["client_user_id", "name", "email", "parent_telegram_id",
-               "phone", "timezone", "country"],
+    "students": ["client_user_id", "merithub_user_id", "name", "email",
+                 "parent_telegram_id", "phone", "timezone", "country"],
+    "tutors": ["client_user_id", "merithub_user_id", "name", "email",
+               "parent_telegram_id", "phone", "timezone", "country"],
     "classes": ["class_id", "title", "class_type", "schedule_days",
                 "start_time", "duration", "tutor_client_user_id", "end_date"],
     "enrollments": ["class_id", "client_user_id", "merithub_user_id",
@@ -134,7 +134,15 @@ async def _import_people(rows, role: str, rep: Report, db_path, dry_run):
             rep.err(i, "нет client_user_id")
             continue
         tg = _clean(r.get("parent_telegram_id"))
-        phone = normalize_phone(_clean(r.get("phone")))
+        # '' (пустой/нецифровой ввод) → None: иначе COALESCE в upsert
+        # затирал бы уже сохранённый телефон пустой строкой
+        phone = normalize_phone(_clean(r.get("phone"))) or None
+        muid = _clean(r.get("merithub_user_id"))
+        if not muid:
+            # без маппинга на MeritHub userId визард /schedule не примет
+            # человека, а attendance-webhook не сопоставит присутствие
+            rep.warn(i, f"{cuid}: нет merithub_user_id — не участвует "
+                        "в расписании/посещаемости MeritHub")
         if not tg and not phone:
             rep.warn(i, f"{cuid} ({r.get('name') or '?'}) — нет TG и телефона: "
                         "уведомления доставлять некуда")
@@ -143,7 +151,8 @@ async def _import_people(rows, role: str, rep: Report, db_path, dry_run):
         addr = tg or (f"wa:{phone}" if phone else None)
         if not dry_run:
             await srepo.upsert(
-                cuid, name=_clean(r.get("name")), email=_clean(r.get("email")),
+                cuid, merithub_user_id=muid,
+                name=_clean(r.get("name")), email=_clean(r.get("email")),
                 parent_telegram_id=addr, timezone=_clean(r.get("timezone")),
                 country=_clean(r.get("country")), role=role)
             await crepo.upsert(
@@ -187,18 +196,30 @@ async def _import_classes(rows, rep: Report, db_path, dry_run):
 
 
 async def _import_enrollments(rows, rep: Report, db_path, dry_run):
-    from src.db.repository import MeritHubEnrollmentRepository
+    from src.db.repository import (
+        MeritHubEnrollmentRepository, MeritHubStudentRepository)
     repo = MeritHubEnrollmentRepository(db_path)
+    srepo = MeritHubStudentRepository(db_path)
     for i, r in enumerate(rows, 2):
         cid = _clean(r.get("class_id"))
         cuid = _clean(r.get("client_user_id"))
-        muid = _clean(r.get("merithub_user_id")) or cuid
+        # client_user_id и merithub_user_id — РАЗНЫЕ идентификаторы:
+        # подставлять cuid как muid нельзя — attendance-webhook шлёт именно
+        # merithub userId, иначе присутствующий ученик уйдёт в «не явился»
+        muid = _clean(r.get("merithub_user_id"))
+        if not muid and cuid:
+            srow = await srepo.get_by_client_id(cuid)
+            muid = (srow or {}).get("merithub_user_id")
         if not cid or not muid:
-            rep.err(i, "нужны class_id и client_user_id (или merithub_user_id)")
+            rep.err(i, "нужны class_id и merithub_user_id "
+                       "(явно или через students-маппинг по client_user_id)")
             continue
         parent = _clean(r.get("parent_telegram_id"))
-        if parent and parent.lstrip("+").isdigit() and (parent.startswith("+") or len(parent) >= 11):
-            parent = f"wa:{normalize_phone(parent)}"
+        # Сначала нормализуем — '+7 (999) 000-11-22' иначе не пройдёт
+        # isdigit-эвристику и сохранится как «телеграм-ид» с мусором.
+        np = normalize_phone(parent)
+        if np and len(np.lstrip("+")) >= 11:
+            parent = f"wa:{np}"
         if not dry_run:
             await repo.add(
                 cid, muid, client_user_id=cuid,

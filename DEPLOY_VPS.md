@@ -166,8 +166,21 @@ sudo systemctl enable --now albion-bot albion-webhook
 **`/etc/caddy/Caddyfile`:**
 ```
 albion.example.com {
+    # webhook-ресивер (uvicorn :8000): MeritHub и WhatsApp (Meta/Twilio).
+    # /metrics снаружи НЕ отдаём — только внутренний scrape (см. §7).
     handle /merithub/* {
         reverse_proxy 127.0.0.1:8000
+    }
+    handle /whatsapp/* {
+        reverse_proxy 127.0.0.1:8000
+    }
+    # провайдер WhatsApp=twilio: подпись проверяется по публичному URL,
+    # поэтому прокси должен передавать заголовки (Caddy ставит их сам).
+    handle /twilio/* {
+        reverse_proxy 127.0.0.1:8000
+    }
+    handle /metrics* {
+        respond 404
     }
     handle /tg* {
         reverse_proxy 127.0.0.1:8443
@@ -206,6 +219,21 @@ server {
     location /merithub/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host $host;
+    }
+    location /whatsapp/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+    }
+    # провайдер WhatsApp=twilio: X-Forwarded-* нужны для проверки подписи
+    # X-Twilio-Signature (подпись считается по публичному URL).
+    location /twilio/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+    }
+    location /metrics {
+        return 404;   # метрики наружу не отдаём — внутренний scrape
     }
     location /tg {
         proxy_pass http://127.0.0.1:8443;
@@ -258,11 +286,11 @@ curl -s "https://api.telegram.org/bot<TOKEN>/getWebhookInfo" | python3 -m json.t
 ### Мониторинг (`/metrics`)
 
 Вебхук-процесс отдаёт Prometheus-метрики на `/metrics` (порт 8000):
-`albion_notifications_total{channel,status}`, `albion_dlq_size`,
-`albion_scheduled_actions_total{status}`,
+`albion_notifications{channel,status}`, `albion_dlq_size`,
+`albion_scheduled_actions{status}`,
 `albion_scheduled_pending_lag_seconds`,
 `albion_webhook_events_total{signature_ok}`,
-`albion_workflows_total{state}`, `albion_kill_switch_level`.
+`albion_workflows{state}`, `albion_kill_switch_level`.
 
 ```bash
 curl http://127.0.0.1:8000/metrics   # локально на VPS

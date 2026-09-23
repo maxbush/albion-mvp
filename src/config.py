@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     # Номер отправителя в формате Twilio: "whatsapp:+14155238886" (sandbox).
     twilio_whatsapp_from: str = "whatsapp:+14155238886"
     twilio_webhook_path: str = "/twilio/whatsapp"
+    # Approved Content Template для исходящих ВНЕ 24h-окна (аналог
+    # whatsapp_notification_template у Meta): body с {{1}} = текст уведомления.
+    twilio_content_sid: str | None = None
 
     # Владельцы/админы пилота — TG ID через запятую (узнать свой: /whoami в боте).
     # Эти аккаунты могут раздавать роли командой /role.

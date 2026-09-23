@@ -67,18 +67,24 @@ async def _init_pg(dsn: str) -> None:
         raise RuntimeError("asyncpg не установлен — DATABASE_URL указывает на Postgres")
     conn = await asyncpg.connect(pg_dsn(dsn), server_settings={"TimeZone": "UTC"})
     try:
-        await conn.execute(PG_COMPAT_SQL)
-        await conn.execute(ddl_pg(SCHEMA_SQL))
-        for table, columns in MIGRATIONS:
-            rows = await conn.fetch(
-                "SELECT column_name FROM information_schema.columns WHERE table_name=$1",
-                table)
-            existing_names = {r["column_name"] for r in rows}
-            for col_name, col_type in columns:
-                if col_name not in existing_names:
-                    await conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
-        for dead in DEAD_TABLES:
-            await conn.execute(f"DROP TABLE IF EXISTS {dead}")
+        # параллельный init_db (бот + webhook-процесс) не должен гонять DDL
+        # одновременно — advisory lock сериализует прогон на уровне PG
+        await conn.execute("SELECT pg_advisory_lock(72831415)")
+        try:
+            await conn.execute(PG_COMPAT_SQL)
+            await conn.execute(ddl_pg(SCHEMA_SQL))
+            for table, columns in MIGRATIONS:
+                rows = await conn.fetch(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name=$1",
+                    table)
+                existing_names = {r["column_name"] for r in rows}
+                for col_name, col_type in columns:
+                    if col_name not in existing_names:
+                        await conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+            for dead in DEAD_TABLES:
+                await conn.execute(f"DROP TABLE IF EXISTS {dead}")
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock(72831415)")
     finally:
         await conn.close()
     logger.info("Postgres schema ready")

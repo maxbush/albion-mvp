@@ -155,7 +155,11 @@ async def test_scheduler_requeues_action_after_handler_failure(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_cmd_kill_switch_admin_only(monkeypatch):
+async def test_cmd_kill_switch_admin_only(tmp_path, monkeypatch):
+    # Kill switch персистится в system_settings — нужна инициализированная БД
+    monkeypatch.chdir(tmp_path)
+    from src.db.migrations import init_db
+    await init_db("albion.db")
     monkeypatch.setattr(settings, "albion_admin_telegram_ids", "100")
     from src.bot.handlers import cmd_kill_switch
 

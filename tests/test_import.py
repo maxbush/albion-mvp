@@ -86,7 +86,7 @@ async def test_import_enrollments_and_errors(tmp_path, monkeypatch, capsys):
     path = _csv(tmp_path, "e.csv", [
         ["class_id", "client_user_id", "merithub_user_id",
          "parent_telegram_id", "student_name", "role"],
-        ["C1", "p1", "", "555", "Миша", "student"],
+        ["C1", "p1", "usr_847", "555", "Миша", "student"],
         ["", "p2", "", "", "", ""],  # нет class_id → ошибка
     ])
     rc = await run(path, "enrollments", db, dry_run=False)

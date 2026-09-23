@@ -7,7 +7,9 @@ services:
     environment:
       POSTGRES_DB: albion
       POSTGRES_USER: albion
-      POSTGRES_PASSWORD: albion
+      # пароль — из .env (POSTGRES_PASSWORD=…), дефолта нет: compose упадёт
+      # с понятной ошибкой, если переменная не задана
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
@@ -18,7 +20,7 @@ services:
     build: .
     env_file: .env
     # Для PG-режима в .env:
-    #   DATABASE_URL=postgresql://albion:albion@db:5432/albion
+    #   DATABASE_URL=postgresql://albion:<POSTGRES_PASSWORD>@db:5432/albion
     # Для sqlite-режима (дефолт) volume ниже сохраняет файл между рестартами.
     volumes:
       - ./albion.db:/app/albion.db

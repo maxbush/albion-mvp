@@ -25,13 +25,14 @@ async def collect_metrics(dsn: str) -> str:
     emit = lines.append
 
     async with connect(dsn) as db:
-        # notifications: sent/failed/queued по каналам
-        emit("# HELP albion_notifications_total Уведомления по каналу и статусу")
-        emit("# TYPE albion_notifications_total counter")
+        # notifications: sent/failed/queued по каналам — gauge, т.к. счётчики
+        # статуса меняются (queued→sent), а не растут монотонно
+        emit("# HELP albion_notifications Уведомления по каналу и статусу")
+        emit("# TYPE albion_notifications gauge")
         for r in await db.fetchall(
                 "SELECT channel, status, COUNT(*) AS n "
                 "FROM notifications GROUP BY channel, status"):
-            emit(f'albion_notifications_total{{channel="{r["channel"]}",'
+            emit(f'albion_notifications{{channel="{r["channel"]}",'
                  f'status="{r["status"]}"}} {r["n"]}')
 
         # DLQ
@@ -41,11 +42,11 @@ async def collect_metrics(dsn: str) -> str:
         emit(f"albion_dlq_size {row['n'] if row else 0}")
 
         # scheduled_actions: очередь + лаг самой старой pending-задачи
-        emit("# HELP albion_scheduled_actions_total Задачи планировщика по статусу")
-        emit("# TYPE albion_scheduled_actions_total gauge")
+        emit("# HELP albion_scheduled_actions Задачи планировщика по статусу")
+        emit("# TYPE albion_scheduled_actions gauge")
         for r in await db.fetchall(
                 "SELECT status, COUNT(*) AS n FROM scheduled_actions GROUP BY status"):
-            emit(f'albion_scheduled_actions_total{{status="{r["status"]}"}} {r["n"]}')
+            emit(f'albion_scheduled_actions{{status="{r["status"]}"}} {r["n"]}')
         emit("# HELP albion_scheduled_pending_lag_seconds "
              "Возраст самой старой pending-задачи")
         emit("# TYPE albion_scheduled_pending_lag_seconds gauge")
@@ -69,11 +70,11 @@ async def collect_metrics(dsn: str) -> str:
             emit(f'albion_webhook_events_total{{signature_ok="{r["signature_ok"]}"}} {r["n"]}')
 
         # workflows
-        emit("# HELP albion_workflows_total Workflow-инстансы по статусу")
-        emit("# TYPE albion_workflows_total gauge")
+        emit("# HELP albion_workflows Workflow-инстансы по статусу")
+        emit("# TYPE albion_workflows gauge")
         for r in await db.fetchall(
                 "SELECT state, COUNT(*) AS n FROM workflow_instances GROUP BY state"):
-            emit(f'albion_workflows_total{{state="{r["state"]}"}} {r["n"]}')
+            emit(f'albion_workflows{{state="{r["state"]}"}} {r["n"]}')
 
         # kill switch level
         emit("# HELP albion_kill_switch_level Уровень kill switch (0/1/2)")
