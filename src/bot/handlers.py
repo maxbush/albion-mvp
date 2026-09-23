@@ -694,8 +694,9 @@ async def cmd_reschedule(upd: Update, _ctx) -> None:
     except ValueError:
         await upd.message.reply_text("❌ Неверный формат даты/времени (YYYY-MM-DD, ЧЧ:ММ).")
         return
-    if d_new < org_now().date():
-        await upd.message.reply_text("❌ Новая дата в прошлом.")
+    from src.workflows.lesson_ops import _parse_dt
+    if _parse_dt(f"{new_date}T{new_time}") <= org_now():
+        await upd.message.reply_text("❌ Новый слот уже в прошлом (org-время).")
         return
     # Исходная дата должна быть эффективным занятием (иначе override
     # замаскирует дату, которой и так нет — тихий no-op).
@@ -717,22 +718,40 @@ async def cmd_reschedule(upd: Update, _ctx) -> None:
             "⛔ Перенос невозможен — слот пересекается с другими занятиями "
             "репетитора:\n\n" + "\n".join(conflict_lines(conflicts)))
         return
+    # Целевая дата не должна быть уже занята другим occurrence этого класса —
+    # иначе на один день сядут два урока и effective_dates «склеит» их.
+    eff_dest = await effective_dates(cls, [d_new])
+    if new_date in eff_dest:
+        await upd.message.reply_text(
+            f"❌ {new_date} у класса {class_id} уже есть занятие — слот занят.")
+        return
+    # Платность считаем заново на сервере (как в cancel_yes): запрос мог лежать
+    # у координатора, и окно за это время могло стать поздним.
+    verdict = _cancel_policy_verdict(cls, old_date, "reschedule")
+    is_paid = bool(verdict and verdict.is_paid)
     await ScheduleOverrideRepository().add(
         class_id, old_date, "moved",
         new_date=new_date, new_time=new_time,
-        reason="coordinator",
+        reason="coordinator", is_paid=is_paid,
         created_by=str(upd.effective_user.id),
     )
-    await bus.publish(Event(EventTypes.LESSON_RESCHEDULED, {
+    report = await bus.publish(Event(EventTypes.LESSON_RESCHEDULED, {
         "class_id": class_id,
         "occurrence_date": old_date,
         "new_date": new_date,
         "new_time": new_time,
+        "is_paid": is_paid,
         "created_by": str(upd.effective_user.id),
     }))
-    await upd.message.reply_text(
-        f"✅ Перенос исполнен: {class_id} с {old_date} → {new_date} {new_time}.\n"
-        "Родители и репетитор уведомлены, напоминания перепланированы.")
+    paid_note = " (💰 оплачиваемый перенос)" if is_paid else ""
+    if report.failed:
+        await upd.message.reply_text(
+            f"⚠️ Перенос записан: {class_id} {old_date} → {new_date} {new_time}{paid_note}\n"
+            f"но уведомления/перепланировка частично не прошли: {report.errors}")
+    else:
+        await upd.message.reply_text(
+            f"✅ Перенос исполнен{paid_note}: {class_id} с {old_date} → {new_date} {new_time}.\n"
+            "Родители и репетитор уведомлены, напоминания перепланированы.")
     logger.info("Reschedule by %s: %s %s → %s %s",
                 upd.effective_user.id, class_id, old_date, new_date, new_time)
 
@@ -1532,10 +1551,12 @@ def setup_handlers(app: Application) -> None:
         last_error = None
         for attempt in range(3):
             try:
-                await sender.send(address, msg, ch_buttons or None)
+                result = await sender.send(address, msg, ch_buttons or None)
+                if not result.ok:
+                    raise RuntimeError(result.error or f"{channel} send rejected")
                 nid = event.data.get("notification_id")
                 if nid:
-                    await NotificationRepository().mark_sent(nid)
+                    await NotificationRepository().mark_sent(nid, channel=channel)
                 return
             except Exception as e:
                 last_error = e
