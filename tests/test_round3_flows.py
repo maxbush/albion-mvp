@@ -213,7 +213,8 @@ async def test_p04_mh_contacts_has_parse_mode(tmp_path, monkeypatch):
     text, kw = upd.message.replies[0]
     assert kw.get("parse_mode") == "Markdown"
     assert "Parent\\_One" in text
-    assert "+44\\_123" in text
+    # phone нормализуется при записи ('+44_123' → '+44123')
+    assert "+44123" in text
 
 
 @pytest.mark.asyncio

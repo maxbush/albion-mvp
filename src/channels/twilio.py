@@ -25,17 +25,18 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from src.channels.base import ChannelButton, ChannelSender, SendResult
+# Общий маппинг нумерованных кнопок WA-провайдеров (бывш. twilio_btns:*).
+from src.channels.inbound import load_button_map, save_button_map  # noqa: F401
 from src.config import settings
 
 logger = logging.getLogger(__name__)
 
-_BTN_MAP_PREFIX = "twilio_btns:"
 _WA_WINDOW = timedelta(hours=24)  # customer-service окно Meta (то же, что у WA)
 
 
 def _to_wa(address: str) -> str:
     """'+79991112233' → 'whatsapp:+79991112233'."""
-    a = address.strip().lstrip("whatsapp:")
+    a = address.strip().removeprefix("whatsapp:")
     return f"whatsapp:+{a.lstrip('+')}"
 
 
@@ -56,21 +57,7 @@ def verify_twilio_signature(url: str, params: dict, signature: str | None,
     return hmac.compare_digest(expected, signature)
 
 
-async def save_button_map(phone: str, callback_ids: list[str],
-                          db_path: str | None = None) -> None:
-    """Адрес → последние показанные callback-кнопки (для развёртки '2' обратно)."""
-    from src.db.repository import SystemSettingsRepository
-    await SystemSettingsRepository(db_path).set(
-        f"{_BTN_MAP_PREFIX}{phone}", json.dumps(callback_ids))
 
-
-async def load_button_map(phone: str, db_path: str | None = None) -> list[str]:
-    from src.db.repository import SystemSettingsRepository
-    raw = await SystemSettingsRepository(db_path).get(f"{_BTN_MAP_PREFIX}{phone}")
-    try:
-        return json.loads(raw) if raw else []
-    except json.JSONDecodeError:
-        return []
 
 
 class TwilioClient:
@@ -176,9 +163,10 @@ class TwilioSender(ChannelSender):
 
     async def _window_open(self, address: str) -> bool:
         """24h-окно: свежесть последнего входящего от адреса (wa_window:*)."""
+        from src.channels.inbound import normalize_phone
         from src.db.repository import SystemSettingsRepository
         raw = await SystemSettingsRepository(self._db_path).get(
-            f"wa_window:{address}")
+            f"wa_window:{normalize_phone(address)}")
         try:
             return (datetime.now(timezone.utc)
                     - datetime.fromisoformat(raw)) < _WA_WINDOW

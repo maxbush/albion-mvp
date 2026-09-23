@@ -1568,12 +1568,24 @@ def setup_handlers(app: Application) -> None:
             ch_buttons = [ChannelButton(label="✅ Всё в порядке", callback_id=cb_data)]
         resolved = await resolve(telegram_id=tg)
         if not resolved:
+            # Получатель без единого маршрута ('wa:+…' без настроенного
+            # WhatsApp и т.п.): без mark_failed уведомление навсегда
+            # останется 'queued' — видно только в /metrics как вечная
+            # очередь. Фиксируем провал, чтобы не терять такие случаи.
             logger.warning("No channel resolved for %s", tg)
+            nid = event.data.get("notification_id")
+            if nid:
+                await NotificationRepository().mark_failed(
+                    nid, f"no channel resolved for {tg}")
             return
         channel, address = resolved
         sender = get_sender(channel)
         if sender is None:
             logger.warning("No sender registered for channel %s", channel)
+            nid = event.data.get("notification_id")
+            if nid:
+                await NotificationRepository().mark_failed(
+                    nid, f"no sender registered for {channel}")
             return
         last_error = None
         for attempt in range(3):

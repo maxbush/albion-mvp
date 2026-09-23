@@ -10,6 +10,7 @@
 """
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -22,6 +23,7 @@ _WA_MAX_REPLY_BUTTONS = 3
 _WA_MAX_LIST_ROWS = 10
 _WA_BUTTON_TITLE_MAX = 20
 _WA_ROW_TITLE_MAX = 24
+_WA_WINDOW = timedelta(hours=24)  # окно свободных сообщений Meta
 
 
 class WhatsAppClient:
@@ -120,14 +122,72 @@ class MockWhatsAppClient:
 
     async def send_template(self, to: str, template: str, lang: str = "ru",
                             components: list | None = None) -> dict:
-        return await self._record("template", to, {"template": template, "lang": lang})
+        return await self._record("template", to, {
+            "template": template, "lang": lang, "components": components})
 
 
 class WhatsAppSender(ChannelSender):
     name = "whatsapp"
 
-    def __init__(self, client):
+    def __init__(self, client, db_path: str | None = None):
         self._client = client
+        self._db_path = db_path
+
+    async def _window_open(self, address: str) -> bool:
+        """24h-окно Meta: открыто, если получатель писал нам за последние 24ч
+        (отметку ставит enqueue_inbound). Вне окна — только шаблоны."""
+        try:
+            from src.channels.inbound import normalize_phone
+            from src.db.repository import SystemSettingsRepository
+            raw = await SystemSettingsRepository(self._db_path).get(
+                f"wa_window:{normalize_phone(address)}")
+            if not raw:
+                return False
+            marked = datetime.fromisoformat(raw)
+            if marked.tzinfo is None:
+                marked = marked.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc) - marked < _WA_WINDOW
+        except Exception:
+            logger.exception("wa_window check failed for %s", address)
+            # fail closed: неизвестное состояние окна → шаблон, а не
+            # free-form, который Meta гарантированно отклонит
+            return False
+
+    async def _send_template(
+        self,
+        address: str,
+        text: str,
+        cb_buttons: list[ChannelButton],
+    ) -> dict:
+        """Business-initiated уведомление approved-шаблоном.
+
+        Шаблон: body '{{1}}' = текст + нумерованные опции кнопок.
+        Quick-reply кнопки шаблона НЕ используем: их подписи статичны
+        (заданы в шаблоне при approve), а наши payload'ы динамичны —
+        рассинхрон label/payload вводил в заблуждение. Вместо них —
+        «Ответьте цифрой» + общий button-map (wa_btns:*), который
+        webhook разворачивает обратно в callback_id. Заодно решает
+        лимит ≤3 кнопок и единый путь с Twilio-провайдером.
+        """
+        if cb_buttons:
+            opts = "\n".join(f"{i}. {b.label}"
+                             for i, b in enumerate(cb_buttons, 1))
+            text = f"{text}\n\nОтветьте цифрой:\n{opts}"
+            try:
+                from src.channels.inbound import save_button_map
+                await save_button_map(
+                    address, [b.callback_id for b in cb_buttons],
+                    db_path=self._db_path)
+            except Exception:
+                logger.exception("wa: не удалось сохранить button map для %s",
+                                 address)
+        components: list[dict] = [{
+            "type": "body",
+            "parameters": [{"type": "text", "text": text[:1024]}],
+        }]
+        return await self._client.send_template(
+            address, settings.whatsapp_notification_template,
+            settings.whatsapp_template_lang, components)
 
     async def send(
         self,
@@ -140,7 +200,12 @@ class WhatsAppSender(ChannelSender):
         # Session-сообщение WA не умеет URL-кнопки — ссылки уходят строками.
         for b in url_buttons:
             text = f"{text}\n{b.label}: {b.url}"
-        if not cb_buttons:
+        # Вне 24h-окна free-form запрещён Meta → approved-шаблон,
+        # если он настроен; без шаблона — пробуем session (dev/mock).
+        if (settings.whatsapp_notification_template
+                and not await self._window_open(address)):
+            resp = await self._send_template(address, text, cb_buttons)
+        elif not cb_buttons:
             resp = await self._client.send_text(address, text)
         elif len(cb_buttons) <= _WA_MAX_REPLY_BUTTONS:
             resp = await self._client.send_reply_buttons(address, text, cb_buttons)

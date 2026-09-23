@@ -6,6 +6,7 @@ Webhook-процесс (src/api/whatsapp.py) кладёт немедленную
 MeritHub webhook → scheduler (см. DECISIONS.md D3/D4).
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -43,6 +44,15 @@ async def enqueue_inbound(
         None, now, kind,
         {"channel": channel, "address": address, **payload},
     )
+    if channel == "whatsapp":
+        # Отметка 24h-окна Meta: любое входящее открывает окно свободных
+        # ответов. WhatsAppSender читает её для выбора session vs template.
+        try:
+            from src.db.repository import SystemSettingsRepository
+            await SystemSettingsRepository(db_path).set(
+                f"wa_window:{normalize_phone(address)}", now)
+        except Exception:
+            logger.exception("wa_window mark failed for %s", address)
     logger.info("Inbound %s from %s:%s queued (action %s)", kind, channel, address, aid)
     return aid
 
@@ -94,3 +104,85 @@ async def _autobind_contact(channel: str, address: str,
     await ucr.set(user["id"], "whatsapp", phone, preferred=False)
     logger.info("Autobound whatsapp %s → user %s", phone, user["id"])
     return {"user_id": user["id"], "channel": channel, "address": address}
+
+
+async def recipient_aliases(ref: str, db_path: str | None = None) -> set[str]:
+    """Все адресные рефы того же человека: TG id, 'wa:+…', голый телефон.
+
+    Записи (enrollment, workflow data) пишутся под одним каналом, а актор
+    после привязки может прийти с другого — без расширения списка записи,
+    сделанные под альтернативным каналом, невидимы актору."""
+    refs = {str(ref)}
+    try:
+        from src.db.repository import MeritHubContactRepository, UserRepository
+        ucr = UserChannelRepository(db_path)
+        tg = str(ref)
+        row = None
+        if tg.startswith("wa:"):
+            row = await ucr.find_by_address("whatsapp", tg[3:])
+        else:
+            row = await ucr.find_by_address("telegram", tg)
+        if row:
+            for c in await ucr.list_for_user(row["user_id"]):
+                refs.add(f"wa:{c['address']}" if c["channel"] == "whatsapp"
+                         else c["address"])
+        contacts = MeritHubContactRepository(db_path)
+        phone = normalize_phone(tg)
+        if phone:
+            crow = await contacts.get_by_phone(phone)
+            if crow and crow.get("telegram_id"):
+                refs.add(str(crow["telegram_id"]))
+        if not tg.startswith("wa:"):
+            crow = await contacts.get_by_telegram(tg)
+            np = normalize_phone((crow or {}).get("phone"))
+            if np:
+                refs.add(f"wa:{np}")
+                refs.add(np)
+    except Exception:
+        logger.exception("recipient alias expansion failed for %s", ref)
+    return refs
+
+
+async def resolve_user_for_ref(ref: str, db_path: str | None = None) -> dict | None:
+    """users-запись по адресному рефу получателя.
+
+    'wa:+…' → контакт (phone → telegram_id) → user. Голый TG id — как раньше.
+    Нужен везде, где раньше стоял get_by_telegram_id: 'wa:'-родитель без
+    TG-аккаунта не «незарегистрирован» — ему можно слать в WhatsApp."""
+    from src.db.repository import UserRepository
+    users = UserRepository(db_path)
+    user = await users.get_by_telegram_id(str(ref))
+    if user or not str(ref).startswith("wa:"):
+        return user
+    from src.db.repository import MeritHubContactRepository
+    crow = await MeritHubContactRepository(db_path).get_by_phone(
+        normalize_phone(str(ref)[3:]))
+    if crow and crow.get("telegram_id"):
+        return await users.get_by_telegram_id(str(crow["telegram_id"]))
+    return None
+
+
+_BTN_MAP_PREFIX = "wa_btns:"
+
+
+async def save_button_map(phone: str, callback_ids: list[str],
+                          db_path: str | None = None) -> None:
+    """Адрес → последние нумерованные callback-кнопки.
+
+    Общий маппинг WA-провайдеров: нумерованные опции («Ответьте цифрой»)
+    у Meta-шаблона и у Twilio одинаково разворачиваются webhook'ом обратно
+    в исходный callback_id.
+    """
+    from src.db.repository import SystemSettingsRepository
+    await SystemSettingsRepository(db_path).set(
+        f"{_BTN_MAP_PREFIX}{normalize_phone(phone)}", json.dumps(callback_ids))
+
+
+async def load_button_map(phone: str, db_path: str | None = None) -> list[str]:
+    from src.db.repository import SystemSettingsRepository
+    raw = await SystemSettingsRepository(db_path).get(
+        f"{_BTN_MAP_PREFIX}{normalize_phone(phone)}")
+    try:
+        return json.loads(raw) if raw else []
+    except json.JSONDecodeError:
+        return []

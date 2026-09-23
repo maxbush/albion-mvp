@@ -78,11 +78,15 @@ src/channels/inbound.py      # нормализация входящих → MES
 (согласование шаблонов Meta занимает часы-дни — подаём заранее),
 в окне — free-form + interactive (до 3 кнопок quick reply, списки до 10).
 
-- `callback_data` вида `resolve:1:abc` → WA quick-reply button `id`; при
-  ответе webhook приводит `button.id` обратно к той же грамматике —
+- Внутри окна `callback_data` вида `resolve:1:abc` → WA quick-reply button
+  `id`; при ответе webhook приводит `button.id` обратно к той же грамматике —
   вся логика callback'ов (`handle_callback`, nonce, resolve) переиспользуется
   через тонкий адаптер `channels/inbound.py`.
 - Списки (>3 опций, выбор занятия для отмены/переноса) → WA `list` message.
+- Вне окна (шаблон): подписи quick-reply кнопок шаблона статичны, поэтому
+  опции уходят нумерованным списком внутри `{{1}}` («Ответьте цифрой»),
+  а webhook разворачивает цифру обратно в callback_id через общий
+  button-map `wa_btns:*` (тот же механизм, что у Twilio-провайдера).
 - Текстовые ответы → `MESSAGE_INCOMING` → существующий AI-классификатор.
   `users`/контакты WA находим по `phone` (поле уже есть в
   `merithub_contacts`, `users.phone`).
