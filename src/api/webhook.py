@@ -208,13 +208,16 @@ def create_app() -> FastAPI:
         logger.info("MeritHub webhook receiver ready on path=%s", settings.merithub_webhook_path)
         yield
 
-    app = FastAPI(title="ALBION MeritHub webhook receiver", lifespan=lifespan)
+    app = FastAPI(title="ALBION webhook receiver", lifespan=lifespan)
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "service": "albion-merithub-webhook"}
+        return {"status": "ok", "service": "albion-webhook-receiver"}
 
     app.add_api_route(settings.merithub_webhook_path, _receive, methods=["POST"])
+
+    from src.api.whatsapp import register_whatsapp_routes
+    register_whatsapp_routes(app)
     return app
 
 

@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     merithub_webhook_port: int = 8000
     merithub_webhook_path: str = "/merithub/webhook"
 
+    # WhatsApp Business Cloud API (этап 1). Без token+phone_number_id —
+    # mock-режим: отправитель создаётся, но в боте НЕ регистрируется
+    # (иначе реальные уведомления уходили бы в mock-никуда).
+    whatsapp_token: str | None = None               # system user token
+    whatsapp_phone_number_id: str | None = None
+    whatsapp_business_account_id: str | None = None
+    whatsapp_app_secret: str | None = None          # X-Hub-Signature-256 verify
+    whatsapp_verify_token: str | None = None        # GET webhook challenge
+    whatsapp_webhook_path: str = "/whatsapp/webhook"
+    whatsapp_graph_version: str = "v21.0"
+
     # Владельцы/админы пилота — TG ID через запятую (узнать свой: /whoami в боте).
     # Эти аккаунты могут раздавать роли командой /role.
     albion_admin_telegram_ids: str = ""
@@ -81,6 +92,11 @@ class Settings(BaseSettings):
     def merithub_use_real(self) -> bool:
         """True, если заданы MeritHub CLIENT_ID + CLIENT_SECRET (Vendor Agnostic switch)."""
         return bool(self.merithub_client_id and self.merithub_client_secret)
+
+    @property
+    def whatsapp_use_real(self) -> bool:
+        """True, если заданы WHATSAPP_TOKEN + PHONE_NUMBER_ID."""
+        return bool(self.whatsapp_token and self.whatsapp_phone_number_id)
 
     def org_zone(self):
         """ZoneInfo канонической зоны организации.
