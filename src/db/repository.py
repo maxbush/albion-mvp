@@ -125,10 +125,11 @@ class NotificationRepository(Repository):
             (rid, type_, channel, content),
         )
 
-    async def mark_sent(self, nid: int) -> None:
+    async def mark_sent(self, nid: int, channel: str | None = None) -> None:
         await self._execute(
-            "UPDATE notifications SET status='sent', sent_at=? WHERE id=?",
-            (datetime.now(timezone.utc).isoformat(), nid),
+            "UPDATE notifications SET status='sent', sent_at=?, "
+            "channel=COALESCE(?, channel) WHERE id=?",
+            (datetime.now(timezone.utc).isoformat(), channel, nid),
         )
 
     async def mark_failed(self, nid: int, error: str) -> None:
@@ -575,6 +576,18 @@ class MeritHubContactRepository(Repository):
         return await self._fetchone(
             "SELECT * FROM merithub_contacts WHERE telegram_id=?", (str(telegram_id),))
 
+    async def get_by_phone(self, phone: str) -> dict | None:
+        """Контакт по телефону — сравнение по цифрам (формат записи может отличаться)."""
+        digits = "".join(c for c in (phone or "") if c.isdigit())
+        if not digits:
+            return None
+        rows = await self._fetchall(
+            "SELECT * FROM merithub_contacts WHERE phone IS NOT NULL")
+        for row in rows:
+            if "".join(c for c in row["phone"] if c.isdigit()) == digits:
+                return row
+        return None
+
     async def list_all(self) -> list[dict]:
         return await self._fetchall("SELECT * FROM merithub_contacts ORDER BY role, name")
 
@@ -636,9 +649,11 @@ class MeritHubEnrollmentRepository(Repository):
             "(class_id, merithub_user_id, client_user_id, parent_telegram_id, student_name, role) "
             "VALUES (?,?,?,?,?,?) "
             "ON CONFLICT(class_id, merithub_user_id) DO UPDATE SET "
-            "client_user_id=excluded.client_user_id, "
-            "parent_telegram_id=excluded.parent_telegram_id, "
-            "student_name=excluded.student_name, role=excluded.role",
+            # COALESCE: частичный повторный импорт не затирает поля
+            "client_user_id=COALESCE(excluded.client_user_id, merithub_enrollments.client_user_id), "
+            "parent_telegram_id=COALESCE(excluded.parent_telegram_id, merithub_enrollments.parent_telegram_id), "
+            "student_name=COALESCE(excluded.student_name, merithub_enrollments.student_name), "
+            "role=COALESCE(excluded.role, merithub_enrollments.role)",
             (class_id, merithub_user_id, client_user_id, parent_telegram_id, student_name, role),
         )
 
@@ -734,8 +749,9 @@ class UserChannelRepository(Repository):
     ) -> None:
         if preferred:
             await self._execute(
-                "UPDATE user_channels SET is_preferred=0 WHERE user_id=? AND channel!=?",
-                (user_id, channel),
+                "UPDATE user_channels SET is_preferred=0 "
+                "WHERE user_id=? AND NOT (channel=? AND address=?)",
+                (user_id, channel, address),
             )
         await self._execute(
             "INSERT INTO user_channels (user_id, channel, address, is_preferred, verified) "
@@ -784,6 +800,17 @@ class ScheduleOverrideRepository(Repository):
         is_paid: bool = False,
         created_by: str | None = None,
     ) -> int:
+        # occurrence_date — дата, которую видит пользователь (эффективная).
+        # Если на неё уже приехал перенос — правим ИСХОДНЫЙ override:
+        # иначе создаётся «сирота» (маска на дату без занятия), а moved-запись
+        # продолжает вводить урок — отмена/повторный перенос не сработают.
+        existing = await self._fetchone(
+            "SELECT occurrence_date FROM schedule_overrides "
+            "WHERE class_id=? AND action='moved' AND new_date=?",
+            (class_id, occurrence_date),
+        )
+        if existing:
+            occurrence_date = existing["occurrence_date"]
         return await self._insert(
             "INSERT INTO schedule_overrides "
             "(class_id, occurrence_date, action, new_date, new_time, reason, is_paid, created_by) "
