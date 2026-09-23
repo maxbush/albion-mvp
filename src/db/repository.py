@@ -575,6 +575,10 @@ class MeritHubContactRepository(Repository):
         return await self._fetchone(
             "SELECT * FROM merithub_contacts WHERE telegram_id=?", (str(telegram_id),))
 
+    async def get_by_phone(self, phone: str) -> dict | None:
+        return await self._fetchone(
+            "SELECT * FROM merithub_contacts WHERE phone=?", (phone,))
+
     async def list_all(self) -> list[dict]:
         return await self._fetchall("SELECT * FROM merithub_contacts ORDER BY role, name")
 

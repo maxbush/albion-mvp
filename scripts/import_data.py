@@ -42,6 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.channels.inbound import normalize_phone  # noqa: E402
 from src.config import settings  # noqa: E402
 
 DAY_CODES = {"вс": 0, "пн": 1, "вт": 2, "ср": 3, "чт": 4, "пт": 5, "сб": 6}
@@ -133,14 +134,17 @@ async def _import_people(rows, role: str, rep: Report, db_path, dry_run):
             rep.err(i, "нет client_user_id")
             continue
         tg = _clean(r.get("parent_telegram_id"))
-        phone = _clean(r.get("phone"))
+        phone = normalize_phone(_clean(r.get("phone")))
         if not tg and not phone:
             rep.warn(i, f"{cuid} ({r.get('name') or '?'}) — нет TG и телефона: "
                         "уведомления доставлять некуда")
+        # Адрес уведомлений: TG при наличии, иначе 'wa:+…' — роутер
+        # parse_recipient направит в WhatsApp-канал автоматически.
+        addr = tg or (f"wa:{phone}" if phone else None)
         if not dry_run:
             await srepo.upsert(
                 cuid, name=_clean(r.get("name")), email=_clean(r.get("email")),
-                parent_telegram_id=tg, timezone=_clean(r.get("timezone")),
+                parent_telegram_id=addr, timezone=_clean(r.get("timezone")),
                 country=_clean(r.get("country")), role=role)
             await crepo.upsert(
                 cuid, telegram_id=tg, role=role, name=_clean(r.get("name")),
@@ -192,10 +196,13 @@ async def _import_enrollments(rows, rep: Report, db_path, dry_run):
         if not cid or not muid:
             rep.err(i, "нужны class_id и client_user_id (или merithub_user_id)")
             continue
+        parent = _clean(r.get("parent_telegram_id"))
+        if parent and parent.lstrip("+").isdigit() and (parent.startswith("+") or len(parent) >= 11):
+            parent = f"wa:{normalize_phone(parent)}"
         if not dry_run:
             await repo.add(
                 cid, muid, client_user_id=cuid,
-                parent_telegram_id=_clean(r.get("parent_telegram_id")),
+                parent_telegram_id=parent,
                 student_name=_clean(r.get("student_name")),
                 role=_clean(r.get("role")) or "student")
         rep.imported += 1
