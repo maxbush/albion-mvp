@@ -74,13 +74,21 @@ async def test_other_tutor_ignored(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_exclude_class_id(tmp_path, monkeypatch):
+async def test_exclude_occurrence(tmp_path, monkeypatch):
+    """Перенос: исключается только исходный occurrence — остальные слоты
+    того же класса по-прежнему конфликтуют."""
     await _init_tmp_db(monkeypatch, tmp_path)
-    await _add_class(_perma("C1", days=[1]))
+    mon = _future_monday()
+    await _add_class(_perma("C1", days=[1]))  # пн 15:00
     hits = await find_conflicts("t1", {
-        "ctype": "perma", "days": [1], "hhmm": "15:00", "duration": 60,
-        "exclude_class_id": "C1"})
+        "ctype": "one", "date": mon.isoformat(), "hhmm": "15:00", "duration": 60,
+        "exclude_occurrence": ("C1", mon.isoformat())})
     assert hits == []
+    mon2 = mon + timedelta(days=7)
+    hits = await find_conflicts("t1", {
+        "ctype": "one", "date": mon2.isoformat(), "hhmm": "15:00", "duration": 60,
+        "exclude_occurrence": ("C1", mon.isoformat())})
+    assert hits and hits[0]["class_id"] == "C1"
 
 
 @pytest.mark.asyncio

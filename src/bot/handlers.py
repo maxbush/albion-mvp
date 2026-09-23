@@ -707,11 +707,12 @@ async def cmd_reschedule(upd: Update, _ctx) -> None:
             "(по паттерну или уже перенесено/отменено).")
         return
     # Целевой слот не должен пересекать другие занятия этого репетитора
-    # (жёсткий блок, PR5); свой класс из проверки исключаем.
+    # (жёсткий блок, PR5); исключаем только ИСХОДНЫЙ occurrence — остальные
+    # слоты этого же класса по-прежнему заняты.
     conflicts = await find_conflicts(cls.get("tutor_client_user_id") or "", {
         "ctype": "one", "date": new_date, "hhmm": new_time,
         "duration": int(cls.get("duration") or 60),
-        "exclude_class_id": class_id,
+        "exclude_occurrence": (class_id, old_date),
     })
     if conflicts:
         await upd.message.reply_text(

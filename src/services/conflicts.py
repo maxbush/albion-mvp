@@ -13,6 +13,7 @@ from datetime import date, timedelta
 
 from src.db.repository import MeritHubClassRepository
 from src.services.overrides import effective_dates
+from src.utils.recurrence import org_now
 
 HORIZON_DAYS = 60
 
@@ -45,14 +46,18 @@ async def find_conflicts(tutor_cuid: str, candidate: dict,
         date: 'YYYY-MM-DD'           (one),
         hhmm: 'HH:MM',
         duration: int (минуты),
-        exclude_class_id: str | None  # себя исключаем при переносе
+        exclude_occurrence: (class_id, 'YYYY-MM-DD') | None
+            # при переносе исключаем ИСХОДНЫЙ occurrence — не весь класс:
+            # другие его слоты по-прежнему заняты и конфликтуют.
     }
     → [{class_id, title, count, examples: ['YYYY-MM-DD HH:MM', ...]}]
     """
-    today = date.today()
+    now = org_now()
+    today = now.date()
     horizon = today + timedelta(days=HORIZON_DAYS)
     dur = int(candidate.get("duration") or 60)
     start_min = _hhmm_to_min(candidate["hhmm"])
+    excl_cid, excl_date = candidate.get("exclude_occurrence") or (None, None)
 
     # слоты кандидата
     cand: list[tuple[date, int, int]] = []
@@ -60,19 +65,30 @@ async def find_conflicts(tutor_cuid: str, candidate: dict,
         for i in range((horizon - today).days + 1):
             d = today + timedelta(days=i)
             if (d.weekday() + 1) % 7 in (candidate.get("days") or []):
+                # сегодняшний слот уже прошёл — серия реально начнётся
+                # со следующего occurrence
+                if d == today and start_min <= now.hour * 60 + now.minute:
+                    continue
                 cand.append((d, start_min, dur))
     else:
         cand.append((date.fromisoformat(candidate["date"]), start_min, dur))
+
+    # окно материализации существующих занятий: для разового кандидата —
+    # сама его дата (может быть дальше HORIZON_DAYS), для серии — горизонт.
+    if candidate.get("ctype") == "perma":
+        w_start, w_end = today, horizon
+    else:
+        w_start = w_end = cand[0][0]
 
     classes = await MeritHubClassRepository(db_path).list_all()
     seen: dict[str, dict] = {}
     for c in classes:
         if c.get("tutor_client_user_id") != tutor_cuid:
             continue
-        if c["class_id"] == (candidate.get("exclude_class_id") or ""):
-            continue
         hits = []
-        for d, s, dd in await _occurrences(c, today, horizon, db_path):
+        for d, s, dd in await _occurrences(c, w_start, w_end, db_path):
+            if c["class_id"] == excl_cid and d.isoformat() == excl_date:
+                continue  # исходный слот переноса — не конфликт
             for cd, cs, cdd in cand:
                 if d == cd and s < cs + cdd and cs < s + dd:
                     hits.append((d, s))
