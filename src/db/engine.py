@@ -101,14 +101,16 @@ def ddl_pg(script: str) -> str:
 _NOW_FMT = "YYYY-MM-DD\"T\"HH24:MI:SS.US\"+00:00\""
 
 # DROP: CREATE OR REPLACE не умеет менять return type существующей
-# функции (миграция с ранних версий compat-слоя).
+# функции (миграция с ранних версий compat-слоя). albion_now() НЕ
+# дропаем: от неё зависят DEFAULT'ы колонок (DROP падал бы с
+# DependentObjectsStillExist). Её return type — text навсегда; смена
+# потребовала бы настоящей миграции колонок, а не drop'а функции.
 PG_COMPAT_SQL = f"""
 DROP FUNCTION IF EXISTS julianday(timestamptz);
 DROP FUNCTION IF EXISTS julianday(text);
 DROP FUNCTION IF EXISTS datetime(text);
 DROP FUNCTION IF EXISTS datetime(text, text);
 DROP FUNCTION IF EXISTS json_extract(text, text);
-DROP FUNCTION IF EXISTS albion_now();
 
 CREATE OR REPLACE FUNCTION julianday(t text) RETURNS double precision
 AS $$ SELECT extract(epoch from t::timestamptz) $$ LANGUAGE sql IMMUTABLE;
