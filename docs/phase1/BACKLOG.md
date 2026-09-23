@@ -9,7 +9,7 @@
 ## Карта волн
 
 ```
-Волна 0  Ограждения     T00 ─ T01 ─ T02✅ ─ T03
+Волна 0  Ограждения     T00 ─ T01 ─ T02 ─ T03
 Волна 1  Данные         T04 ─ T05 ─ T06 ─ T07 ─ T08a ─ T08b
 Волна 2  Сообщения      T09 ─ T10 ─ T11a ─ T11b ─ T12a ─ T12b ─ T12c ─ T13
 Волна 3  WhatsApp       T14 ─ T15 ─ T16
@@ -62,11 +62,13 @@ T17 (материализация занятий), это работа, кото
 - **Приёмка:** `tests/core/test_clock.py::test_fake_clock_controls_now`, `::test_to_db_roundtrip_utc`; в `tests/arch/baseline.json` число `datetime_now_outside_clock` уменьшилось минимум на 15.
 - **Не делать:** трогать `src/bot/*` (это T11/T12).
 
-### T02 — Архитектурные тесты и baseline · S · ✅ сделано в этой ветке
-- `tests/arch/test_boundaries.py` + `tests/arch/baseline.json`. Считают нарушения
-  правил из ARCHITECTURE §2.2. Тест падает, если число нарушений **выросло**.
-  Если число уменьшилось, тест подсказывает обновить baseline (храповик:
-  нарушения можно только убирать).
+### T02 — Архитектурные тесты и baseline · S · 2 ч
+- **Цель:** правила слоёв из ARCHITECTURE §2.2 проверяются автоматически — агент не может ухудшить архитектуру.
+- **Зависит от:** T00
+- **Можно менять:** `tests/arch/test_boundaries.py`, `tests/arch/baseline.json` (новые)
+- **Шаги:** статический анализ `src/` (ast + regex), по правилу на каждое ограничение: `datetime_now_outside_clock`, `telegram_import_outside_adapters`, `httpx_outside_integrations`, `raw_sql_outside_db`, `sqlite_isms`, `workflow_imports_bot`, `domain_impure_imports`, `telegram_id_in_workflows`, `notification_requested_publish`, `file_over_800_lines`. Текущее число нарушений пишется в `baseline.json`. Тест падает, если нарушений стало больше, и просит уменьшить baseline, если меньше (храповик).
+- **Ориентир на `master@bc808fe`:** datetime.now — 26, raw SQL вне db — 34, SQLite-измы — 24, workflows→bot — 10, telegram_id в workflows — 79, прямые publish уведомлений — 24.
+- **Приёмка:** `pytest tests/arch` зелёный; искусственное нарушение (добавить `datetime.now()` в workflow) роняет тест.
 
 ### T03 — Вынос демо/пилота из прод-пути · M · 2.5 ч
 - **Цель:** бизнес-функции не живут в `bot/pilot.py`; демо-команды выключаемы (P10).
