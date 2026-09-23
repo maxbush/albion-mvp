@@ -40,7 +40,7 @@ LLM хорошо выполняет задачи, когда:
 | P4 | Отправка = синхронный вызов Telegram внутри обработчика шины с `sleep`-ретраями | `bot/handlers.py:1478` | Нет статусов доставки, нет выбора «шаблон/свободный текст» для WhatsApp, нет единой точки kill switch/метрик |
 | P5 | Кнопки = строки `callback_data`, обработка — 600 строк в `handle_callback` Telegram | `bot/handlers.py:657-1283` | Ответ кнопкой из WhatsApp некуда передать без дублирования логики |
 | P6 | Occurrence perma-серий вычисляются «на лету» | `utils/recurrence.py` | Перенести/отменить одно занятие, проверить пересечения, повесить напоминание — не на что (нет строки «занятие») |
-| P7 | SQLite-измы: `julianday`, `json_extract`, `datetime('now')`, `lastrowid`; SQL вне `src/db` (16 мест) | `db/repository.py`, `bot/pilot.py`, workflows | Переход на Postgres |
+| P7 | SQLite-измы: `julianday`, `json_extract`, `datetime('now')`, `lastrowid`; SQL вне `src/db` (34 места по счётчику `tests/arch`) | `db/repository.py`, `bot/pilot.py`, workflows | Переход на Postgres |
 | P8 | Kill switch в памяти процесса | `bot/handlers.py:36` | Сбрасывается при рестарте |
 | P9 | `datetime.now()` разбросан (26 мест) | везде | Логику по времени (окно 24ч, DST) нельзя надёжно тестировать |
 | P10 | Демо/пилот в прод-коде; `trigger_absence` (бизнес-функция) живёт в `bot/pilot.py` | `bot/pilot.py`, `api/webhook.py:112` | Неправильные зависимости слоёв |
