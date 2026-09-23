@@ -134,7 +134,9 @@ async def _import_people(rows, role: str, rep: Report, db_path, dry_run):
             rep.err(i, "нет client_user_id")
             continue
         tg = _clean(r.get("parent_telegram_id"))
-        phone = normalize_phone(_clean(r.get("phone")))
+        # '' (пустой/нецифровой ввод) → None: иначе COALESCE в upsert
+        # затирал бы уже сохранённый телефон пустой строкой
+        phone = normalize_phone(_clean(r.get("phone"))) or None
         muid = _clean(r.get("merithub_user_id"))
         if not muid:
             # без маппинга на MeritHub userId визард /schedule не примет
@@ -202,7 +204,7 @@ async def _import_enrollments(rows, rep: Report, db_path, dry_run):
         cid = _clean(r.get("class_id"))
         cuid = _clean(r.get("client_user_id"))
         # client_user_id и merithub_user_id — РАЗНЫЕ идентификаторы:
-        # подставлять cuid как muid нельзя — attendance-webhook шлёт именн��
+        # подставлять cuid как muid нельзя — attendance-webhook шлёт именно
         # merithub userId, иначе присутствующий ученик уйдёт в «не явился»
         muid = _clean(r.get("merithub_user_id"))
         if not muid and cuid:
@@ -213,8 +215,11 @@ async def _import_enrollments(rows, rep: Report, db_path, dry_run):
                        "(явно или через students-маппинг по client_user_id)")
             continue
         parent = _clean(r.get("parent_telegram_id"))
-        if parent and parent.lstrip("+").isdigit() and (parent.startswith("+") or len(parent) >= 11):
-            parent = f"wa:{normalize_phone(parent)}"
+        # Сначала нормализуем — '+7 (999) 000-11-22' иначе не пройдёт
+        # isdigit-эвристику и сохранится как «телеграм-ид» с мусором.
+        np = normalize_phone(parent)
+        if np and len(np.lstrip("+")) >= 11:
+            parent = f"wa:{np}"
         if not dry_run:
             await repo.add(
                 cid, muid, client_user_id=cuid,

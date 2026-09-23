@@ -97,7 +97,7 @@ async def test_import_enrollment_phone_parent(db, tmp_path):
         w = _csv.writer(f)
         w.writerow(["class_id", "client_user_id", "merithub_user_id",
                     "parent_telegram_id", "student_name", "role"])
-        w.writerow(["C1", "s1", "", "+79990001122", "Вася", ""])
+        w.writerow(["C1", "s1", "mh_usr_1", "+79990001122", "Вася", ""])
     from scripts.import_data import run
     assert await run(str(path), "enrollments", db, dry_run=False) == 0
     from src.db.repository import MeritHubEnrollmentRepository
