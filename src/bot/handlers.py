@@ -28,6 +28,7 @@ from src.integrations.factory import get_airtable_service
 from src.workflows.engine import engine
 from src.workflows.absence import AbsenceWorkflow
 from src.workflows.lesson_ops import LessonOpsWorkflow
+from src.workflows.parent_actions import process_parent_callback
 from src.bot.roles import register_role_handlers, get_coordinator_ids, is_admin, is_coordinator_or_admin, apply_command_menu
 from src.bot.pilot import register_pilot_handlers
 from src.bot.wizard import (
@@ -977,188 +978,25 @@ async def handle_callback(upd: Update, _ctx) -> None:
         return
 
     # --- R9-14: выбор «на сколько минут» после «⏰ Опоздаем» родителя ---
-    if data.startswith("resolve_late_time:"):
-        parts = data.split(":")
-        try:
-            inc_id = int(parts[1])
-            nonce = parts[2]
-            mins_str = parts[3]
-        except (IndexError, ValueError):
-            await query.edit_message_text("Не смог прочитать нажатие.")
-            return
-        idem_key = f"tg_callback:{data}"
-        idem = IdempotencyRepository()
-        if await idem.exists(idem_key):
-            await query.answer("✅ Уже обработано", show_alert=False)
-            return
-
-        inc_repo = IncidentRepository()
-        inc = await inc_repo.get(inc_id)
-        if not inc:
-            await query.edit_message_text("Ситуация не найдена.")
-            return
-        if inc["status"] == "resolved":
-            await query.answer("ℹ️ Эта ситуация уже закрыта", show_alert=False)
+    # --- Родительские resolve-кнопки (shared с WhatsApp: src/workflows/parent_actions.py) ---
+    if data.startswith("resolve_late_time:") or data.startswith("resolve:"):
+        res = await process_parent_callback(data, str(query.from_user.id))
+        status = res["status"]
+        toast = res.get("toast")
+        if toast:
+            await query.answer(toast, show_alert=bool(res.get("alert")))
+        if res.get("clear_markup"):
             try:
                 await query.edit_message_reply_markup(None)
             except Exception:
                 pass
-            return
-        was_escalated = inc["status"] == "escalated"
-
-        wf_repo = WorkflowRepository()
-        wf_rows = await wf_repo.find_by_json("incident_id", inc_id, limit=1)
-        wf_row = wf_rows[0] if wf_rows else None
-        if not wf_row:
-            await query.edit_message_text("Ситуация уже закрыта или workflow не найден.")
-            return
-        try:
-            wf_data = json.loads(wf_row.get("data") or "{}")
-        except Exception:
-            wf_data = {}
-        expected_nonce = wf_data.get("parent_callback_nonce")
-        if expected_nonce and expected_nonce != nonce:
-            await query.answer("⛔ Кнопка устарела", show_alert=True)
-            return
-        expected_parent = wf_data.get("parent_telegram_id")
-        if expected_parent and str(expected_parent) != str(query.from_user.id):
-            await query.answer("⛔ Это сообщение не для вас", show_alert=True)
-            return
-
-        wf = AbsenceWorkflow()
-        await wf.resolve_absence(inc_id, str(query.from_user.id), resolution="parent_late")
-        await wf.notify_coordinators_parent_reply(
-            inc_id, "late", late_minutes=mins_str,
-            parent_telegram_id=str(query.from_user.id),
-        )
-
-        await idem.save(idem_key, "telegram_callback", response="resolved_late")
-        # Блокируем остальные кнопки этого инцидента (включая другие интервалы)
-        for other_action in ("ok", "no", "late"):
-            other_key = f"tg_callback:resolve:{inc_id}:{nonce}:{other_action}"
-            await idem.save(other_key, "telegram_callback_blocked", response="blocked_by_resolve_late")
-        for other_mins in ("5", "15", "30+"):
-            if other_mins != mins_str:
-                other_key = f"tg_callback:resolve_late_time:{inc_id}:{nonce}:{other_mins}"
-                await idem.save(other_key, "telegram_callback_blocked", response="blocked_by_resolve_late")
-
-        from src.utils.i18n import lang_of, tr
-        lang = await lang_of(str(query.from_user.id))
-        # '15' → '15 мин', '30+' → '30+ мин' (без «на» — его добавляет шаблон)
-        mins_label = f"{mins_str} мин"
-        parent_ack = tr("ack_late_detail_parent", lang, mins=mins_label)
-        if was_escalated:
-            parent_ack += "\n\nℹ️ Координатор уже был уведомлён об отсутствии ответа. Ваш ответ передан — инцидент закрыт."
-        student_label = wf_data.get("student_name") or "Ученик"
-        parent_ack += "\n\nОшиблись? Напишите текстом — координатор поможет."
-        await query.edit_message_text(f"{parent_ack}\nОтметили: {student_label} · вопрос закрыт.")
-        logger.info("Incident %d resolved via late_time=%s (parent %s)", inc_id, mins_str, query.from_user.id)
-        return
-
-    # --- Реальный resolve (из уведомления) ---
-    if data.startswith("resolve:"):
-        parts = data.split(":")
-        try:
-            inc_id = int(parts[1])
-            nonce = parts[2]
-        except (IndexError, ValueError):
-            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз или напишите текстом.")
-            return
-        action = parts[3] if len(parts) > 3 else "ok"
-
-        idem_key = f"tg_callback:{data}"
-        idem = IdempotencyRepository()
-        if await idem.exists(idem_key):
-            await query.answer("✅ Уже обработано", show_alert=False)
-            return
-
-        # Проверяем статус инцидента ДО обработки
-        inc_repo = IncidentRepository()
-        inc = await inc_repo.get(inc_id)
-        if not inc:
-            await query.edit_message_text("Ситуация не найдена.")
-            return
-
-        if inc["status"] == "resolved":
-            # Инцидент уже закрыт (через другую кнопку, /ok или free text)
-            await query.answer("ℹ️ Эта ситуация уже закрыта", show_alert=False)
-            try:
-                await query.edit_message_reply_markup(None)
-            except Exception:
-                pass
-            return
-
-        was_escalated = inc["status"] == "escalated"
-
-        wf_repo = WorkflowRepository()
-        wf_rows = await wf_repo.find_by_json("incident_id", inc_id, limit=1)
-        wf_row = wf_rows[0] if wf_rows else None
-        if not wf_row:
-            await query.edit_message_text("Ситуация уже закрыта или workflow не найден.")
-            return
-        try:
-            wf_data = json.loads(wf_row.get("data") or "{}")
-        except Exception:
-            wf_data = {}
-        expected_nonce = wf_data.get("parent_callback_nonce")
-        if expected_nonce and expected_nonce != nonce:
-            await query.answer("⛔ Кнопка устарела", show_alert=True)
-            return
-        # Самоаудит: кнопку уведомления о неявке может нажать только родитель
-        expected_parent = wf_data.get("parent_telegram_id")
-        if expected_parent and str(expected_parent) != str(query.from_user.id):
-            await query.answer("⛔ Это сообщение не для вас", show_alert=True)
-            return
-
-        # R9-14: «⏰ Опоздаем» — сначала уточняем, НА СКОЛЬКО минут (тот же
-        # микро-шаг, что в prelesson-checkin R8-10). Инцидент не резолвим,
-        # пока родитель не выбрал интервал (эскалация по таймеру — страховка).
-        if action == "late":
-            from src.utils.i18n import lang_of, tr
-            lang = await lang_of(str(query.from_user.id))
+        if status == "late_ask":
             kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("на 5 мин", callback_data=f"resolve_late_time:{inc_id}:{nonce}:5"),
-                InlineKeyboardButton("на 15 мин", callback_data=f"resolve_late_time:{inc_id}:{nonce}:15"),
-                InlineKeyboardButton("на 30+ мин", callback_data=f"resolve_late_time:{inc_id}:{nonce}:30+"),
+                InlineKeyboardButton(b.label, callback_data=b.callback_id) for b in res["buttons"]
             ]])
-            await query.edit_message_text(tr("ack_late_ask_mins_parent", lang), reply_markup=kb)
-            return
-
-        action_map = {
-            "ok": ("parent_ok", "✅ Всё в порядке! Спасибо."),
-            "no": ("parent_not_coming", "❌ Спасибо! Отметили, что сегодня занятия не будет."),
-            "late": ("parent_late", "⏰ Спасибо! Отметили, что ученик опоздает."),
-        }
-        resolution, parent_ack = action_map.get(action, ("parent_confirmed", "✅ Ответ получен."))
-
-        wf = AbsenceWorkflow()
-        await wf.resolve_absence(inc_id, str(query.from_user.id), resolution=resolution)
-        outcome = "ok" if action == "ok" else ("no_show" if action == "no" else ("late" if action == "late" else "free_text"))
-        await wf.notify_coordinators_parent_reply(
-            inc_id,
-            outcome,
-            parent_telegram_id=str(query.from_user.id),
-        )
-
-        # Если эскалация уже ушла координатору — сообщаем об этом родителю
-        if was_escalated:
-            parent_ack += "\n\nℹ️ Координатор уже был уведомлён об отсутствии ответа. Ваш ответ передан — инцидент закрыт."
-
-        await idem.save(idem_key, "telegram_callback", response="resolved")
-        # Также сохраняем idempotency для ВСЕХ кнопок этого инцидента,
-        # чтобы другие кнопки не сработали повторно
-        for other_action in ("ok", "no", "late"):
-            if other_action != action:
-                other_key = f"tg_callback:resolve:{inc_id}:{nonce}:{other_action}"
-                await idem.save(other_key, "telegram_callback_blocked", response="blocked_by_resolve")
-
-        # UX U5 + П10: имя ученика, без внутреннего номера инцидента и без
-        # серверного времени (номер нужен координатору, не родителю).
-        student_label = wf_data.get("student_name") or "Ученик"
-        # П8: подсказка на случай случайного нажатия
-        parent_ack += "\n\nОшиблись? Напишите текстом — координатор поможет."
-        await query.edit_message_text(f"{parent_ack}\nОтметили: {student_label} · вопрос закрыт.")
-        logger.info("Incident %d resolved via button action=%s (was_escalated=%s)", inc_id, action, was_escalated)
+            await query.edit_message_text(res["text"], reply_markup=kb)
+        elif res.get("text"):
+            await query.edit_message_text(res["text"])
         return
 
     if data.startswith("checkin:"):
@@ -1479,6 +1317,13 @@ def setup_handlers(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(handle_callback))
 
     register_sender(TelegramSender(app.bot))
+    if settings.whatsapp_use_real:
+        from src.channels.factory import get_whatsapp_sender
+        register_sender(get_whatsapp_sender())
+        logger.info("WhatsApp sender registered (real)")
+    else:
+        logger.info("WhatsApp not configured — channel 'whatsapp' has no sender; "
+                    "WA-preferred recipients fall back to telegram")
 
     async def notif_handler(event: Event):
         tg = event.data.get("telegram_id")

@@ -27,6 +27,25 @@ def registered_channels() -> list[str]:
     return sorted(_senders)
 
 
+_CHANNEL_PREFIX = {"wa": "whatsapp", "email": "email", "tg": "telegram"}
+
+
+def parse_recipient(ref: str | None) -> tuple[str, str] | None:
+    """Канонический ref получателя → (channel, address).
+
+    Форматы: 'wa:+7999…' → whatsapp, 'email:x@y' → email, 'tg:123' или
+    голый id → telegram. Адрес канала ездит внутри ref'а — издатели
+    NOTIFICATION_REQUESTED не меняются при добавлении нового канала.
+    """
+    if not ref:
+        return None
+    s = str(ref)
+    prefix, sep, rest = s.partition(":")
+    if sep and prefix in _CHANNEL_PREFIX and rest:
+        return _CHANNEL_PREFIX[prefix], rest
+    return "telegram", s
+
+
 async def resolve(
     *,
     telegram_id: str | None = None,
@@ -39,6 +58,16 @@ async def resolve(
     канал реально настроен (есть отправитель) — иначе сообщение ушло бы
     в пустоту. Fallback — telegram по telegram_id.
     """
+    # Канал-bound ref ('wa:+7…'): user_channels не консультируем — адрес уже
+    # внутри; fallback на другой канал невозможен (его у получателя нет).
+    if telegram_id:
+        ch_addr = parse_recipient(telegram_id)
+        if ch_addr and ch_addr[0] != "telegram":
+            if get_sender(ch_addr[0]):
+                return ch_addr
+            logger.info("No sender registered for channel %s — dropped", ch_addr[0])
+            return None
+
     uid = user_id
     if uid is None and telegram_id:
         user = await UserRepository(db_path).get_by_telegram_id(str(telegram_id))
