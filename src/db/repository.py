@@ -547,6 +547,11 @@ class MeritHubContactRepository(Repository):
         country: str | None = None,
         city: str | None = None,
     ) -> None:
+        # Нормализация на границе записи: иначе 'phone=8 999 …' из /mh_user
+        # сохранится в свободном формате и get_by_phone его не найдёт.
+        if phone:
+            from src.channels.inbound import normalize_phone
+            phone = normalize_phone(phone) or None
         existing = await self._fetchone("SELECT 1 FROM merithub_contacts WHERE client_user_id=?", (client_user_id,))
         if existing:
             await self._execute(
