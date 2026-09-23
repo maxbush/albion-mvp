@@ -103,6 +103,8 @@ async def main(webhook: bool = False):
 
     await init_db()
     await register_all()
+    from src.bot.handlers import load_kill_switch_level
+    await load_kill_switch_level()  # персистентный kill switch (system_settings)
     # Авто-утренняя сводка координаторам (07:30 по зоне организации).
     # Идемпотентно: создаёт задачу в SQLite scheduler только если её ещё нет.
     try:

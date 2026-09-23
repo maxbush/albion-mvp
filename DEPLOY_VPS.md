@@ -166,8 +166,16 @@ sudo systemctl enable --now albion-bot albion-webhook
 **`/etc/caddy/Caddyfile`:**
 ```
 albion.example.com {
+    # webhook-ресивер (uvicorn :8000): MeritHub и WhatsApp.
+    # /metrics снаружи НЕ отдаём — только внутренний scrape (см. §7).
     handle /merithub/* {
         reverse_proxy 127.0.0.1:8000
+    }
+    handle /whatsapp/* {
+        reverse_proxy 127.0.0.1:8000
+    }
+    handle /metrics* {
+        respond 404
     }
     handle /tg* {
         reverse_proxy 127.0.0.1:8443
@@ -206,6 +214,13 @@ server {
     location /merithub/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host $host;
+    }
+    location /whatsapp/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+    }
+    location /metrics {
+        return 404;   # метрики наружу не отдаём — внутренний scrape
     }
     location /tg {
         proxy_pass http://127.0.0.1:8443;
@@ -255,6 +270,24 @@ curl -s "https://api.telegram.org/bot<TOKEN>/getWebhookInfo" | python3 -m json.t
 1. В панели MeritHub → Webhook Url вставьте `https://albion.example.com/merithub/webhook`.
 2. Дёрните тестовое событие → в боте `/mh_events` появится захваченный payload.
 
+### Мониторинг (`/metrics`)
+
+Вебхук-процесс отдаёт Prometheus-метрики на `/metrics` (порт 8000):
+`albion_notifications{channel,status}`, `albion_dlq_size`,
+`albion_scheduled_actions{status}`,
+`albion_scheduled_pending_lag_seconds`,
+`albion_webhook_events_total{signature_ok}`,
+`albion_workflows{state}`, `albion_kill_switch_level`.
+
+```bash
+curl http://127.0.0.1:8000/metrics   # локально на VPS
+```
+
+Эндпоинт **не публикуем наружу**: в Caddy `/metrics` либо не проксируем
+вообще, либо ограничиваем по IP/basic-auth. Внешний uptime — на `/health`
+(UptimeRobot и т.п.), внутренние метрики — cron-scrape в файл или
+Prometheus.
+
 ## 8. Обновление и откат
 
 ```bash
@@ -273,7 +306,7 @@ sudo systemctl restart albion-bot albion-webhook
 
 | Грабли | Что делать |
 |---|---|
-| **Kill switch живёт в памяти** (H6) | После каждого рестарта уровень = 2 (Полностью). Проверьте `/status` и при необходимости настройте снова. |
+| **Kill switch** | С этапа 1 уровень хранится в `system_settings` и переживает рестарт — аварийный стоп не сбрасывается при деплое. |
 | **Двойной `SafeStreamHandler`** (R9-8) | Косметика, не влияет на работу. |
 | **Polling + webhook одновременно** | Нельзя: Telegram отдаёт 409. Перед переездом остановите локальный бот (или просто не запускайте его после `set_webhook` на VPS). |
 | **Docker-вариант** | В `docker-compose.yml` `albion.db` монтируется файлом (H5): при отсутствии файла Docker создаст **каталог** и бот упадёт. Либо создайте пустой файл заранее, либо используйте systemd (рекомендую). |

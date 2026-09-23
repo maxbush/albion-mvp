@@ -24,7 +24,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from src.config import settings
 from src.db.repository import WebhookEventRepository
@@ -213,6 +213,16 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health():
         return {"status": "ok", "service": "albion-webhook-receiver"}
+
+    @app.get("/metrics")
+    async def metrics():
+        # Prometheus exposition; доступ ограничивает Caddy (только внутр. сеть).
+        from src.services.metrics import collect_metrics
+        try:
+            return PlainTextResponse(await collect_metrics(settings.db_dsn))
+        except Exception:
+            logger.exception("metrics collection failed")
+            return PlainTextResponse("", status_code=500)
 
     app.add_api_route(settings.merithub_webhook_path, _receive, methods=["POST"])
 

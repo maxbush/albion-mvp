@@ -97,13 +97,31 @@ def _paid_warning(cls: dict | None, occ_date: str | None, kind: str) -> str:
     return paid_warning_text(v, kind) if v else ""
 
 
-def set_kill_switch_level(level: int) -> None:
+async def set_kill_switch_level(level: int) -> None:
     """Устанавливает уровень kill switch (0=off, 1=coordinators only, 2=full).
 
-    NOTE: значение хранится только в памяти. После рестарта возвращается к дефолту (2).
-    Для продакшена нужно персистить в БД или env."""
+    Значение персистится в system_settings — рестарт не сбрасывает
+    аварийный стоп (раньше было только в памяти, осторожный дефолт
+    противоположный желаемому: авария забывалась при деплое)."""
+    # Сначала БД: если запись упала — ошибка всплывёт координатору,
+    # а не тихое «ок» на состояние, которое не переживёт рестарт.
+    from src.db.repository import SystemSettingsRepository
+    await SystemSettingsRepository().set("kill_switch_level", str(level))
     global _kill_switch_level
     _kill_switch_level = level
+
+
+async def load_kill_switch_level() -> None:
+    """Читает уровень из system_settings при старте бота (PR6)."""
+    global _kill_switch_level
+    try:
+        from src.db.repository import SystemSettingsRepository
+        v = await SystemSettingsRepository().get("kill_switch_level")
+        if v is not None:
+            _kill_switch_level = int(v)
+            logger.info("Kill switch restored from DB: %d", _kill_switch_level)
+    except Exception:
+        logger.exception("Kill switch: не удалось прочитать system_settings")
 
 
 async def seed_demo_data() -> None:
@@ -603,7 +621,11 @@ async def cmd_kill_switch(upd: Update, _ctx) -> None:
     except ValueError:
         await upd.message.reply_text("Уровень: 0, 1 или 2")
         return
-    set_kill_switch_level(lvl)
+    try:
+        await set_kill_switch_level(lvl)
+    except Exception as e:
+        await upd.message.reply_text(f"❌ Kill switch не записался в БД: {e}")
+        return
     labels = {0: "Всё остановлено", 1: "Только алерты координаторам", 2: "Всё работает"}
     await upd.message.reply_text(f"🔌 Kill Switch: {labels[lvl]}")
     logger.info("Kill switch set to %d", lvl)
@@ -923,7 +945,11 @@ async def handle_callback(upd: Update, _ctx) -> None:
         except ValueError:
             await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
             return
-        set_kill_switch_level(lvl)
+        try:
+            await set_kill_switch_level(lvl)
+        except Exception as e:
+            await query.edit_message_text(f"❌ Kill switch не записался в БД: {e}")
+            return
         labels = {0: "🔴 Всё остановлено", 1: "🟡 Только алерты координаторам", 2: "🟢 Всё работает"}
         await query.edit_message_text(f"🔌 Kill Switch: {labels[lvl]}")
         logger.info("Kill switch set to %d via button by %s", lvl, query.from_user.id)
