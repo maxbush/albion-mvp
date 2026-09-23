@@ -705,3 +705,53 @@ class WizardStateRepository(Repository):
     async def list_expired(self, now_iso: str) -> list[dict]:
         return await self._fetchall(
             "SELECT * FROM wizard_state WHERE expires_at < ?", (now_iso,))
+
+
+class UserChannelRepository(Repository):
+    """Адреса пользователя в каналах доставки + предпочтительный канал.
+
+    PK (channel, address): один TG-чат/телефон принадлежит одному
+    пользователю. is_preferred=1 максимум у одной строки пользователя —
+    set() снимает флаг с остальных каналов того же user_id.
+    """
+
+    async def set(
+        self,
+        user_id: int,
+        channel: str,
+        address: str,
+        *,
+        preferred: bool = True,
+        verified: bool = False,
+    ) -> None:
+        if preferred:
+            await self._execute(
+                "UPDATE user_channels SET is_preferred=0 WHERE user_id=? AND channel!=?",
+                (user_id, channel),
+            )
+        await self._execute(
+            "INSERT INTO user_channels (user_id, channel, address, is_preferred, verified) "
+            "VALUES (?,?,?,?,?) "
+            "ON CONFLICT(channel, address) DO UPDATE SET user_id=?, is_preferred=?, verified=?",
+            (user_id, channel, address, int(preferred), int(verified),
+             user_id, int(preferred), int(verified)),
+        )
+
+    async def preferred_for_user(self, user_id: int) -> dict | None:
+        return await self._fetchone(
+            "SELECT * FROM user_channels WHERE user_id=? AND is_preferred=1",
+            (user_id,),
+        )
+
+    async def list_for_user(self, user_id: int) -> list[dict]:
+        return await self._fetchall(
+            "SELECT * FROM user_channels WHERE user_id=? ORDER BY is_preferred DESC, channel",
+            (user_id,),
+        )
+
+    async def find_by_address(self, channel: str, address: str) -> dict | None:
+        """Входящее сообщение → пользователь (TG chat_id / phone → users.id)."""
+        return await self._fetchone(
+            "SELECT * FROM user_channels WHERE channel=? AND address=?",
+            (channel, str(address)),
+        )

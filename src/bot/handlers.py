@@ -10,6 +10,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
 from src.ai.client import llm_client
+from src.channels.base import ChannelButton
+from src.channels.router import get_sender, register_sender, resolve
+from src.channels.telegram import TelegramSender
 from src.config import settings
 from src.db.repository import (
     IncidentRepository,
@@ -1475,6 +1478,8 @@ def setup_handlers(app: Application) -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
+    register_sender(TelegramSender(app.bot))
+
     async def notif_handler(event: Event):
         tg = event.data.get("telegram_id")
         msg = event.data.get("message", "")
@@ -1485,26 +1490,29 @@ def setup_handlers(app: Application) -> None:
         if not await can_send_async(tg):
             logger.info("Kill switch blocked msg to %s", tg)
             return
+        # Канал-нейтральная модель кнопок: legacy-формат события
+        # ({text, callback_data|url} / одиночный callback_data) → ChannelButton.
+        # Кнопка бывает двух видов: callback (действие) и url (ссылка,
+        # например tg://user?id= «написать родителю»). Ровно одно из двух.
+        ch_buttons = [
+            ChannelButton(label=btn["text"], callback_id=btn.get("callback_data"), url=btn.get("url"))
+            for btn in buttons
+        ]
+        if not ch_buttons and cb_data:
+            ch_buttons = [ChannelButton(label="✅ Всё в порядке", callback_id=cb_data)]
+        resolved = await resolve(telegram_id=tg)
+        if not resolved:
+            logger.warning("No channel resolved for %s", tg)
+            return
+        channel, address = resolved
+        sender = get_sender(channel)
+        if sender is None:
+            logger.warning("No sender registered for channel %s", channel)
+            return
         last_error = None
         for attempt in range(3):
             try:
-                reply_markup = None
-                if buttons:
-                    # Кнопка бывает двух видов: callback (действие) и url (ссылка,
-                    # например tg://user?id= «написать родителю»). Ровно одно из двух.
-                    reply_markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton(
-                            btn["text"],
-                            callback_data=btn.get("callback_data"),
-                            url=btn.get("url"),
-                        )] for btn in buttons
-                    ])
-                elif cb_data:
-                    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Всё в порядке", callback_data=cb_data)]])
-                if reply_markup:
-                    await app.bot.send_message(chat_id=tg, text=msg, reply_markup=reply_markup)
-                else:
-                    await app.bot.send_message(chat_id=tg, text=msg)
+                await sender.send(address, msg, ch_buttons or None)
                 nid = event.data.get("notification_id")
                 if nid:
                     await NotificationRepository().mark_sent(nid)
