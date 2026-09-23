@@ -21,6 +21,8 @@ from src.db.repository import (
     NotificationRepository,
     WorkflowRepository,
     IdempotencyRepository,
+    MeritHubClassRepository,
+    ScheduleOverrideRepository,
     WizardStateRepository,
 )
 from src.events.bus import bus
@@ -32,6 +34,8 @@ from src.workflows.lesson_ops import LessonOpsWorkflow
 from src.workflows.parent_actions import process_parent_callback
 from src.bot.roles import register_role_handlers, get_coordinator_ids, is_admin, is_coordinator_or_admin, apply_command_menu
 from src.bot.pilot import register_pilot_handlers
+from src.services.conflicts import conflict_lines, find_conflicts
+from src.services.overrides import effective_dates
 from src.bot.wizard import (
     cmd_schedule, cmd_add_student, cmd_add_tutor, handle_wz_callback, try_handle_wz_text,
 )
@@ -679,8 +683,6 @@ async def cmd_reschedule(upd: Update, _ctx) -> None:
             "Пример: /reschedule C12 2026-09-25 2026-09-27 16:00")
         return
     class_id, old_date, new_date, new_time = args
-    from src.db.repository import MeritHubClassRepository, ScheduleOverrideRepository
-    from src.services.overrides import effective_dates
     from src.utils.recurrence import org_now
     cls = await MeritHubClassRepository().get(class_id)
     if not cls:
@@ -702,6 +704,18 @@ async def cmd_reschedule(upd: Update, _ctx) -> None:
         await upd.message.reply_text(
             f"❌ У класса {class_id} нет занятия {old_date} "
             "(по паттерну или уже перенесено/отменено).")
+        return
+    # Целевой слот не должен пересекать другие занятия этого репетитора
+    # (жёсткий блок, PR5); свой класс из проверки исключаем.
+    conflicts = await find_conflicts(cls.get("tutor_client_user_id") or "", {
+        "ctype": "one", "date": new_date, "hhmm": new_time,
+        "duration": int(cls.get("duration") or 60),
+        "exclude_class_id": class_id,
+    })
+    if conflicts:
+        await upd.message.reply_text(
+            "⛔ Перенос невозможен — слот пересекается с другими занятиями "
+            "репетитора:\n\n" + "\n".join(conflict_lines(conflicts)))
         return
     await ScheduleOverrideRepository().add(
         class_id, old_date, "moved",

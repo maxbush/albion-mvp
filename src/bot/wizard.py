@@ -36,6 +36,7 @@ from src.bot.roles import is_coordinator_or_admin
 from src.events.bus import bus
 from src.events.types import Event, EventTypes
 from src.integrations.factory import get_merithub_service
+from src.services.conflicts import conflict_lines, find_conflicts
 from src.workflows.lesson_ops import LessonOpsWorkflow
 from src.utils.recurrence import (
     WD_RU, MONTHS_RU, fmt_days, fmt_occurrence_label, next_occurrence,
@@ -347,7 +348,14 @@ async def _sched_view(step: str, d: dict) -> tuple[str, InlineKeyboardMarkup | N
             _kb([_back_cancel_row("sched")])
 
     if step == "preview":
-        return await _sched_preview_text(d), _kb([
+        text, conflicts = await _sched_preview_text(d)
+        # Жёсткий блок пересечений для perma (этап 1, PR5): без кнопки создания
+        if conflicts and d.get("ctype") == "perma":
+            return text, _kb([
+                [_btn("✏️ Изменить", "wz:sched:editmenu")],
+                _back_cancel_row("sched"),
+            ])
+        return text, _kb([
             [_btn("✅ Создать занятие", "wz:sched:confirm")],
             [_btn("✏️ Изменить", "wz:sched:editmenu")],
             _back_cancel_row("sched"),
@@ -391,10 +399,11 @@ def _sched_main_line(d: dict, occ_dt) -> str:
     return f"1️⃣ {day_label} · {hhmm} {org} · {dur} мин"
 
 
-async def _sched_preview_text(d: dict) -> str:
+async def _sched_preview_text(d: dict) -> tuple[str, list[dict]]:
     occ_dt = await _sched_occurrence_dt(d)
     students = d.get("students", [])
     names = ", ".join(s["name"] for s in students) or "—"
+    conflicts: list[dict] = []
     lines = ["📋 Проверьте перед созданием", ""]
     lines.append(f"🧑‍🏫 {d.get('tutor_name')}")
     lines.append(f"👥 {names}")
@@ -409,36 +418,30 @@ async def _sched_preview_text(d: dict) -> str:
         for s in students:
             srow = await srepo.get_by_client_id(s["cuid"])
             lines.append(participant_time_line(occ_dt, s["name"], (srow or {}).get("timezone")))
-        # Мягкий анти-дубль (предупреждение без блокировки — дубли бывают легитимны)
-        dup = await _sched_find_duplicate(d)
-        if dup:
+        # Пересечения: для perma — жёсткий блок, для разового — предупреждение
+        conflicts = await _sched_conflicts(d) or []
+        if conflicts:
             lines.append("")
-            lines.append(f"⚠️ Похожее занятие уже есть: {dup}")
+            if d.get("ctype") == "perma":
+                lines.append("⛔ Пересечение у репетитора — создать нельзя:")
+            else:
+                lines.append("⚠️ Пересечение у репетитора:")
+            lines.extend(conflict_lines(conflicts))
     lines.append("")
     ctype_ru = "регулярное" if d.get("ctype") == "perma" else "разовое"
     lines.append(f"⚠️ Тип ({ctype_ru}) изменить после создания нельзя.")
-    return "\n".join(lines)
+    return "\n".join(lines), (conflicts or [])
 
 
-async def _sched_find_duplicate(d: dict) -> str | None:
-    """Серия/занятие того же репетитора с тем же временем — подсвечиваем в превью."""
-    classes = await MeritHubClassRepository().list_all()
-    hhmm = f"{int(d.get('hour') or 0):02d}:{int(d.get('minute') or 0):02d}"
-    for c in classes:
-        if c.get("tutor_client_user_id") != d.get("tutor_cuid"):
-            continue
-        ctype = c.get("class_type") or "oneTime"
-        ctime = (c.get("start_time") or "")[11:16]
-        if d.get("ctype") == "perma" and ctype == "perma":
-            shared = set(d.get("days") or []) & set(json.loads(c.get("schedule_days") or "[]")
-                                                      if c.get("schedule_days") else [])
-            if shared and ctime == hhmm:
-                title = c.get("title") or c["class_id"]
-                return f"🔁 {fmt_days(sorted(shared))} {ctime} · {title}"
-        if d.get("ctype") == "one" and ctype != "perma":
-            if ctime == hhmm and (c.get("start_time") or "")[:10] == d.get("date"):
-                return (c.get("title") or c["class_id"])
-    return None
+async def _sched_conflicts(d: dict) -> list[dict]:
+    """Пересечения кандидата со слотами того же репетитора (services/conflicts)."""
+    return await find_conflicts(d.get("tutor_cuid") or "", {
+        "ctype": "perma" if d.get("ctype") == "perma" else "one",
+        "days": d.get("days") or [],
+        "date": d.get("date"),
+        "hhmm": f"{int(d.get('hour') or 0):02d}:{int(d.get('minute') or 0):02d}",
+        "duration": int(d.get("duration") or 60),
+    })
 
 
 async def _sched_goto(upd: Update, ctx, state: dict, step: str, extra_text: str | None = None) -> None:
@@ -511,6 +514,22 @@ async def _sched_confirm(upd: Update, ctx, state: dict, ack: dict | None = None)
         if ack is not None:
             await _ack(upd.callback_query, ack, "Уже создаю…")
         return
+    # Жёсткий блок пересечений perma перепроверяем при подтверждении —
+    # карточка могла устареть (кто-то создал занятие параллельно).
+    if d.get("ctype") == "perma":
+        conflicts = await _sched_conflicts(d)
+        if conflicts:
+            state["step"] = "preview"
+            await _save(state)
+            text = ("⛔ Создать нельзя — пересечение с занятиями репетитора:\n\n" +
+                    "\n".join(conflict_lines(conflicts)) +
+                    "\n\nИзмените дни или время.")
+            await _show(upd, ctx, state, text, _kb([
+                [_btn("✏️ Изменить", "wz:sched:editmenu")],
+                _back_cancel_row("sched"),
+            ]))
+            return
+
     d["submitting"] = True
     state["step"] = "submitting"
     await _save(state)
