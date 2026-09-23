@@ -103,15 +103,12 @@ async def set_kill_switch_level(level: int) -> None:
     Значение персистится в system_settings — рестарт не сбрасывает
     аварийный стоп (раньше было только в памяти, осторожный дефолт
     противоположный желаемому: авария забывалась при деплое)."""
+    # Сначала БД: если запись упала — ошибка всплывёт координатору,
+    # а не тихое «ок» на состояние, которое не переживёт рестарт.
+    from src.db.repository import SystemSettingsRepository
+    await SystemSettingsRepository().set("kill_switch_level", str(level))
     global _kill_switch_level
     _kill_switch_level = level
-    try:
-        from src.db.repository import SystemSettingsRepository
-        await SystemSettingsRepository().set("kill_switch_level", str(level))
-    except Exception:
-        # DB недоступна — in-memory всё равно выставлен; при рестарте
-        # загрузка упадёт и останется дефолт (fail-open к 2).
-        logger.exception("Kill switch: не удалось записать в system_settings")
 
 
 async def load_kill_switch_level() -> None:
@@ -624,7 +621,11 @@ async def cmd_kill_switch(upd: Update, _ctx) -> None:
     except ValueError:
         await upd.message.reply_text("Уровень: 0, 1 или 2")
         return
-    await set_kill_switch_level(lvl)
+    try:
+        await set_kill_switch_level(lvl)
+    except Exception as e:
+        await upd.message.reply_text(f"❌ Kill switch не записался в БД: {e}")
+        return
     labels = {0: "Всё остановлено", 1: "Только алерты координаторам", 2: "Всё работает"}
     await upd.message.reply_text(f"🔌 Kill Switch: {labels[lvl]}")
     logger.info("Kill switch set to %d", lvl)
@@ -944,7 +945,11 @@ async def handle_callback(upd: Update, _ctx) -> None:
         except ValueError:
             await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
             return
-        await set_kill_switch_level(lvl)
+        try:
+            await set_kill_switch_level(lvl)
+        except Exception as e:
+            await query.edit_message_text(f"❌ Kill switch не записался в БД: {e}")
+            return
         labels = {0: "🔴 Всё остановлено", 1: "🟡 Только алерты координаторам", 2: "🟢 Всё работает"}
         await query.edit_message_text(f"🔌 Kill Switch: {labels[lvl]}")
         logger.info("Kill switch set to %d via button by %s", lvl, query.from_user.id)

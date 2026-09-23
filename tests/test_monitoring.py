@@ -59,7 +59,7 @@ async def test_collect_metrics_format(tmp_path, monkeypatch):
     from src.services.metrics import collect_metrics
     text = await collect_metrics("albion.db")
     assert "albion_dlq_size 1" in text
-    assert "albion_scheduled_actions_total{status=\"pending\"} 1" in text
+    assert "albion_scheduled_actions{status=\"pending\"} 1" in text
     assert "albion_scheduled_pending_lag_seconds" in text
     assert "albion_kill_switch_level 2" in text
     # exposition: каждая метрика — HELP/TYPE до значения
