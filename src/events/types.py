@@ -15,8 +15,10 @@ class EventTypes:
     # Публикуются webhook-диспетчером по факту classStatus (lv/cp) — метрики/DLQ.
     LESSON_STARTED = "lesson.started"
     LESSON_COMPLETED = "lesson.completed"
-    # NOTE: LESSON_RESCHEDULED и PAYMENT_* убраны (R7-13) — непланируемые фичи,
-    # вернём по решению о переносах/монетизации.
+    # Переносы (этап 1): запрос от родителя → карточка координатору;
+    # RESCHEDULED — факт переноса (override записан, уведомить стороны).
+    RESCHEDULE_REQUESTED = "lesson.reschedule_requested"
+    LESSON_RESCHEDULED = "lesson.rescheduled"
 
     # Messages
     MESSAGE_INCOMING = "message.incoming"

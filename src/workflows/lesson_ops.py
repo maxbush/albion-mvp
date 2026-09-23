@@ -874,12 +874,16 @@ async def build_morning_digest_text(db_path: str | None = None) -> str:
         MeritHubEnrollmentRepository,
         MeritHubStudentRepository,
     )
-    from src.utils.recurrence import class_occurs_on, org_now, org_zone_label
+    from src.utils.recurrence import org_now, org_zone_label
+    from src.services.overrides import occurrences_on_date
 
     today = org_now().date()
-    crepo = MeritHubClassRepository(db_path)
-    classes = [c for c in await crepo.list_all() if class_occurs_on(c, today)]
-    classes.sort(key=lambda c: (c.get("start_time") or "")[11:16] or "99:99")
+    # Этап 1: occurrences_on_date применяет schedule_overrides — отменённые
+    # даты скрыты, перенесённые в сегодня добавлены (со своим временем).
+    pairs = await occurrences_on_date(today, db_path)
+    classes = [c for c, _t in pairs]
+    eff_time = {c["class_id"]: t for c, t in pairs if t}
+    classes.sort(key=lambda c: eff_time.get(c["class_id"]) or (c.get("start_time") or "")[11:16] or "99:99")
 
     if not classes:
         return "☀️ Доброе утро!\n\n📅 Сегодня занятий нет."
@@ -896,7 +900,7 @@ async def build_morning_digest_text(db_path: str | None = None) -> str:
     students_total = 0
     for c in classes:
         marker = "🔁" if (c.get("class_type") or "oneTime") == "perma" else "1️⃣"
-        hhmm = (c.get("start_time") or "—")[11:16]
+        hhmm = eff_time.get(c["class_id"]) or (c.get("start_time") or "—")[11:16]
         time_part = f"{hhmm} ({org})" if hhmm else "—"
         enr = [
             e for e in by_cid.get(c["class_id"], [])

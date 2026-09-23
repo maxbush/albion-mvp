@@ -86,14 +86,37 @@ class CancellationWorkflow:
             tutor_tg = (trow or {}).get("telegram_id")
             tn = (trow or {}).get("name") or "Репетитор"
 
+        # Этап 1: отмена ОДНОГО occurrence → schedule_overrides (маска для
+        # материализации); is_paid из проверки окна на стороне кнопки.
+        occ_date = event.data.get("occurrence_date")
+        is_paid = bool(event.data.get("is_paid"))
+        if occ_date and lid:
+            from src.db.repository import ScheduleOverrideRepository
+            await ScheduleOverrideRepository(self.users.db_path).add(
+                lid, occ_date, "cancelled",
+                reason=event.data.get("reason"),
+                is_paid=is_paid,
+                created_by=event.data.get("reported_by"),
+            )
+
         # Отменяем запланированные действия для этого урока
+        import json as _json
         from src.db.repository import ScheduledActionRepository, WorkflowRepository
         sched = ScheduledActionRepository(self.users.db_path) if self.users.db_path else ScheduledActionRepository()
         wf_repo = WorkflowRepository(self.users.db_path) if self.users.db_path else WorkflowRepository()
-        # Находим все running workflow для этого class_id (R9-1: json_extract)
+        # Находим все running workflow для этого class_id (R9-1: json_extract).
+        # Для occurrence-отмены — только workflow этого слота (start_time[:10]
+        # == occ_date), иначе сняли бы напоминания всей серии.
         active_wfs = await wf_repo.find_by_json(
             "class_id", lid, state="running", limit=100)
         for wf in active_wfs:
+            if occ_date:
+                try:
+                    st = (_json.loads(wf.get("data") or "{}")).get("start_time") or ""
+                except Exception:
+                    st = ""
+                if st[:10] != occ_date:
+                    continue
             await sched.cancel_by_workflow(wf["id"])
             await wf_repo.cancel(wf["id"])
             logger.info("Cancelled workflow %d for cancelled lesson %s", wf["id"], lid)
@@ -120,31 +143,46 @@ class CancellationWorkflow:
 
         # Уведомляем всех координаторов
         coord_ids = await get_coordinator_ids(self.users.db_path)
+        paid_note = "💰 Платная отмена\n" if is_paid else ""
         for tg in coord_ids:
             await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
                 "telegram_id": tg,
-                "message": f"🔄 Отмена: {sn} + {tn}\n{subject}\n{reason}",
+                "message": f"{paid_note}🔄 Отмена: {sn} + {tn}\n{subject}\n{reason}",
             }))
 
     async def handle_classified(self, event):
-        if event.data.get("intent") not in ("cancellation", "reschedule"):
+        intent = event.data.get("intent")
+        if intent not in ("cancellation", "reschedule"):
             return
         tg = event.data.get("telegram_id")
 
         # Персонализированные кнопки (UX-аудит П1): только занятия этого родителя,
-        # occurrence-aware. Раньше показывались первые 5 классов ВСЕЙ организации.
+        # occurrence-aware (с учётом overrides). Раньше показывались первые 5
+        # классов ВСЕЙ организации.
         lessons = await upcoming_lessons_for_parent(tg, limit=5)
-        buttons = [
-            {"text": f"{l['student_name']} — {l['label']}"[:60],
-             "callback_data": f"cancel_class:{l['class_id']}:{l['date']}"}
-            for l in lessons
-        ]
-        if buttons:
-            msg = ("Какое занятие отменяем?\n\n"
-                   "Если его нет в списке — напишите координатору.")
+        if intent == "reschedule":
+            # Перенос исполняет координатор: выбор занятия → запрос карточкой.
+            buttons = [
+                {"text": f"{l['student_name']} — {l['label']}"[:60],
+                 "callback_data": f"resched_pick:{l['class_id']}:{l['date']}"}
+                for l in lessons
+            ]
+            msg = (("Какое занятие перенести?\n\n"
+                    "Если его нет в списке — напишите координатору.")
+                   if buttons else
+                   ("Не вижу ваших ближайших занятий.\n"
+                    "Чтобы перенести — напишите координатору, пожалуйста."))
         else:
-            msg = ("Не вижу ваших ближайших занятий.\n"
-                   "Чтобы отменить — напишите координатору, пожалуйста.")
+            buttons = [
+                {"text": f"{l['student_name']} — {l['label']}"[:60],
+                 "callback_data": f"cancel_class:{l['class_id']}:{l['date']}"}
+                for l in lessons
+            ]
+            msg = (("Какое занятие отменяем?\n\n"
+                    "Если его нет в списке — напишите координатору.")
+                   if buttons else
+                   ("Не вижу ваших ближайших занятий.\n"
+                    "Чтобы отменить — напишите координатору, пожалуйста."))
         await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
             "telegram_id": tg,
             "message": msg,
@@ -159,14 +197,14 @@ async def upcoming_lessons_for_parent(parent_tg: str, limit: int = 5, days: int 
     {class_id, date, time, label, student_name, tz}.
     Используется командой /cancel_lesson, NLU-интентом отмены и командой /lessons.
     """
-    from datetime import timedelta as _td
+    from datetime import date, timedelta as _td
     from src.db.repository import (
         MeritHubClassRepository,
         MeritHubEnrollmentRepository,
         MeritHubStudentRepository,
     )
     from src.utils.recurrence import (
-        MONTHS_RU, WD_RU, class_occurs_on, mh_weekday, org_now,
+        MONTHS_RU, WD_RU, mh_weekday, org_now,
     )
 
     erepo = MeritHubEnrollmentRepository()
@@ -188,16 +226,19 @@ async def upcoming_lessons_for_parent(parent_tg: str, limit: int = 5, days: int 
     class_map = await crepo.get_many([e["class_id"] for e in enrollments])
     tz_map = await srepo.get_by_client_ids(
         [e["client_user_id"] for e in enrollments if e.get("client_user_id")])
+    from src.services.overrides import effective_dates
+    window = [today + _td(days=i) for i in range(days)]
     for class_id in sorted({e["class_id"] for e in enrollments}):
         c = class_map.get(class_id)
         if not c:
             continue
-        hhmm = (c.get("start_time") or "")[11:16] or "00:00"
-        for i in range(days):
-            d = today + _td(days=i)
-            if not class_occurs_on(c, d):
-                continue
-            if i == 0 and hhmm <= now_hhmm:
+        # effective_dates: overrides маскируют отменённые/перенесённые даты
+        # и возвращают занятия, приехавшие в окно переносом (со своим временем).
+        eff = await effective_dates(c, window)
+        for iso in sorted(eff):
+            d = date.fromisoformat(iso)
+            hhmm = eff[iso] or (c.get("start_time") or "")[11:16] or "00:00"
+            if iso == today.isoformat() and hhmm <= now_hhmm:
                 continue  # уже началось/прошло
             enr = next((e for e in enrollments if e["class_id"] == class_id), {})
             name = enr.get("student_name") or enr.get("client_user_id") or "Ученик"
@@ -207,7 +248,7 @@ async def upcoming_lessons_for_parent(parent_tg: str, limit: int = 5, days: int 
                 tz = (srow or {}).get("timezone")
             out.append({
                 "class_id": class_id,
-                "date": d.isoformat(),
+                "date": iso,
                 "time": hhmm,
                 "student_name": name,
                 "tz": tz,

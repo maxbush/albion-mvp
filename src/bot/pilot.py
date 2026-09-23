@@ -1020,9 +1020,14 @@ async def cmd_today(upd: Update, _ctx) -> None:
 
     lines = ["📅 Обзор системы\n"]
 
-    # Занятия на сегодня: oneTime по дате, perma — по паттерну дней недели
-    today_classes = [c for c in classes if class_occurs_on(c, today_org)]
-    today_classes.sort(key=lambda c: (c.get("start_time") or "")[11:16] or "99:99")
+    # Занятия на сегодня: oneTime по дате, perma — по паттерну дней недели.
+    # Этап 1: occurrences_on_date применяет schedule_overrides — отменённые
+    # даты скрыты, перенесённые в сегодня добавлены (со своим временем).
+    from src.services.overrides import occurrences_on_date
+    today_pairs = await occurrences_on_date(today_org)
+    today_classes = [c for c, _t in today_pairs]
+    eff_time = {c["class_id"]: t for c, t in today_pairs if t}
+    today_classes.sort(key=lambda c: eff_time.get(c["class_id"]) or (c.get("start_time") or "")[11:16] or "99:99")
 
     if today_classes:
         lines.append(f"📚 Занятия сегодня ({len(today_classes)}), время — {org_zone_label()}:")
@@ -1040,7 +1045,7 @@ async def cmd_today(upd: Update, _ctx) -> None:
             student_count = sum(1 for e in enr if (e.get("role") or "student") == "student")
             student_names = [e.get("student_name") or e.get("client_user_id") for e in enr
                             if (e.get("role") or "student") == "student"]
-            hhmm = (c.get("start_time") or "")[11:16] or "00:00"
+            hhmm = eff_time.get(c["class_id"]) or (c.get("start_time") or "")[11:16] or "00:00"
             # P1 аудита: вместо голого `C9` — название курса или человекочитаемый
             # label с датой («C9 — 09.08, 15:00»), плюс сколько осталось до урока.
             label = c.get("title") or _format_class_label(c["class_id"], c.get("start_time"))
