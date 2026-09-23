@@ -763,3 +763,61 @@ class UserChannelRepository(Repository):
             "SELECT * FROM user_channels WHERE channel=? AND address=?",
             (channel, str(address)),
         )
+
+
+class ScheduleOverrideRepository(Repository):
+    """Точечные правки occurrence'ов: отмена/перенос одной даты класса.
+
+    UNIQUE(class_id, occurrence_date) — повторная правка той же даты это
+    upsert, а не вторая запись. Храним в org-каноне (дата ISO без зоны —
+    та же система координат, что у class_occurs_on)."""
+
+    async def add(
+        self,
+        class_id: str,
+        occurrence_date: str,
+        action: str,
+        *,
+        new_date: str | None = None,
+        new_time: str | None = None,
+        reason: str | None = None,
+        is_paid: bool = False,
+        created_by: str | None = None,
+    ) -> int:
+        return await self._insert(
+            "INSERT INTO schedule_overrides "
+            "(class_id, occurrence_date, action, new_date, new_time, reason, is_paid, created_by) "
+            "VALUES (?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(class_id, occurrence_date) DO UPDATE SET "
+            "action=excluded.action, new_date=excluded.new_date, "
+            "new_time=excluded.new_time, reason=excluded.reason, "
+            "is_paid=excluded.is_paid, created_by=excluded.created_by",
+            (class_id, occurrence_date, action, new_date, new_time,
+             reason, int(is_paid), created_by),
+        )
+
+    async def get(self, class_id: str, occurrence_date: str) -> dict | None:
+        return await self._fetchone(
+            "SELECT * FROM schedule_overrides WHERE class_id=? AND occurrence_date=?",
+            (class_id, occurrence_date),
+        )
+
+    async def list_for_class(self, class_id: str) -> list[dict]:
+        return await self._fetchall(
+            "SELECT * FROM schedule_overrides WHERE class_id=? ORDER BY occurrence_date",
+            (class_id,),
+        )
+
+    async def list_on(self, date_iso: str) -> list[dict]:
+        """Правки, исходная дата которых — date_iso (маскируют занятия этого дня)."""
+        return await self._fetchall(
+            "SELECT * FROM schedule_overrides WHERE occurrence_date=?",
+            (date_iso,),
+        )
+
+    async def moved_to(self, date_iso: str) -> list[dict]:
+        """Переносы, целевая дата которых — date_iso (занятия, приехавшие в этот день)."""
+        return await self._fetchall(
+            "SELECT * FROM schedule_overrides WHERE action='moved' AND new_date=?",
+            (date_iso,),
+        )

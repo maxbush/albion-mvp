@@ -21,6 +21,7 @@ from src.db.repository import (
     NotificationRepository,
     WorkflowRepository,
     IdempotencyRepository,
+    WizardStateRepository,
 )
 from src.events.bus import bus
 from src.events.types import Event, EventTypes
@@ -57,6 +58,39 @@ async def can_send_async(telegram_id: str) -> bool:
 def get_kill_switch_level() -> int:
     """Возвращает текущий уровень kill switch (для внешних модулей)."""
     return _kill_switch_level
+
+
+def _wizard_expires_iso() -> str:
+    """TTL-граница для записей wizard_state (тот же срок, что у визардов)."""
+    from src.bot.wizard import WIZARD_TTL_MIN
+    return (datetime.now(timezone.utc) + timedelta(minutes=WIZARD_TTL_MIN)).isoformat()
+
+
+def _cancel_policy_verdict(cls: dict | None, occ_date: str | None, kind: str):
+    """Verdict бесплатного окна для occurrence. kind: 'cancel'|'reschedule'.
+
+    None — если окно неприменимо (нет даты/класса/битое время): тогда
+    сценарий остаётся бесплатным, как раньше."""
+    if not occ_date or not cls:
+        return None
+    from src.services.cancellation_policy import evaluate_policy
+    from src.services.overrides import occurrence_start_iso
+    from src.utils.recurrence import org_now
+    from src.workflows.lesson_ops import _parse_dt
+    free_hours = (settings.albion_cancel_free_hours if kind == "cancel"
+                  else settings.albion_reschedule_free_hours)
+    try:
+        start = _parse_dt(occurrence_start_iso(cls, occ_date))
+    except Exception:
+        return None
+    return evaluate_policy(start, now=org_now(), free_hours=free_hours)
+
+
+def _paid_warning(cls: dict | None, occ_date: str | None, kind: str) -> str:
+    """Текст предупреждения о платном окне ('' — если бесплатно)."""
+    from src.services.cancellation_policy import paid_warning_text
+    v = _cancel_policy_verdict(cls, occ_date, kind)
+    return paid_warning_text(v, kind) if v else ""
 
 
 def set_kill_switch_level(level: int) -> None:
@@ -360,21 +394,22 @@ async def cmd_status(upd: Update, _ctx) -> None:
     await upd.message.reply_text(text, parse_mode="Markdown")
 
 
-def _next_occurrence_in_days(class_row: dict, days: int, now) -> tuple | None:
+async def _next_occurrence_in_days(class_row: dict, days: int, now) -> tuple | None:
     """Ближайший occurrence класса в окне `days` дней → (date, 'HH:MM') или None.
 
     Общий сканер для веток /lessons (tutor/coordinator): учитывает, что
-    сегодняшнее занятие, которое уже началось, пропускается."""
-    from src.utils.recurrence import class_occurs_on
-    hhmm = (class_row.get("start_time") or "")[11:16] or "00:00"
+    сегодняшнее занятие, которое уже началось, пропускается. Этап 1:
+    effective_dates применяет schedule_overrides (отменённые скрыты,
+    перенесённые возвращаются с новой датой/временем)."""
+    from src.services.overrides import effective_dates
     today = now.date()
-    for i in range(days):
-        d = today + timedelta(days=i)
-        if not class_occurs_on(class_row, d):
+    eff = await effective_dates(
+        class_row, [today + timedelta(days=i) for i in range(days)])
+    for iso in sorted(eff):
+        hhmm = eff[iso] or (class_row.get("start_time") or "")[11:16] or "00:00"
+        if iso == today.isoformat() and hhmm <= now.strftime("%H:%M"):
             continue
-        if i == 0 and hhmm <= now.strftime("%H:%M"):
-            continue
-        return d, hhmm
+        return datetime.strptime(iso, "%Y-%m-%d").date(), hhmm
     return None
 
 
@@ -411,7 +446,7 @@ async def cmd_lessons(upd: Update, _ctx) -> None:
         now = org_now()
         items = []
         for c in classes:
-            occ = _next_occurrence_in_days(c, 14, now)
+            occ = await _next_occurrence_in_days(c, 14, now)
             if occ:
                 items.append((occ[0], occ[1], c))
         items.sort(key=lambda x: (x[0], x[1]))
@@ -448,7 +483,7 @@ async def cmd_lessons(upd: Update, _ctx) -> None:
         now = org_now()
         items = []
         for c in await crepo.list_all():
-            occ = _next_occurrence_in_days(c, 7, now)
+            occ = await _next_occurrence_in_days(c, 7, now)
             if occ:
                 items.append((occ[0], occ[1], c))
         items.sort(key=lambda x: (x[0], x[1]))
@@ -625,6 +660,67 @@ async def cmd_cancel_lesson(upd: Update, _ctx) -> None:
         f"🔄 Отмена урока `{lid}` передана репетитору и координаторам.",
         parse_mode="Markdown",
     )
+
+
+async def cmd_reschedule(upd: Update, _ctx) -> None:
+    """Перенос одного occurrence: /reschedule CLASS_ID OLD_DATE NEW_DATE HH:MM.
+
+    Только координатор/админ: решение о новом слоте (и платности при
+    позднем запросе) — его зона ответственности. Создаёт override 'moved'
+    и публикует LESSON_RESCHEDULED (уведомления + перепланировка
+    напоминаний — в reschedule workflow)."""
+    if not await is_coordinator_or_admin(upd.effective_user.id):
+        await upd.message.reply_text("⛔ Только координатор/админ")
+        return
+    args = _ctx.args or []
+    if len(args) != 4:
+        await upd.message.reply_text(
+            "Формат: /reschedule CLASS_ID СТАРАЯ_ДАТА НОВАЯ_ДАТА ЧЧ:ММ\n"
+            "Пример: /reschedule C12 2026-09-25 2026-09-27 16:00")
+        return
+    class_id, old_date, new_date, new_time = args
+    from src.db.repository import MeritHubClassRepository, ScheduleOverrideRepository
+    from src.services.overrides import effective_dates
+    from src.utils.recurrence import org_now
+    cls = await MeritHubClassRepository().get(class_id)
+    if not cls:
+        await upd.message.reply_text(f"❌ Класс {class_id} не найден.")
+        return
+    try:
+        d_new = datetime.strptime(new_date, "%Y-%m-%d").date()
+        datetime.strptime(new_time, "%H:%M")
+    except ValueError:
+        await upd.message.reply_text("❌ Неверный формат даты/времени (YYYY-MM-DD, ЧЧ:ММ).")
+        return
+    if d_new < org_now().date():
+        await upd.message.reply_text("❌ Новая дата в прошлом.")
+        return
+    # Исходная дата должна быть эффективным занятием (иначе override
+    # замаскирует дату, которой и так нет — тихий no-op).
+    eff = await effective_dates(cls, [datetime.strptime(old_date, "%Y-%m-%d").date()])
+    if old_date not in eff:
+        await upd.message.reply_text(
+            f"❌ У класса {class_id} нет занятия {old_date} "
+            "(по паттерну или уже перенесено/отменено).")
+        return
+    await ScheduleOverrideRepository().add(
+        class_id, old_date, "moved",
+        new_date=new_date, new_time=new_time,
+        reason="coordinator",
+        created_by=str(upd.effective_user.id),
+    )
+    await bus.publish(Event(EventTypes.LESSON_RESCHEDULED, {
+        "class_id": class_id,
+        "occurrence_date": old_date,
+        "new_date": new_date,
+        "new_time": new_time,
+        "created_by": str(upd.effective_user.id),
+    }))
+    await upd.message.reply_text(
+        f"✅ Перенос исполнен: {class_id} с {old_date} → {new_date} {new_time}.\n"
+        "Родители и репетитор уведомлены, напоминания перепланированы.")
+    logger.info("Reschedule by %s: %s %s → %s %s",
+                upd.effective_user.id, class_id, old_date, new_date, new_time)
 
 
 async def cmd_ok(upd: Update, _ctx) -> None:
@@ -861,15 +957,51 @@ async def handle_callback(upd: Update, _ctx) -> None:
         cls = await MeritHubClassRepository().get(class_id)
         label = _format_class_label(class_id, (cls or {}).get("start_time"))
         date_note = f" {occ_date}" if occ_date else ""
+        # Этап 1: поздняя отмена — платная, предупреждаем ДО подтверждения.
+        warn = _paid_warning(cls, occ_date, "cancel")
+        confirm_text = "✅ Да, отменить" + (" (платно)" if warn else "")
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Да, отменить", callback_data=f"cancel_yes:{class_id}:{occ_date}"),
+            InlineKeyboardButton(confirm_text, callback_data=f"cancel_yes:{class_id}:{occ_date}"),
             InlineKeyboardButton("◀️ Не надо", callback_data="cancel_x"),
         ]])
         await query.edit_message_text(
-            f"Отменяем занятие {label}{date_note}?\n\n"
+            f"{warn}Отменяем занятие {label}{date_note}?\n\n"
             "Репетитор и координаторы получат уведомление.",
             reply_markup=kb,
         )
+        return
+
+    # --- Этап 1: перенос занятия (родитель выбирает → запрос координатору) ---
+    if data.startswith(("resched_pick:", "resched_go:")):
+        parts = data.split(":")
+        class_id = parts[1] if len(parts) > 1 else ""
+        occ_date = parts[2] if len(parts) > 2 else ""
+        if not class_id or not occ_date:
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
+            return
+        from src.db.repository import MeritHubClassRepository
+        cls = await MeritHubClassRepository().get(class_id)
+        warn = _paid_warning(cls, occ_date, "reschedule")
+        if warn and not data.startswith("resched_go:"):
+            # Поздний перенос — платный: сначала предупреждение.
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Всё равно перенести (платно)",
+                                     callback_data=f"resched_go:{class_id}:{occ_date}"),
+                InlineKeyboardButton("◀️ Не надо", callback_data="cancel_x"),
+            ]])
+            await query.edit_message_text(warn + "Продолжить перенос?", reply_markup=kb)
+            return
+        chat_id = str(upd.effective_chat.id)
+        await WizardStateRepository().save(
+            chat_id, "parent_resched", "await_time",
+            {"class_id": class_id, "occurrence_date": occ_date,
+             "is_paid": bool(warn), "requested_by": str(query.from_user.id)},
+            _wizard_expires_iso(),
+        )
+        await query.edit_message_text(
+            "На какие дату и время перенести?\n\n"
+            "Напишите ответом, например: «25 сентября в 16:00». "
+            "Координатор подтвердит перенос.")
         return
 
     if data == "cancel_x":
@@ -887,20 +1019,27 @@ async def handle_callback(upd: Update, _ctx) -> None:
         reason = "Отмена родителем через бота"
         if occ_date:
             reason += f" (занятие {occ_date})"
+        from src.db.repository import MeritHubClassRepository
+        from src.workflows.lesson_ops import _format_class_label
+        cls = await MeritHubClassRepository().get(class_id)
+        # Окно считаем в момент подтверждения — флаг is_paid не доверяем
+        # клиентской кнопке.
+        verdict = _cancel_policy_verdict(cls, occ_date, "cancel") if occ_date else None
+        is_paid = bool(verdict and verdict.is_paid)
         await bus.publish(Event(EventTypes.LESSON_CANCELLED, {
             "lesson_id": class_id,
             "reason": reason,
             "occurrence_date": occ_date or None,
+            "is_paid": is_paid,
             "reported_by": str(query.from_user.id),
         }))
-        from src.db.repository import MeritHubClassRepository
-        from src.workflows.lesson_ops import _format_class_label
-        cls = await MeritHubClassRepository().get(class_id)
         label = _format_class_label(class_id, (cls or {}).get("start_time"))
         date_note = f" ({occ_date})" if occ_date else ""
+        paid_note = "\n💰 Отмена в позднем окне — оплачиваемая." if is_paid else ""
         await query.edit_message_text(
-            f"🔄 Отмена {label}{date_note} передана репетитору и координаторам.")
-        logger.info("Cancel via button: class=%s date=%s by=%s", class_id, occ_date, query.from_user.id)
+            f"🔄 Отмена {label}{date_note} передана репетитору и координаторам.{paid_note}")
+        logger.info("Cancel via button: class=%s date=%s paid=%s by=%s",
+                    class_id, occ_date, is_paid, query.from_user.id)
         return
 
     # --- П1: координатор решает судьбу занятия после «не придём»/«can't teach» ---
@@ -1154,6 +1293,27 @@ async def handle_message(upd: Update, _ctx) -> None:
 
     logger.info("Msg from %s: %s", upd.effective_user.id, text[:100])
 
+    # Этап 1: родитель в ответ на «на какую дату перенести?» — текст это
+    # предложение времени, а не NLU-сообщение.
+    pending = await WizardStateRepository().get(str(upd.effective_chat.id))
+    if pending and pending.get("flow") == "parent_resched":
+        try:
+            pdata = json.loads(pending.get("data") or "{}")
+        except Exception:
+            pdata = {}
+        await WizardStateRepository().delete(str(upd.effective_chat.id))
+        await bus.publish(Event(EventTypes.RESCHEDULE_REQUESTED, {
+            "class_id": pdata.get("class_id"),
+            "occurrence_date": pdata.get("occurrence_date"),
+            "proposed": text,
+            "is_paid": pdata.get("is_paid"),
+            "free_hours": settings.albion_reschedule_free_hours,
+            "requested_by": tg_id,
+        }))
+        await upd.message.reply_text(
+            "🔁 Запрос на перенос передан координатору — он свяжется с вами.")
+        return
+
     # Parent/tutor pre-lesson check-ins: сначала пытаемся понять, не ответ ли это
     # на reminder/start-check workflow.
     ops = LessonOpsWorkflow()
@@ -1305,6 +1465,7 @@ def setup_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("mock_demo", cmd_mock_demo))
     app.add_handler(CommandHandler("kill_switch", cmd_kill_switch))
     app.add_handler(CommandHandler("cancel_lesson", cmd_cancel_lesson))
+    app.add_handler(CommandHandler("reschedule", cmd_reschedule))
     app.add_handler(CommandHandler("lessons", cmd_lessons))
     app.add_handler(CommandHandler("ok", cmd_ok))
     # Кнопочные сценарии координатора (визарды) — создание без ручного ввода ID.

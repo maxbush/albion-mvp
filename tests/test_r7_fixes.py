@@ -621,11 +621,16 @@ async def test_r7_13_classstatus_publishes_lesson_events(tmp_path, monkeypatch):
 
 
 def test_r7_13_phantom_event_types_removed():
-    """Фантомные типы (0 publish за всю историю) удалены из EventTypes."""
+    """Фантомные типы (0 publish за всю историю) удалены из EventTypes.
+
+    PAYMENT_* остаются удалёнными. LESSON_RESCHEDULED/RESCHEDULE_REQUESTED
+    возвращены в этапе 1 как планируемые фичи с реальными издателями
+    (/reschedule, resched_pick) и подписчиком (reschedule workflow)."""
     from src.events.types import EventTypes
     assert not hasattr(EventTypes, "PAYMENT_RECEIVED")
     assert not hasattr(EventTypes, "PAYMENT_LOW_BALANCE")
-    assert not hasattr(EventTypes, "LESSON_RESCHEDULED")
+    assert hasattr(EventTypes, "LESSON_RESCHEDULED")
+    assert hasattr(EventTypes, "RESCHEDULE_REQUESTED")
 
 
 # ── R7-14: complete_workflow — мёртвый SELECT убран ──────────────────

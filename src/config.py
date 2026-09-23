@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     # Частота тика планировщика. Для пилота удобно 5с, для обычного режима 30с.
     albion_scheduler_interval_sec: int = 30
 
+    # Бесплатное окно отмены/переноса (часов до занятия). Меньше — платно:
+    # родителю показывается предупреждение до подтверждения.
+    albion_cancel_free_hours: int = 24
+    albion_reschedule_free_hours: int = 24
+
     # Пилот: имя тестового ученика для сценария /pilot_absent.
     albion_pilot_student_name: str = "Пилотный ученик"
 

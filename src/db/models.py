@@ -205,6 +205,27 @@ CREATE TABLE IF NOT EXISTS merithub_enrollments (
 );
 CREATE INDEX IF NOT EXISTS idx_mh_enroll_class ON merithub_enrollments(class_id);
 
+-- Точечные правки расписания (этап 1): отмена/перенос ОДНОГО occurrence
+-- класса. MeritHub perma-серия в API не сдвигается по одной дате — правку
+-- храним локально; материализация (class_occurs_on + списки занятий)
+-- применяет эти строки как маску: 'cancelled' скрывает дату, 'moved'
+-- переносит её на new_date/new_time.
+CREATE TABLE IF NOT EXISTS schedule_overrides (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    class_id TEXT NOT NULL,
+    occurrence_date TEXT NOT NULL,
+    action TEXT NOT NULL CHECK(action IN ('moved','cancelled')),
+    new_date TEXT,
+    new_time TEXT,
+    reason TEXT,
+    is_paid INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(class_id, occurrence_date)
+);
+CREATE INDEX IF NOT EXISTS idx_sched_ovr_class ON schedule_overrides(class_id);
+CREATE INDEX IF NOT EXISTS idx_sched_ovr_newdate ON schedule_overrides(new_date);
+
 -- Каналы доставки пользователя: адрес в каждом канале + предпочтение.
 -- Адрес канала — то, что нужно отправителю: TG chat_id, E.164 phone, email.
 CREATE TABLE IF NOT EXISTS user_channels (
