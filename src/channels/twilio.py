@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -29,6 +30,7 @@ from src.config import settings
 logger = logging.getLogger(__name__)
 
 _BTN_MAP_PREFIX = "twilio_btns:"
+_WA_WINDOW = timedelta(hours=24)  # customer-service окно Meta (то же, что у WA)
 
 
 def _to_wa(address: str) -> str:
@@ -162,6 +164,24 @@ class TwilioSender(ChannelSender):
                                       db_path=self._db_path)
             except Exception:
                 logger.exception("twilio: не удалось сохранить button map для %s", address)
-        resp = await self._client.send_text(address, text)
+        # Вне 24h-окна Meta отклонит free-form Body — только approved Content
+        # Template. Без TWILIO_CONTENT_SID fallback'а нет → явный провал.
+        if settings.twilio_content_sid and not await self._window_open(address):
+            resp = await self._client.send_template(
+                address, settings.twilio_content_sid, {"1": text[:1600]})
+        else:
+            resp = await self._client.send_text(address, text)
         return SendResult(ok=True, channel=self.name,
                           message_id=resp.get("sid"))
+
+    async def _window_open(self, address: str) -> bool:
+        """24h-окно: свежесть последнего входящего от адреса (wa_window:*)."""
+        from src.db.repository import SystemSettingsRepository
+        raw = await SystemSettingsRepository(self._db_path).get(
+            f"wa_window:{address}")
+        try:
+            return (datetime.now(timezone.utc)
+                    - datetime.fromisoformat(raw)) < _WA_WINDOW
+        except (TypeError, ValueError):
+            # битое значение → fail closed (наружу шлём шаблоном)
+            return False

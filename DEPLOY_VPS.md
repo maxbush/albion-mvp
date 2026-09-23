@@ -166,12 +166,17 @@ sudo systemctl enable --now albion-bot albion-webhook
 **`/etc/caddy/Caddyfile`:**
 ```
 albion.example.com {
-    # webhook-ресивер (uvicorn :8000): MeritHub и WhatsApp.
+    # webhook-ресивер (uvicorn :8000): MeritHub и WhatsApp (Meta/Twilio).
     # /metrics снаружи НЕ отдаём — только внутренний scrape (см. §7).
     handle /merithub/* {
         reverse_proxy 127.0.0.1:8000
     }
     handle /whatsapp/* {
+        reverse_proxy 127.0.0.1:8000
+    }
+    # провайдер WhatsApp=twilio: подпись проверяется по публичному URL,
+    # поэтому прокси должен передавать заголовки (Caddy ставит их сам).
+    handle /twilio/* {
         reverse_proxy 127.0.0.1:8000
     }
     handle /metrics* {
@@ -218,6 +223,14 @@ server {
     location /whatsapp/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host $host;
+    }
+    # провайдер WhatsApp=twilio: X-Forwarded-* нужны для проверки подписи
+    # X-Twilio-Signature (подпись считается по публичному URL).
+    location /twilio/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
     }
     location /metrics {
         return 404;   # метрики наружу не отдаём — внутренний scrape
