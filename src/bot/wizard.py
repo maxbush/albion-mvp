@@ -409,11 +409,11 @@ async def _sched_preview_text(d: dict) -> str:
         for s in students:
             srow = await srepo.get_by_client_id(s["cuid"])
             lines.append(participant_time_line(occ_dt, s["name"], (srow or {}).get("timezone")))
-        # Мягкий анти-дубль (предупреждение без блокировки — дубли бывают легитимны)
+        # Мягкий анти-дубль / проверка пересечений у репетитора
         dup = await _sched_find_duplicate(d)
         if dup:
             lines.append("")
-            lines.append(f"⚠️ Похожее занятие уже есть: {dup}")
+            lines.append(f"🚨 Внимание, конфликт расписания:\n{dup}")
     lines.append("")
     ctype_ru = "регулярное" if d.get("ctype") == "perma" else "разовое"
     lines.append(f"⚠️ Тип ({ctype_ru}) изменить после создания нельзя.")
@@ -421,23 +421,20 @@ async def _sched_preview_text(d: dict) -> str:
 
 
 async def _sched_find_duplicate(d: dict) -> str | None:
-    """Серия/занятие того же репетитора с тем же временем — подсвечиваем в превью."""
-    classes = await MeritHubClassRepository().list_all()
+    """Проверяет пересечения занятий у репетитора с учётом интервалов и дней недели."""
+    from src.utils.conflict_detector import check_tutor_conflicts
     hhmm = f"{int(d.get('hour') or 0):02d}:{int(d.get('minute') or 0):02d}"
-    for c in classes:
-        if c.get("tutor_client_user_id") != d.get("tutor_cuid"):
-            continue
-        ctype = c.get("class_type") or "oneTime"
-        ctime = (c.get("start_time") or "")[11:16]
-        if d.get("ctype") == "perma" and ctype == "perma":
-            shared = set(d.get("days") or []) & set(json.loads(c.get("schedule_days") or "[]")
-                                                      if c.get("schedule_days") else [])
-            if shared and ctime == hhmm:
-                title = c.get("title") or c["class_id"]
-                return f"🔁 {fmt_days(sorted(shared))} {ctime} · {title}"
-        if d.get("ctype") == "one" and ctype != "perma":
-            if ctime == hhmm and (c.get("start_time") or "")[:10] == d.get("date"):
-                return (c.get("title") or c["class_id"])
+    duration = int(d.get("duration") or 60)
+    conflicts = await check_tutor_conflicts(
+        tutor_client_user_id=d.get("tutor_cuid"),
+        class_type=d.get("ctype") or "one",
+        start_time_hhmm=hhmm,
+        duration_min=duration,
+        schedule_days=d.get("days"),
+        start_date=d.get("date"),
+    )
+    if conflicts:
+        return "\n".join([f"• {c.message}" for c in conflicts])
     return None
 
 

@@ -841,11 +841,11 @@ async def handle_callback(upd: Update, _ctx) -> None:
         await upd.effective_chat.send_message(f"✅ Ситуация закрыта. Ответ родителя: {parent_answer}.")
         return
 
-    # --- Отмена занятия кнопкой со списка (UX U6) ---
+    # --- Отмена занятия кнопкой со списка (UX U6 + Этап 1: платные отмены и переносы) ---
     # callback формата cancel_class:{class_id}:{occ_date} — дата опциональна.
     if data.startswith("cancel_class:"):
         # Отмена необратима для родителя (уведомление уже уйдёт репетитору),
-        # поэтому сначала явное подтверждение — случайный тап ≠ отмена.
+        # поэтому сначала явное подтверждение с расчётом политики (правило 24ч).
         parts = data.split(":")
         class_id = parts[1] if len(parts) > 1 else ""
         occ_date = parts[2] if len(parts) > 2 else ""
@@ -854,16 +854,30 @@ async def handle_callback(upd: Update, _ctx) -> None:
             return
         from src.db.repository import MeritHubClassRepository
         from src.workflows.lesson_ops import _format_class_label
+        from src.workflows.cancellation import calculate_cancellation_policy
         cls = await MeritHubClassRepository().get(class_id)
         label = _format_class_label(class_id, (cls or {}).get("start_time"))
         date_note = f" {occ_date}" if occ_date else ""
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Да, отменить", callback_data=f"cancel_yes:{class_id}:{occ_date}"),
-            InlineKeyboardButton("◀️ Не надо", callback_data="cancel_x"),
-        ]])
+        policy = await calculate_cancellation_policy(class_id, occ_date)
+
+        if policy["is_paid"]:
+            btn_confirm = InlineKeyboardButton(
+                "💸 Подтверждаю платную отмену",
+                callback_data=f"cancel_yes_paid:{class_id}:{occ_date}",
+            )
+        else:
+            btn_confirm = InlineKeyboardButton(
+                "✅ Да, отменить",
+                callback_data=f"cancel_yes:{class_id}:{occ_date}",
+            )
+
+        kb = InlineKeyboardMarkup([
+            [btn_confirm],
+            [InlineKeyboardButton("🔁 Запросить перенос", callback_data=f"resched_req:{class_id}:{occ_date}")],
+            [InlineKeyboardButton("◀️ Оставить урок в силе", callback_data="cancel_x")],
+        ])
         await query.edit_message_text(
-            f"Отменяем занятие {label}{date_note}?\n\n"
-            "Репетитор и координаторы получат уведомление.",
+            f"Отменяем занятие {label}{date_note}?\n\n{policy['warning']}",
             reply_markup=kb,
         )
         return
@@ -872,10 +886,27 @@ async def handle_callback(upd: Update, _ctx) -> None:
         await query.edit_message_text("Хорошо, занятие остаётся в расписании 👌")
         return
 
-    if data.startswith("cancel_yes:"):
+    if data.startswith("resched_req:"):
         parts = data.split(":")
         class_id = parts[1] if len(parts) > 1 else ""
         occ_date = parts[2] if len(parts) > 2 else ""
+        if not class_id:
+            await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
+            return
+        await _ensure_user(upd, "parent")
+        await bus.publish(Event(EventTypes.LESSON_RESCHEDULE_REQUESTED, {
+            "lesson_id": class_id,
+            "occurrence_date": occ_date or None,
+            "reported_by": str(query.from_user.id),
+        }))
+        await query.edit_message_text("📨 Запрос на перенос отправлен координатору. Мы свяжемся с вами для подбора времени.")
+        return
+
+    if data.startswith("cancel_yes_paid:") or data.startswith("cancel_yes_free:") or data.startswith("cancel_yes:"):
+        parts = data.split(":")
+        class_id = parts[1] if len(parts) > 1 else ""
+        occ_date = parts[2] if len(parts) > 2 else ""
+        is_paid = data.startswith("cancel_yes_paid:")
         if not class_id:
             await query.edit_message_text("Не смог прочитать нажатие — попробуйте ещё раз.")
             return
@@ -887,6 +918,7 @@ async def handle_callback(upd: Update, _ctx) -> None:
             "lesson_id": class_id,
             "reason": reason,
             "occurrence_date": occ_date or None,
+            "is_paid": is_paid,
             "reported_by": str(query.from_user.id),
         }))
         from src.db.repository import MeritHubClassRepository
@@ -894,9 +926,11 @@ async def handle_callback(upd: Update, _ctx) -> None:
         cls = await MeritHubClassRepository().get(class_id)
         label = _format_class_label(class_id, (cls or {}).get("start_time"))
         date_note = f" ({occ_date})" if occ_date else ""
+        paid_note = " (платная отмена <24ч)" if is_paid else ""
         await query.edit_message_text(
-            f"🔄 Отмена {label}{date_note} передана репетитору и координаторам.")
-        logger.info("Cancel via button: class=%s date=%s by=%s", class_id, occ_date, query.from_user.id)
+            f"🔄 Отмена {label}{date_note}{paid_note} передана репетитору и координаторам.")
+        logger.info("Cancel via button: class=%s date=%s is_paid=%s by=%s",
+                    class_id, occ_date, is_paid, query.from_user.id)
         return
 
     # --- П1: координатор решает судьбу занятия после «не придём»/«can't teach» ---
@@ -1475,53 +1509,11 @@ def setup_handlers(app: Application) -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
+    from src.notifications.channel_router import ChannelRouter
+    router = ChannelRouter(bot_app=app)
+
     async def notif_handler(event: Event):
-        tg = event.data.get("telegram_id")
-        msg = event.data.get("message", "")
-        cb_data = event.data.get("callback_data")
-        buttons = event.data.get("buttons") or []
-        if not tg or not msg:
-            return
-        if not await can_send_async(tg):
-            logger.info("Kill switch blocked msg to %s", tg)
-            return
-        last_error = None
-        for attempt in range(3):
-            try:
-                reply_markup = None
-                if buttons:
-                    # Кнопка бывает двух видов: callback (действие) и url (ссылка,
-                    # например tg://user?id= «написать родителю»). Ровно одно из двух.
-                    reply_markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton(
-                            btn["text"],
-                            callback_data=btn.get("callback_data"),
-                            url=btn.get("url"),
-                        )] for btn in buttons
-                    ])
-                elif cb_data:
-                    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Всё в порядке", callback_data=cb_data)]])
-                if reply_markup:
-                    await app.bot.send_message(chat_id=tg, text=msg, reply_markup=reply_markup)
-                else:
-                    await app.bot.send_message(chat_id=tg, text=msg)
-                nid = event.data.get("notification_id")
-                if nid:
-                    await NotificationRepository().mark_sent(nid)
-                return
-            except Exception as e:
-                last_error = e
-                if attempt < 2:
-                    delay = [1, 3][attempt]
-                    logger.warning("Send to %s failed (attempt %d/3), retry in %ds: %s", tg, attempt + 1, delay, e)
-                    await asyncio.sleep(delay)
-        logger.error("Send to %s failed after 3 attempts: %s", tg, last_error)
-        nid = event.data.get("notification_id")
-        if nid:
-            await NotificationRepository().mark_failed(nid, str(last_error))
-        wf_id = event.data.get("workflow_id")
-        if wf_id:
-            await WorkflowRepository().update_state(wf_id, "failed", {"error": str(last_error)})
+        await router.send(event.data)
 
     bus.subscribe(EventTypes.NOTIFICATION_REQUESTED, notif_handler)
 

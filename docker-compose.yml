@@ -1,9 +1,30 @@
 version: "3.9"
+
 services:
-  albion:
+  bot:
     build: .
+    command: ["python", "-m", "src.main"]
     env_file: .env
     volumes:
       - ./albion.db:/app/albion.db
       - ./albion.log:/app/albion.log
     restart: unless-stopped
+    depends_on:
+      webhook:
+        condition: service_started
+
+  webhook:
+    build: .
+    command: ["uvicorn", "src.api.webhook:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - ./albion.db:/app/albion.db
+      - ./albion.log:/app/albion.log
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3

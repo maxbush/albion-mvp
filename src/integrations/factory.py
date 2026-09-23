@@ -37,6 +37,37 @@ def _real_merithub_service(
     )
 
 
+@lru_cache(maxsize=1)
+def _real_whatsapp_service(api_token: str, phone_number_id: str, api_version: str, timeout: float):
+    from src.integrations.whatsapp_client import WhatsAppClient
+    logger.info("WhatsApp: REAL Meta Cloud API client created (phone_id=%s)", phone_number_id)
+    return WhatsAppClient(
+        api_token=api_token,
+        phone_number_id=phone_number_id,
+        api_version=api_version,
+        timeout=timeout,
+    )
+
+
+def get_whatsapp_service():
+    """Реальный WhatsAppClient (Meta Cloud API), если заданы токен и phone_number_id, иначе mock."""
+    if settings.whatsapp_use_real:
+        return _real_whatsapp_service(
+            settings.whatsapp_api_token,
+            settings.whatsapp_phone_number_id,
+            settings.whatsapp_api_version,
+            settings.whatsapp_timeout,
+        )
+    from src.integrations.whatsapp_mock import MockWhatsAppService
+    return _mock_whatsapp_singleton()
+
+
+@lru_cache(maxsize=1)
+def _mock_whatsapp_singleton():
+    from src.integrations.whatsapp_mock import MockWhatsAppService
+    return MockWhatsAppService()
+
+
 def get_merithub_service():
     """Реальный MeritHubClient (OAuth2+JWT), если заданы CLIENT_ID+SECRET, иначе mock."""
     if settings.merithub_use_real:

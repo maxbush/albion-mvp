@@ -49,6 +49,21 @@ class Settings(BaseSettings):
     merithub_webhook_port: int = 8000
     merithub_webhook_path: str = "/merithub/webhook"
 
+    # WhatsApp Meta Cloud API (Graph API v20.0). Без токена/ID фабрика возвращает mock.
+    whatsapp_api_token: str | None = None
+    whatsapp_phone_number_id: str | None = None
+    whatsapp_business_account_id: str | None = None
+    whatsapp_webhook_verify_token: str = "albion_whatsapp_verify_token"
+    whatsapp_webhook_path: str = "/whatsapp/webhook"
+    whatsapp_api_version: str = "v20.0"
+    whatsapp_timeout: float = 15.0
+
+    # Бизнес-правила: отмены и переносы (Этап 1).
+    # Бесплатная отмена/перенос возможна за >= 24ч до урока.
+    # При отмене < 24ч — автоматическое предупреждение о платной отмене.
+    cancellation_notice_hours: int = 24
+    reschedule_notice_hours: int = 24
+
     # Владельцы/админы пилота — TG ID через запятую (узнать свой: /whoami в боте).
     # Эти аккаунты могут раздавать роли командой /role.
     albion_admin_telegram_ids: str = ""
@@ -81,6 +96,11 @@ class Settings(BaseSettings):
     def merithub_use_real(self) -> bool:
         """True, если заданы MeritHub CLIENT_ID + CLIENT_SECRET (Vendor Agnostic switch)."""
         return bool(self.merithub_client_id and self.merithub_client_secret)
+
+    @property
+    def whatsapp_use_real(self) -> bool:
+        """True, если заданы WhatsApp API_TOKEN + PHONE_NUMBER_ID."""
+        return bool(self.whatsapp_api_token and self.whatsapp_phone_number_id)
 
     def org_zone(self):
         """ZoneInfo канонической зоны организации.

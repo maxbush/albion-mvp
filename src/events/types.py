@@ -12,6 +12,7 @@ class EventTypes:
     # Lessons
     LESSON_ABSENT = "lesson.absent"
     LESSON_CANCELLED = "lesson.cancelled"
+    LESSON_RESCHEDULE_REQUESTED = "lesson.reschedule_requested"
     # Публикуются webhook-диспетчером по факту classStatus (lv/cp) — метрики/DLQ.
     LESSON_STARTED = "lesson.started"
     LESSON_COMPLETED = "lesson.completed"
