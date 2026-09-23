@@ -1357,10 +1357,12 @@ def setup_handlers(app: Application) -> None:
         last_error = None
         for attempt in range(3):
             try:
-                await sender.send(address, msg, ch_buttons or None)
+                result = await sender.send(address, msg, ch_buttons or None)
+                if not result.ok:
+                    raise RuntimeError(result.error or f"{channel} send rejected")
                 nid = event.data.get("notification_id")
                 if nid:
-                    await NotificationRepository().mark_sent(nid)
+                    await NotificationRepository().mark_sent(nid, channel=channel)
                 return
             except Exception as e:
                 last_error = e
