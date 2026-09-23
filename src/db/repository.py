@@ -125,10 +125,11 @@ class NotificationRepository(Repository):
             (rid, type_, channel, content),
         )).lastrowid
 
-    async def mark_sent(self, nid: int) -> None:
+    async def mark_sent(self, nid: int, channel: str | None = None) -> None:
         await self._execute(
-            "UPDATE notifications SET status='sent', sent_at=? WHERE id=?",
-            (datetime.now(timezone.utc).isoformat(), nid),
+            "UPDATE notifications SET status='sent', sent_at=?, "
+            "channel=COALESCE(?, channel) WHERE id=?",
+            (datetime.now(timezone.utc).isoformat(), channel, nid),
         )
 
     async def mark_failed(self, nid: int, error: str) -> None:
@@ -726,8 +727,9 @@ class UserChannelRepository(Repository):
     ) -> None:
         if preferred:
             await self._execute(
-                "UPDATE user_channels SET is_preferred=0 WHERE user_id=? AND channel!=?",
-                (user_id, channel),
+                "UPDATE user_channels SET is_preferred=0 "
+                "WHERE user_id=? AND NOT (channel=? AND address=?)",
+                (user_id, channel, address),
             )
         await self._execute(
             "INSERT INTO user_channels (user_id, channel, address, is_preferred, verified) "
