@@ -102,7 +102,9 @@ async def _seed_personal_schedule(db=None):
 
     await crepo.upsert(
         "C20", title="Physics", class_type="perma",
-        schedule_days=json.dumps([wd_today]),
+        # оба дня: если между сидом и вызовом пересечётся полночь
+        # (org-зона), ближайшая дата всё равно остаётся в (today, tomorrow)
+        schedule_days=json.dumps([wd_today, wd_tomorrow]),
         start_time=f"{today.isoformat()}T23:59:00+00:00",
         participant_link="plink20")
     await crepo.upsert(
@@ -352,15 +354,20 @@ async def test_morning_digest_text_occurrence_aware(tmp_path, monkeypatch):
 
     today = org_now().date()
     tomorrow = today + timedelta(days=1)
+    day_after = today + timedelta(days=2)
     crepo = MeritHubClassRepository(db)
+    # Оба дня у C50: если между сидом и вызовом пересечётся полночь
+    # (org-зона), occurrence всё равно найдётся на актуальное «сегодня».
     await crepo.upsert(
         "C50", title="Physics", class_type="perma",
-        schedule_days=json.dumps([mh_weekday(today)]),
+        schedule_days=json.dumps([mh_weekday(today), mh_weekday(tomorrow)]),
         start_time=f"{today.isoformat()}T15:30:00+00:00")
+    # C51 — weekday, который не совпадает ни с today, ни с tomorrow:
+    # серия не показывается в сводке при любом смещении через полночь.
     await crepo.upsert(
         "C51", title="Tomorrow", class_type="perma",
-        schedule_days=json.dumps([mh_weekday(tomorrow)]),
-        start_time=f"{tomorrow.isoformat()}T10:00:00+00:00")
+        schedule_days=json.dumps([mh_weekday(day_after)]),
+        start_time=f"{day_after.isoformat()}T10:00:00+00:00")
     await MeritHubEnrollmentRepository(db).add(
         "C50", "mh_s01", client_user_id="s01", student_name="Sofia")
 

@@ -137,6 +137,13 @@ async def _import_people(rows, role: str, rep: Report, db_path, dry_run):
         # '' (пустой/нецифровой ввод) → None: иначе COALESCE в upsert
         # затирал бы уже сохранённый телефон пустой строкой
         phone = normalize_phone(_clean(r.get("phone"))) or None
+        # Та же эвристика, что в enrollments: в колонке TG нередко
+        # лежит телефон — иначе он уйдёт как «телеграм-ид» и доставка
+        # сломается. TG-ид ≤10 цифр, телефон E.164 ≥11.
+        ntg = normalize_phone(tg)
+        if ntg and len(ntg.lstrip("+")) >= 11:
+            phone = phone or ntg
+            tg = ""
         muid = _clean(r.get("merithub_user_id"))
         if not muid:
             # без маппинга на MeritHub userId визард /schedule не примет
