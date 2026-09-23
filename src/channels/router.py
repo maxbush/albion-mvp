@@ -52,6 +52,10 @@ async def resolve(
                 "Channel %s preferred by user %s has no sender — telegram fallback",
                 pref["channel"], uid,
             )
+    if not telegram_id and uid is not None:
+        # предпочтение не сработало (нет отправителя) — достаём TG из аккаунта
+        user = await UserRepository(db_path).get(uid)
+        telegram_id = user["telegram_id"] if user else None
     if telegram_id:
         return "telegram", str(telegram_id)
     return None
