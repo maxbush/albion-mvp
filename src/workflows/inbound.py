@@ -44,7 +44,7 @@ class InboundHandlers:
             if not text:
                 return
             logger.info("Inbound %s text from %s: %r", channel, address, text[:80])
-            await bus.publish(Event(EventTypes.MESSAGE_INCOMING, {
+            report = await bus.publish(Event(EventTypes.MESSAGE_INCOMING, {
                 "text": text,
                 "telegram_id": actor,   # canonical ref: 'wa:+…' или TG id
                 "channel": channel,
@@ -52,6 +52,9 @@ class InboundHandlers:
                 "phone": address if channel == "whatsapp" else None,
                 "sender_name": p.get("name"),
             }))
+            if report.total_handlers and report.failed:
+                raise RuntimeError(
+                    f"MESSAGE_INCOMING publish failed for {address}: {report.errors}")
             return
 
         # inbound_callback
