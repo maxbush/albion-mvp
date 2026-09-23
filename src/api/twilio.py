@@ -53,6 +53,12 @@ def parse_form(form: dict) -> dict | None:
 
 def register_twilio_routes(app) -> None:
     """Twilio не требует GET-challenge — только POST с подписью."""
+    if not settings.twilio_auth_token:
+        logger.warning(
+            "TWILIO_AUTH_TOKEN не задан — %s принимает запросы без проверки "
+            "подписи (открытый режим, для прода задайте токен)",
+            settings.twilio_webhook_path,
+        )
 
     @app.post(settings.twilio_webhook_path)
     async def twilio_receive(request: Request):
@@ -60,8 +66,19 @@ def register_twilio_routes(app) -> None:
         # form-urlencoded без python-multipart — поля Twilio плоские.
         form = dict(parse_qsl(raw.decode("utf-8", "replace")))
 
+        # За реверс-прокси request.url — внутренний (http://127.0.0.1:8000/…),
+        # а подпись Twilio считает по публичному URL → берём forwarded-хедеры.
+        url = str(request.url)
+        f_proto = request.headers.get("x-forwarded-proto")
+        f_host = request.headers.get("x-forwarded-host")
+        if f_proto or f_host:
+            url = (f"{f_proto or request.url.scheme}://"
+                   f"{f_host or request.url.netloc}{request.url.path}")
+            if request.url.query:
+                url += f"?{request.url.query}"
+
         sig_ok = verify_twilio_signature(
-            str(request.url), form,
+            url, form,
             request.headers.get("X-Twilio-Signature"),
             settings.twilio_auth_token)
         repo = WebhookEventRepository()
@@ -76,12 +93,10 @@ def register_twilio_routes(app) -> None:
         if item is None:
             return _twiml()
 
-        if item["sid"]:
-            idem = IdempotencyRepository()
-            key = f"tw_msg:{item['sid']}"
-            if await idem.exists(key):
-                return _twiml()
-            await idem.save(key, "twilio_webhook", response="enqueued")
+        idem = IdempotencyRepository()
+        key = f"tw_msg:{item['sid']}" if item["sid"] else None
+        if key and await idem.exists(key):
+            return _twiml()
 
         kind = "inbound_text"
         callback_id = item.get("callback_id")
@@ -96,6 +111,8 @@ def register_twilio_routes(app) -> None:
         if callback_id:
             kind = "inbound_callback"
 
+        # сначала enqueue — иначе падение между save и enqueue теряет
+        # сообщение навсегда (повторная доставка отсекается ключом)
         await enqueue_inbound(
             kind,
             channel="whatsapp",
@@ -107,6 +124,8 @@ def register_twilio_routes(app) -> None:
                 "name": item.get("name"),
             },
         )
+        if key:
+            await idem.save(key, "twilio_webhook", response="enqueued")
         return _twiml()
 
     logger.info("Twilio webhook registered at %s", settings.twilio_webhook_path)
