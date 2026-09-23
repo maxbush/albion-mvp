@@ -798,6 +798,17 @@ class ScheduleOverrideRepository(Repository):
         is_paid: bool = False,
         created_by: str | None = None,
     ) -> int:
+        # occurrence_date — дата, которую видит пользователь (эффективная).
+        # Если на неё уже приехал перенос — правим ИСХОДНЫЙ override:
+        # иначе создаётся «сирота» (маска на дату без занятия), а moved-запись
+        # продолжает вводить урок — отмена/повторный перенос не сработают.
+        existing = await self._fetchone(
+            "SELECT occurrence_date FROM schedule_overrides "
+            "WHERE class_id=? AND action='moved' AND new_date=?",
+            (class_id, occurrence_date),
+        )
+        if existing:
+            occurrence_date = existing["occurrence_date"]
         return await self._insert(
             "INSERT INTO schedule_overrides "
             "(class_id, occurrence_date, action, new_date, new_time, reason, is_paid, created_by) "
