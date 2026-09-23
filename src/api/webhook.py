@@ -228,6 +228,9 @@ def create_app() -> FastAPI:
 
     from src.api.whatsapp import register_whatsapp_routes
     register_whatsapp_routes(app)
+    if settings.whatsapp_provider == "twilio":
+        from src.api.twilio import register_twilio_routes
+        register_twilio_routes(app)
     return app
 
 

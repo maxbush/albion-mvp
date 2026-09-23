@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     whatsapp_webhook_path: str = "/whatsapp/webhook"
     whatsapp_graph_version: str = "v21.0"
 
+    # Провайдер WhatsApp-транспорта: "meta" (Cloud API напрямую) или
+    # "twilio" (BSP — клиент изначально планировал Twilio, см. ALBION_CONTEXT).
+    whatsapp_provider: str = "meta"
+    twilio_account_sid: str | None = None
+    twilio_auth_token: str | None = None
+    # Номер отправителя в формате Twilio: "whatsapp:+14155238886" (sandbox).
+    twilio_whatsapp_from: str = "whatsapp:+14155238886"
+    twilio_webhook_path: str = "/twilio/whatsapp"
+
     # Владельцы/админы пилота — TG ID через запятую (узнать свой: /whoami в боте).
     # Эти аккаунты могут раздавать роли командой /role.
     albion_admin_telegram_ids: str = ""
@@ -100,8 +109,15 @@ class Settings(BaseSettings):
 
     @property
     def whatsapp_use_real(self) -> bool:
-        """True, если заданы WHATSAPP_TOKEN + PHONE_NUMBER_ID."""
+        """True, если у выбранного провайдера заданы креды."""
+        if self.whatsapp_provider == "twilio":
+            return self.twilio_use_real
         return bool(self.whatsapp_token and self.whatsapp_phone_number_id)
+
+    @property
+    def twilio_use_real(self) -> bool:
+        """True, если заданы TWILIO_ACCOUNT_SID + AUTH_TOKEN."""
+        return bool(self.twilio_account_sid and self.twilio_auth_token)
 
     def org_zone(self):
         """ZoneInfo канонической зоны организации.
