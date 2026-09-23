@@ -232,10 +232,17 @@ class LessonOpsWorkflow:
         return True
 
     async def find_active_checkin(self, actor_tg: str, actor_types: tuple[str, ...]) -> tuple[int, dict, str] | None:
+        # actor_telegram_id может храниться под любым рефом пользователя
+        # ('wa:+…' при scheduling, TG после привязки канала) — ищем по всем.
+        from src.channels.inbound import recipient_aliases
+        refs = await recipient_aliases(actor_tg, self.repo.db_path)
         for wf_type in ("tutor_start_check", "prelesson_parent", "prelesson_tutor"):
-            wf_rows = await self.repo.find_by_json(
-                "actor_telegram_id", actor_tg, state="running",
-                workflow_type=wf_type, limit=1)
+            for ref in refs:
+                wf_rows = await self.repo.find_by_json(
+                    "actor_telegram_id", ref, state="running",
+                    workflow_type=wf_type, limit=1)
+                if wf_rows:
+                    break
             wf = wf_rows[0] if wf_rows else None
             if not wf:
                 continue
@@ -540,8 +547,10 @@ class LessonOpsWorkflow:
             {"text": "⏰ Опоздаем", "callback_data": f"checkin:{wid}:{nonce}:late"},
             {"text": "❌ Не придём", "callback_data": f"checkin:{wid}:{nonce}:no_show"},
         ]
-        user = await self.users.get_by_telegram_id(data["actor_telegram_id"])
-        if not user:
+        from src.channels.inbound import resolve_user_for_ref
+        actor_tg = data["actor_telegram_id"]
+        user = await resolve_user_for_ref(actor_tg, db_path=self.users.db_path)
+        if not user and not str(actor_tg).startswith(("wa:", "email:")):
             # П9: не молчим — координатор узнаёт, что напоминания не уходят
             await self.notify_coordinators(
                 "⚠️ Родитель не зарегистрирован в боте",
@@ -549,14 +558,17 @@ class LessonOpsWorkflow:
                  f"Ученик: {data.get('student_name', '—')}",
                  "Напоминание не отправлено. Попросите родителя написать боту /start."],
                 buttons=[{"text": "👤 Написать родителю",
-                          "url": f"tg://user?id={data['actor_telegram_id']}"}]
-                if data.get("actor_telegram_id") else None,
+                          "url": f"tg://user?id={actor_tg}"}]
+                if str(actor_tg).isdigit() else None,
             )
             data["response_status"] = "not_registered"
             await self._cancel_future_actions(wid)
             await self._save_workflow(wid, "completed", data)
             return
-        nid = await self.notifications.create(user["id"], "parent_prelesson_reminder", msg)
+        # 'wa:'-получатель без users-записи: уведомление уходит роутером
+        # в WhatsApp, recipient_id в notifications допускает NULL.
+        nid = await self.notifications.create(
+            user["id"] if user else None, "parent_prelesson_reminder", msg)
         await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
             "notification_id": nid,
             "telegram_id": data["actor_telegram_id"],
@@ -590,8 +602,10 @@ class LessonOpsWorkflow:
             {"text": tr("tutor_btn_no_show", lang), "callback_data": f"checkin:{wid}:{nonce}:no_show"},
             {"text": tr("tutor_btn_tech", lang), "callback_data": f"checkin:{wid}:{nonce}:tech"},
         ]
-        user = await self.users.get_by_telegram_id(data["actor_telegram_id"])
-        if not user:
+        from src.channels.inbound import resolve_user_for_ref
+        actor_tg = data["actor_telegram_id"]
+        user = await resolve_user_for_ref(actor_tg, db_path=self.users.db_path)
+        if not user and not str(actor_tg).startswith(("wa:", "email:")):
             # П9: не молчим — координатор узнаёт, что напоминания не уходят
             await self.notify_coordinators(
                 "⚠️ Репетитор не зарегистрирован в боте",
@@ -599,14 +613,15 @@ class LessonOpsWorkflow:
                  f"Репетитор: {data.get('tutor_name', '—')}",
                  "Напоминание не отправлено. Попросите репетитора написать боту /start."],
                 buttons=[{"text": "👤 Написать репетитору",
-                          "url": f"tg://user?id={data['actor_telegram_id']}"}]
-                if data.get("actor_telegram_id") else None,
+                          "url": f"tg://user?id={actor_tg}"}]
+                if str(actor_tg).isdigit() else None,
             )
             data["response_status"] = "not_registered"
             await self._cancel_future_actions(wid)
             await self._save_workflow(wid, "completed", data)
             return
-        nid = await self.notifications.create(user["id"], "tutor_prelesson_reminder", msg)
+        nid = await self.notifications.create(
+            user["id"] if user else None, "tutor_prelesson_reminder", msg)
         await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
             "notification_id": nid,
             "telegram_id": data["actor_telegram_id"],
@@ -633,10 +648,13 @@ class LessonOpsWorkflow:
             {"text": tr("tutor_btn_student_absent", lang), "callback_data": f"checkin:{wid}:{nonce}:student_absent"},
             {"text": tr("tutor_btn_tech_short", lang), "callback_data": f"checkin:{wid}:{nonce}:tech"},
         ]
-        user = await self.users.get_by_telegram_id(data["actor_telegram_id"])
-        if not user:
+        from src.channels.inbound import resolve_user_for_ref
+        actor_tg = data["actor_telegram_id"]
+        user = await resolve_user_for_ref(actor_tg, db_path=self.users.db_path)
+        if not user and not str(actor_tg).startswith(("wa:", "email:")):
             return
-        nid = await self.notifications.create(user["id"], "tutor_start_check", msg)
+        nid = await self.notifications.create(
+            user["id"] if user else None, "tutor_start_check", msg)
         await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
             "notification_id": nid,
             "telegram_id": data["actor_telegram_id"],
@@ -655,7 +673,7 @@ class LessonOpsWorkflow:
         actor_tg = data.get("actor_telegram_id")
         who = "родителю" if data.get("actor_type") == "parent" else "репетитору"
         buttons = ([{"text": f"👤 Написать {who}", "url": f"tg://user?id={actor_tg}"}]
-                   if actor_tg else None)
+                   if actor_tg and str(actor_tg).isdigit() else None)
         await self.notify_coordinators(
             title,
             [

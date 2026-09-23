@@ -112,7 +112,8 @@ class AbsenceWorkflow:
         )
         await notify_all_coordinators(
             msg, notification_type="absence_report", db_path=self.incidents.db_path,
-            buttons=[{"text": "👤 Написать пользователю", "url": f"tg://user?id={tg}"}])
+            buttons=([{"text": "👤 Написать пользователю", "url": f"tg://user?id={tg}"}]
+                     if str(tg).isdigit() else None))
         # Отправителю — ack (R7-2): иначе репорт уходил в молчание.
         from src.utils.i18n import lang_of, tr
         await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
@@ -174,11 +175,20 @@ class AbsenceWorkflow:
 
     # R9-1: точный поиск по JSON-полям через json_extract (LIKE-подстрока
     # матчила чужие значения: 5 vs 55). Хелпер: WorkflowRepository.find_by_json.
+    async def _find_wf_for_parent(self, parent_tg: str, state: str | None = None) -> dict | None:
+        """Workflow инцидента по parent_telegram_id с учётом кросс-канальных
+        алиасов (actor TG ↔ 'wa:'-ref в данных workflow)."""
+        from src.channels.inbound import recipient_aliases
+        repo = WorkflowRepository(self.incidents.db_path)
+        for ref in await recipient_aliases(parent_tg, db_path=self.incidents.db_path):
+            rows = await repo.find_by_json("parent_telegram_id", ref, state=state, limit=1)
+            if rows:
+                return rows[0]
+        return None
+
     async def find_active_incident_for_parent(self, parent_tg: str) -> tuple[int, dict] | None:
         """Находит активный incident для родителя по данным workflow."""
-        wf_rows = await WorkflowRepository(self.incidents.db_path).find_by_json(
-            "parent_telegram_id", parent_tg, state="running", limit=1)
-        wf = wf_rows[0] if wf_rows else None
+        wf = await self._find_wf_for_parent(parent_tg, state="running")
         if not wf:
             return None
         try:
@@ -195,9 +205,7 @@ class AbsenceWorkflow:
 
     async def find_escalated_incident_for_parent(self, parent_tg: str) -> tuple[int, dict] | None:
         """Находит недавно эскалированный инцидент (для позднего ответа родителя)."""
-        wf_rows = await WorkflowRepository(self.incidents.db_path).find_by_json(
-            "parent_telegram_id", parent_tg, limit=1)
-        wf = wf_rows[0] if wf_rows else None
+        wf = await self._find_wf_for_parent(parent_tg)
         if not wf:
             return None
         try:
@@ -262,7 +270,9 @@ class AbsenceWorkflow:
         from src.bot.roles import notify_all_coordinators
         # Сырой TG в текст не пишем (П9/R7-4): действие — url-кнопкой.
         buttons = []
-        if parent_telegram_id:
+        # tg://user ссылка работает только для числовых TG id —
+        # для 'wa:'-родителей кнопка была бы мёртвой ссылкой.
+        if parent_telegram_id and str(parent_telegram_id).isdigit():
             buttons.append({"text": "👤 Написать родителю",
                             "url": f"tg://user?id={parent_telegram_id}"})
         # П4: непонятный ответ — инцидент остаётся активным, координатор
@@ -307,8 +317,11 @@ class AbsenceWorkflow:
         if not ptg:
             return await self._escalate(wid, inc_id, reason="no parent telegram")
 
-        user = await self.users.get_by_telegram_id(ptg)
-        if not user:
+        from src.channels.inbound import resolve_user_for_ref
+        user = await resolve_user_for_ref(str(ptg), db_path=self.users.db_path)
+        # 'wa:'-получателю без users-записи тоже шлём: роутер доставит
+        # адресата в WhatsApp — «незарегистрирован» только для голых TG id.
+        if not user and not str(ptg).startswith(("wa:", "email:")):
             return await self._escalate(wid, inc_id, reason="parent not registered")
 
         # Сохраняем nonce в workflow: им валидируем callback и защищаемся от
@@ -327,7 +340,10 @@ class AbsenceWorkflow:
             f"{student_name or 'Ученик'} отсутствовал(а) на занятии ({lesson_label}).\n"
             f"Подскажите, пожалуйста, что верно — ответьте кнопкой ниже или просто текстом."
         )
-        nid = await self.notifications.create(user["id"], "absence_warning", msg)
+        # user может отсутствовать при доставке на 'wa:'-ref без TG-аккаунта —
+        # recipient_id в notifications допускает NULL.
+        nid = await self.notifications.create(
+            user["id"] if user else None, "absence_warning", msg)
 
         buttons = [
             {"text": "✅ Всё в порядке", "callback_data": f"resolve:{inc_id}:{nonce}:ok"},
@@ -338,7 +354,7 @@ class AbsenceWorkflow:
         # Публикуем запрос на отправку с несколькими кнопками и возможностью
         # свободного текстового ответа. callback_data НЕ дублируем —
         # buttons уже содержат все нужные callback_data.
-        await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
+        report = await bus.publish(Event(EventTypes.NOTIFICATION_REQUESTED, {
             "notification_id": nid,
             "telegram_id": ptg,
             "message": msg,
@@ -347,6 +363,11 @@ class AbsenceWorkflow:
             "nonce": nonce,
             "buttons": buttons,
         }))
+        if report.failed:
+            # publish упал до флага ниже → requeue повторит шаг,
+            # иначе уведомление бы потерялось навсегда.
+            raise RuntimeError(
+                f"notify_parent publish failed for {ptg}: {report.errors}")
 
         # R7-16: флаг — ПОСЛЕ успешной публикации (requeue-тик увидит его и выйдет).
         # Если упадём между publish и флагом — возможен редкий дубль сообщения
@@ -390,7 +411,7 @@ class AbsenceWorkflow:
         # UX U2: действия прямо на эскалации — без ручного ввода /ok <ID>
         # (management by exception должен решаться в один тап).
         buttons = [{"text": "✅ Закрыть ситуацию", "callback_data": f"coord_resolve:{inc_id}:ok"}]
-        if parent_tg:
+        if parent_tg and str(parent_tg).isdigit():
             buttons.append({"text": "👤 Написать родителю", "url": f"tg://user?id={parent_tg}"})
 
         from src.bot.roles import notify_all_coordinators

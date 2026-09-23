@@ -106,6 +106,62 @@ async def _autobind_contact(channel: str, address: str,
     return {"user_id": user["id"], "channel": channel, "address": address}
 
 
+async def recipient_aliases(ref: str, db_path: str | None = None) -> set[str]:
+    """Все адресные рефы того же человека: TG id, 'wa:+…', голый телефон.
+
+    Записи (enrollment, workflow data) пишутся под одним каналом, а актор
+    после привязки может прийти с другого — без расширения списка записи,
+    сделанные под альтернативным каналом, невидимы актору."""
+    refs = {str(ref)}
+    try:
+        from src.db.repository import MeritHubContactRepository, UserRepository
+        ucr = UserChannelRepository(db_path)
+        tg = str(ref)
+        row = None
+        if tg.startswith("wa:"):
+            row = await ucr.find_by_address("whatsapp", tg[3:])
+        else:
+            row = await ucr.find_by_address("telegram", tg)
+        if row:
+            for c in await ucr.list_for_user(row["user_id"]):
+                refs.add(f"wa:{c['address']}" if c["channel"] == "whatsapp"
+                         else c["address"])
+        contacts = MeritHubContactRepository(db_path)
+        phone = normalize_phone(tg)
+        if phone:
+            crow = await contacts.get_by_phone(phone)
+            if crow and crow.get("telegram_id"):
+                refs.add(str(crow["telegram_id"]))
+        if not tg.startswith("wa:"):
+            crow = await contacts.get_by_telegram(tg)
+            np = normalize_phone((crow or {}).get("phone"))
+            if np:
+                refs.add(f"wa:{np}")
+                refs.add(np)
+    except Exception:
+        logger.exception("recipient alias expansion failed for %s", ref)
+    return refs
+
+
+async def resolve_user_for_ref(ref: str, db_path: str | None = None) -> dict | None:
+    """users-запись по адресному рефу получателя.
+
+    'wa:+…' → контакт (phone → telegram_id) → user. Голый TG id — как раньше.
+    Нужен везде, где раньше стоял get_by_telegram_id: 'wa:'-родитель без
+    TG-аккаунта не «незарегистрирован» — ему можно слать в WhatsApp."""
+    from src.db.repository import UserRepository
+    users = UserRepository(db_path)
+    user = await users.get_by_telegram_id(str(ref))
+    if user or not str(ref).startswith("wa:"):
+        return user
+    from src.db.repository import MeritHubContactRepository
+    crow = await MeritHubContactRepository(db_path).get_by_phone(
+        normalize_phone(str(ref)[3:]))
+    if crow and crow.get("telegram_id"):
+        return await users.get_by_telegram_id(str(crow["telegram_id"]))
+    return None
+
+
 _BTN_MAP_PREFIX = "wa_btns:"
 
 

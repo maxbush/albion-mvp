@@ -46,7 +46,8 @@ class FallbackWorkflow:
             f"💬 Сообщение из чата ({role}: {author})\n💬 «{text[:500]}»",
             notification_type="user_question",
             db_path=self._db_path,
-            buttons=[{"text": "👤 Написать пользователю", "url": f"tg://user?id={tg}"}],
+            buttons=([{"text": "👤 Написать пользователю", "url": f"tg://user?id={tg}"}]
+                     if tg.isdigit() else None),
         )
         logger.info("Fallback: intent=%s from %s forwarded to coordinators", intent, tg)
 

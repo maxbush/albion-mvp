@@ -165,5 +165,116 @@ async def process_parent_callback(data: str, actor_id: str, db_path: str | None 
     return {"status": "resolved", "text": f"{ack}\nОтметили: {student_label} · вопрос закрыт."}
 
 
+async def process_checkin_callback(cb_data: str, actor_id: str,
+                                   db_path: str | None = None) -> tuple[str, list[dict] | None]:
+    """Канало-независимая обработка checkin-колбэков (напоминание перед уроком).
+
+    Зеркалит TG-обработчик в handlers.py: parse → идемпотентность → состояние
+    → nonce → адресат → запись ответа. Возвращает (reply, buttons)."""
+    import json
+    from datetime import datetime, timedelta, timezone
+    from src.db.repository import (
+        IdempotencyRepository, ScheduledActionRepository, WorkflowRepository,
+    )
+    from src.utils.i18n import lang_of, tr
+
+    def _parse(data: str, need: int) -> tuple[int, str, str] | None:
+        parts = data.split(":")
+        if len(parts) < need:
+            return None
+        try:
+            return int(parts[1]), parts[2], parts[3]
+        except (IndexError, ValueError):
+            return None
+
+    lang = await lang_of(actor_id)
+
+    if cb_data.startswith("checkin_late_time:"):
+        parsed = _parse(cb_data, 4)
+        if not parsed:
+            return "Не смог прочитать нажатие.", None
+        wid, _nonce, mins_str = parsed
+        idem_key = f"{cb_data}"
+        if await IdempotencyRepository(db_path).exists(idem_key):
+            return "✅ Уже обработано", None
+        from src.workflows.lesson_ops import LessonOpsWorkflow
+        wf_row = await WorkflowRepository(db_path).get(wid)
+        try:
+            wf_data = json.loads(wf_row.get("data") or "{}") if wf_row else {}
+        except Exception:
+            wf_data = {}
+        actor_type = wf_data.get("actor_type")
+        expected = wf_data.get("actor_telegram_id")
+        if expected and not await _same_actor(str(expected), str(actor_id), db_path):
+            return "⛔ Это сообщение не для вас", None
+        if not wf_row or wf_row.get("state") != "running":
+            return "Этот сценарий уже завершён.", None
+        ops = LessonOpsWorkflow(db_path)
+        await ScheduledActionRepository(db_path).cancel_by_workflow(wid)
+        await ops.notify_late_detail(wid, mins_str)
+        await WorkflowRepository(db_path).update_state(
+            wid, "completed",
+            {**wf_data, "response_status": "late", "late_minutes": mins_str})
+        await IdempotencyRepository(db_path).save(
+            idem_key, "checkin_late_time", response=mins_str)
+        ack_key = "ack_late_detail_parent" if actor_type == "parent" else "ack_late_detail"
+        return tr(ack_key, lang, mins=f"{mins_str} мин"), None
+
+    parsed = _parse(cb_data, 4)
+    if not parsed:
+        return "Не смог прочитать нажатие — попробуйте ещё раз или напишите текстом.", None
+    wid, nonce, action = parsed
+    idem = IdempotencyRepository(db_path)
+    idem_key = f"{cb_data}"
+    if await idem.exists(idem_key):
+        return "✅ Уже обработано", None
+    repo = WorkflowRepository(db_path)
+    wf_row = await repo.get(wid)
+    if not wf_row or wf_row.get("state") != "running":
+        return "Этот сценарий уже завершён.", None
+    try:
+        wf_data = json.loads(wf_row.get("data") or "{}")
+    except Exception:
+        wf_data = {}
+    expected_nonce = wf_data.get("nonce")
+    if expected_nonce and expected_nonce != nonce:
+        return "⛔ Кнопка устарела", None
+    expected = wf_data.get("actor_telegram_id")
+    if expected and not await _same_actor(str(expected), str(actor_id), db_path):
+        return "⛔ Это сообщение не для вас", None
+
+    from src.workflows.lesson_ops import LessonOpsWorkflow
+    ops = LessonOpsWorkflow(db_path)
+    actor_type = wf_data.get("actor_type")
+    if action == "late":
+        # Как в TG: ждём выбор минут; fallback-алерт — страховка, что факт
+        # опоздания не потеряется, если пользователь дальше не нажмёт.
+        wf_data["response_status"] = "late"
+        wf_data["responded_at"] = datetime.now(timezone.utc).isoformat()
+        await repo.update_data(wid, wf_data)
+        sched = ScheduledActionRepository(db_path)
+        await sched.cancel_by_workflow(wid)
+        await sched.create(
+            wid,
+            (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+            "checkin_late_fallback", {"workflow_id": wid})
+        await idem.save(idem_key, "checkin", response=action)
+        msg_key = "ack_late_ask_mins_parent" if actor_type == "parent" else "ack_late_ask_mins"
+        buttons = [
+            {"text": tr("tutor_btn_late_5", lang), "callback_data": f"checkin_late_time:{wid}:{nonce}:5"},
+            {"text": tr("tutor_btn_late_15", lang), "callback_data": f"checkin_late_time:{wid}:{nonce}:15"},
+            {"text": tr("tutor_btn_late_30", lang), "callback_data": f"checkin_late_time:{wid}:{nonce}:30+"},
+        ]
+        return tr(msg_key, lang), buttons
+
+    await ops.record_checkin_response(wid, actor_tg=str(actor_id), action=action)
+    await idem.save(idem_key, "checkin", response=action)
+    ack = tr(f"ack_{action}", lang)
+    return (ack if ack != f"ack_{action}" else "✅ Ответ принят."), None
+
+
 def is_parent_callback(data: str) -> bool:
-    return data.startswith("resolve:") or data.startswith("resolve_late_time:")
+    return (data.startswith("resolve:")
+            or data.startswith("resolve_late_time:")
+            or data.startswith("checkin:")
+            or data.startswith("checkin_late_time:"))

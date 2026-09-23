@@ -190,6 +190,100 @@ class CancellationWorkflow:
         }))
 
 
+async def process_cancel_resched_callback(
+        cb: str, actor: str, db_path: str | None = None
+) -> tuple[str, list[dict] | None]:
+    """Канало-независимая обработка cancel/resched-колбэков родителя.
+
+    Зеркалит TG-обработчик в handlers.py: cancel_class → подтверждение,
+    cancel_yes → LESSON_CANCELLED (is_paid считается заново на сервере),
+    resched_pick → предупреждение о платном окне, resched_go → состояние
+    визарда parent_resched (ждём свободный текст со временем)."""
+    parts = cb.split(":")
+    class_id = parts[1] if len(parts) > 1 else ""
+    occ_date = parts[2] if len(parts) > 2 else ""
+
+    if cb == "cancel_x":
+        return "Хорошо, занятие остаётся в расписании 👌", None
+
+    if cb.startswith("cancel_class:"):
+        if not class_id:
+            return "Не смог прочитать нажатие — попробуйте ещё раз.", None
+        from src.bot.handlers import _paid_warning
+        from src.db.repository import MeritHubClassRepository
+        from src.workflows.lesson_ops import _format_class_label
+        cls = await MeritHubClassRepository(db_path).get(class_id)
+        label = _format_class_label(class_id, (cls or {}).get("start_time"))
+        date_note = f" {occ_date}" if occ_date else ""
+        warn = _paid_warning(cls, occ_date, "cancel")
+        confirm_text = "✅ Да, отменить" + (" (платно)" if warn else "")
+        return (
+            f"{warn}Отменяем занятие {label}{date_note}?\n\n"
+            "Репетитор и координаторы получат уведомление.",
+            [{"text": confirm_text, "callback_data": f"cancel_yes:{class_id}:{occ_date}"},
+             {"text": "◀️ Не надо", "callback_data": "cancel_x"}],
+        )
+
+    if cb.startswith(("resched_pick:", "resched_go:")):
+        if not class_id or not occ_date:
+            return "Не смог прочитать нажатие — попробуйте ещё раз.", None
+        from src.bot.handlers import _paid_warning
+        from src.db.repository import MeritHubClassRepository, WizardStateRepository
+        cls = await MeritHubClassRepository(db_path).get(class_id)
+        warn = _paid_warning(cls, occ_date, "reschedule")
+        if warn and cb.startswith("resched_pick:"):
+            return (
+                warn + "Продолжить перенос?",
+                [{"text": "✅ Всё равно перенести (платно)",
+                  "callback_data": f"resched_go:{class_id}:{occ_date}"},
+                 {"text": "◀️ Не надо", "callback_data": "cancel_x"}],
+            )
+        from src.bot.handlers import _wizard_expires_iso
+        await WizardStateRepository(db_path).save(
+            actor, "parent_resched", "await_time",
+            {"class_id": class_id, "occurrence_date": occ_date,
+             "is_paid": bool(warn), "requested_by": str(actor)},
+            _wizard_expires_iso(),
+        )
+        return ("На какие дату и время перенести?\n\n"
+                "Напишите ответом, например: «25 сентября в 16:00». "
+                "Координатор подтвердит перенос."), None
+
+    if cb.startswith("cancel_yes:"):
+        if not class_id:
+            return "Не смог прочитать нажатие — попробуйте ещё раз.", None
+        reason = "Отмена родителем через бота"
+        if occ_date:
+            reason += f" (занятие {occ_date})"
+        from src.bot.handlers import _cancel_policy_verdict
+        from src.db.repository import MeritHubClassRepository
+        from src.workflows.lesson_ops import _format_class_label
+        cls = await MeritHubClassRepository(db_path).get(class_id)
+        # Окно считаем в момент подтверждения — клиентской кнопке не доверяем.
+        verdict = _cancel_policy_verdict(cls, occ_date, "cancel") if occ_date else None
+        is_paid = bool(verdict and verdict.is_paid)
+        await bus.publish(Event(EventTypes.LESSON_CANCELLED, {
+            "lesson_id": class_id,
+            "reason": reason,
+            "occurrence_date": occ_date or None,
+            "is_paid": is_paid,
+            "reported_by": str(actor),
+        }))
+        label = _format_class_label(class_id, (cls or {}).get("start_time"))
+        date_note = f" ({occ_date})" if occ_date else ""
+        paid_note = "\n💰 Отмена в позднем окне — оплачиваемая." if is_paid else ""
+        logger.info("Cancel via button: class=%s date=%s paid=%s by=%s",
+                    class_id, occ_date, is_paid, actor)
+        return f"🔄 Отмена {label}{date_note} передана репетитору и координаторам.{paid_note}", None
+
+    return "Не понял действие — попробуйте ещё раз или напишите текстом.", None
+
+
+def is_cancel_resched_callback(cb: str) -> bool:
+    return cb.startswith(("cancel_class:", "cancel_yes:", "resched_pick:",
+                          "resched_go:")) or cb == "cancel_x"
+
+
 async def upcoming_lessons_for_parent(parent_tg: str, limit: int = 5, days: int = 14) -> list[dict]:
     """Ближайшие занятия КОНКРЕТНОГО родителя (occurrence-aware, серии развёрнуты).
 
@@ -207,11 +301,14 @@ async def upcoming_lessons_for_parent(parent_tg: str, limit: int = 5, days: int 
         MONTHS_RU, WD_RU, mh_weekday, org_now,
     )
 
+    from src.channels.inbound import recipient_aliases
     erepo = MeritHubEnrollmentRepository()
+    refs = await recipient_aliases(str(parent_tg))
+    placeholders = ",".join("?" for _ in refs)
     enrollments = await erepo._fetchall(
-        "SELECT * FROM merithub_enrollments WHERE parent_telegram_id=? "
+        f"SELECT * FROM merithub_enrollments WHERE parent_telegram_id IN ({placeholders}) "
         "AND COALESCE(role,'student')='student'",
-        (str(parent_tg),),
+        tuple(refs),
     )
     if not enrollments:
         return []
