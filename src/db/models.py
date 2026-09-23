@@ -204,4 +204,17 @@ CREATE TABLE IF NOT EXISTS merithub_enrollments (
     PRIMARY KEY (class_id, merithub_user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_mh_enroll_class ON merithub_enrollments(class_id);
+
+-- Каналы доставки пользователя: адрес в каждом канале + предпочтение.
+-- Адрес канала — то, что нужно отправителю: TG chat_id, E.164 phone, email.
+CREATE TABLE IF NOT EXISTS user_channels (
+    user_id INTEGER NOT NULL,
+    channel TEXT NOT NULL CHECK(channel IN ('telegram','whatsapp','email')),
+    address TEXT NOT NULL,
+    is_preferred INTEGER NOT NULL DEFAULT 0,
+    verified INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (channel, address)
+);
+CREATE INDEX IF NOT EXISTS idx_user_channels_user ON user_channels(user_id);
 """
