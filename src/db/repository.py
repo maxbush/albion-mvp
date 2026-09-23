@@ -649,9 +649,11 @@ class MeritHubEnrollmentRepository(Repository):
             "(class_id, merithub_user_id, client_user_id, parent_telegram_id, student_name, role) "
             "VALUES (?,?,?,?,?,?) "
             "ON CONFLICT(class_id, merithub_user_id) DO UPDATE SET "
-            "client_user_id=excluded.client_user_id, "
-            "parent_telegram_id=excluded.parent_telegram_id, "
-            "student_name=excluded.student_name, role=excluded.role",
+            # COALESCE: частичный повторный импорт не затирает поля
+            "client_user_id=COALESCE(excluded.client_user_id, merithub_enrollments.client_user_id), "
+            "parent_telegram_id=COALESCE(excluded.parent_telegram_id, merithub_enrollments.parent_telegram_id), "
+            "student_name=COALESCE(excluded.student_name, merithub_enrollments.student_name), "
+            "role=COALESCE(excluded.role, merithub_enrollments.role)",
             (class_id, merithub_user_id, client_user_id, parent_telegram_id, student_name, role),
         )
 
