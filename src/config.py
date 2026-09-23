@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     whatsapp_verify_token: str | None = None        # GET webhook challenge
     whatsapp_webhook_path: str = "/whatsapp/webhook"
     whatsapp_graph_version: str = "v21.0"
+    # Шаблон для business-initiated уведомлений вне 24h-окна
+    # (утверждается в Meta: body {{1}} + до 3 quick_reply кнопок).
+    # Не задан — отправка всегда free-form (dev/mock).
+    whatsapp_notification_template: str | None = None
+    whatsapp_template_lang: str = "ru"
 
     # Провайдер WhatsApp-транспорта: "meta" (Cloud API напрямую) или
     # "twilio" (BSP — клиент изначально планировал Twilio, см. ALBION_CONTEXT).

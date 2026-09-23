@@ -43,6 +43,15 @@ async def enqueue_inbound(
         None, now, kind,
         {"channel": channel, "address": address, **payload},
     )
+    if channel == "whatsapp":
+        # Отметка 24h-окна Meta: любое входящее открывает окно свободных
+        # ответов. WhatsAppSender читает её для выбора session vs template.
+        try:
+            from src.db.repository import SystemSettingsRepository
+            await SystemSettingsRepository(db_path).set(
+                f"wa_window:{normalize_phone(address)}", now)
+        except Exception:
+            logger.exception("wa_window mark failed for %s", address)
     logger.info("Inbound %s from %s:%s queued (action %s)", kind, channel, address, aid)
     return aid
 
