@@ -26,12 +26,34 @@ from src.channels.base import ChannelButton
 from src.db.repository import (
     IdempotencyRepository,
     IncidentRepository,
+    MeritHubContactRepository,
     WorkflowRepository,
 )
 
 logger = logging.getLogger(__name__)
 
 _LATE_MINUTES = ("5", "15", "30+")
+
+
+def _digits(v: str) -> str:
+    return "".join(c for c in str(v) if c.isdigit())
+
+
+async def _same_actor(expected: str, actor: str, db_path: str | None) -> bool:
+    """expected — parent_telegram_id из workflow (TG id, 'wa:+…' или телефон);
+    actor — canonical ref ('wa:+…' либо TG id). Кросс-канальное сравнение
+    идёт через merithub_contacts (phone ↔ telegram_id)."""
+    exp = expected[3:] if expected.startswith("wa:") else expected
+    act = actor[3:] if actor.startswith("wa:") else actor
+    if str(expected) == str(actor) or str(exp) == str(act):
+        return True
+    contacts = MeritHubContactRepository(db_path)
+    # одна сторона — телефон, другая — TG: ищем контакт по телефону
+    for phone, tg in ((act, exp), (exp, act)):
+        row = await contacts.get_by_phone(phone)
+        if row and str(row.get("telegram_id") or "") == str(tg):
+            return True
+    return False
 
 
 async def process_parent_callback(data: str, actor_id: str, db_path: str | None = None) -> dict:
@@ -75,8 +97,15 @@ async def process_parent_callback(data: str, actor_id: str, db_path: str | None 
     if expected_nonce and expected_nonce != nonce:
         return {"status": "bad_nonce", "toast": "⛔ Кнопка устарела", "alert": True}
     expected_parent = wf_data.get("parent_telegram_id")
-    if expected_parent and str(expected_parent) != str(actor_id):
+    if expected_parent and not await _same_actor(
+            str(expected_parent), str(actor_id), db_path):
         return {"status": "not_parent", "toast": "⛔ Это сообщение не для вас", "alert": True}
+
+    # detail — из callback'а, whitelist: иначе любая строка после nonce
+    # резолвила бы инцидент с фиктивным resolution
+    allowed = _LATE_MINUTES if is_late_pick else ("ok", "no", "late")
+    if detail not in allowed:
+        return {"status": "bad_data", "text": "Не смог прочитать нажатие."}
 
     from src.utils.i18n import lang_of, tr
     lang = await lang_of(str(actor_id))

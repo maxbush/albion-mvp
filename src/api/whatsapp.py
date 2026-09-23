@@ -34,6 +34,12 @@ def verify_signature(body: bytes, signature: str | None, secret: str | None) -> 
     return hmac.compare_digest(expected, signature)
 
 
+def _norm_phone(raw: str) -> str:
+    """Meta шлёт from без '+'; приводим к +E.164 для адресов 'wa:+…'."""
+    digits = "".join(c for c in (raw or "") if c.isdigit())
+    return f"+{digits}" if digits else ""
+
+
 def parse_messages(payload: dict) -> list[dict]:
     """WA webhook payload → нормализованные входящие.
 
@@ -47,11 +53,11 @@ def parse_messages(payload: dict) -> list[dict]:
         for change in entry.get("changes") or []:
             value = change.get("value") or {}
             names = {
-                c.get("wa_id"): ((c.get("profile") or {}).get("name"))
+                _norm_phone(c.get("wa_id")): ((c.get("profile") or {}).get("name"))
                 for c in value.get("contacts") or []
             }
             for msg in value.get("messages") or []:
-                phone = msg.get("from") or ""
+                phone = _norm_phone(msg.get("from") or "")
                 item = {"phone": phone, "wamid": msg.get("id") or "",
                         "name": names.get(phone)}
                 mtype = msg.get("type")
@@ -73,12 +79,18 @@ def parse_messages(payload: dict) -> list[dict]:
 
 def register_whatsapp_routes(app) -> None:
     path = settings.whatsapp_webhook_path
+    if not settings.whatsapp_app_secret:
+        logger.warning(
+            "WHATSAPP_APP_SECRET не задан — %s принимает запросы без проверки "
+            "подписи (открытый режим, для прода задайте секрет)", path,
+        )
 
     @app.get(path)
     async def wa_verify(request: Request):
         qp = request.query_params
         ok = (qp.get("hub.mode") == "subscribe"
-              and qp.get("hub.verify_token") == (settings.whatsapp_verify_token or ""))
+              and bool(settings.whatsapp_verify_token)
+              and qp.get("hub.verify_token") == settings.whatsapp_verify_token)
         if ok and qp.get("hub.challenge"):
             return PlainTextResponse(qp["hub.challenge"])
         return PlainTextResponse("Forbidden", status_code=403)
@@ -105,11 +117,11 @@ def register_whatsapp_routes(app) -> None:
         idem = IdempotencyRepository()
         enqueued = 0
         for it in items:
-            if it["wamid"]:
-                key = f"wa_msg:{it['wamid']}"
-                if await idem.exists(key):
-                    continue
-                await idem.save(key, "whatsapp_webhook", response="enqueued")
+            key = f"wa_msg:{it['wamid']}" if it["wamid"] else None
+            if key and await idem.exists(key):
+                continue
+            # сначала enqueue — иначе падение между save и enqueue теряет
+            # сообщение навсегда (Meta-повтор отсекается ключом идемпотентности)
             await enqueue_inbound(
                 "inbound_text" if it["kind"] == "text" else "inbound_callback",
                 channel="whatsapp",
@@ -121,5 +133,7 @@ def register_whatsapp_routes(app) -> None:
                     "name": it.get("name"),
                 },
             )
+            if key:
+                await idem.save(key, "whatsapp_webhook", response="enqueued")
             enqueued += 1
         return {"status": "ok", "enqueued": enqueued}

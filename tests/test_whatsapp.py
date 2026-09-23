@@ -155,7 +155,7 @@ _WA_PAYLOAD = {
 
 def test_parse_messages_text():
     items = parse_messages(_WA_PAYLOAD)
-    assert items == [{"phone": "79990001122", "wamid": "wamid.X1",
+    assert items == [{"phone": "+79990001122", "wamid": "wamid.X1",
                       "name": "Мама", "kind": "text",
                       "text": "Здравствуйте, ищу репетитора"}]
 
@@ -206,7 +206,7 @@ async def test_webhook_verify_and_receive(tmp_path, monkeypatch):
         "SELECT * FROM scheduled_actions WHERE action='inbound_text'")
     assert len(rows) == 1
     payload = json.loads(rows[0]["payload"])
-    assert payload["channel"] == "whatsapp" and payload["address"] == "79990001122"
+    assert payload["channel"] == "whatsapp" and payload["address"] == "+79990001122"
 
     # Ретрай Meta с тем же wamid — не плодит дубли
     res = client.post("/whatsapp/webhook", content=body,
