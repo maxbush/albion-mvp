@@ -238,4 +238,11 @@ CREATE TABLE IF NOT EXISTS user_channels (
     PRIMARY KEY (channel, address)
 );
 CREATE INDEX IF NOT EXISTS idx_user_channels_user ON user_channels(user_id);
+
+-- Персистентные настройки системы: kill switch и т.п. (переживают рестарт).
+CREATE TABLE IF NOT EXISTS system_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """

@@ -255,6 +255,24 @@ curl -s "https://api.telegram.org/bot<TOKEN>/getWebhookInfo" | python3 -m json.t
 1. В панели MeritHub → Webhook Url вставьте `https://albion.example.com/merithub/webhook`.
 2. Дёрните тестовое событие → в боте `/mh_events` появится захваченный payload.
 
+### Мониторинг (`/metrics`)
+
+Вебхук-процесс отдаёт Prometheus-метрики на `/metrics` (порт 8000):
+`albion_notifications_total{channel,status}`, `albion_dlq_size`,
+`albion_scheduled_actions_total{status}`,
+`albion_scheduled_pending_lag_seconds`,
+`albion_webhook_events_total{signature_ok}`,
+`albion_workflows_total{state}`, `albion_kill_switch_level`.
+
+```bash
+curl http://127.0.0.1:8000/metrics   # локально на VPS
+```
+
+Эндпоинт **не публикуем наружу**: в Caddy `/metrics` либо не проксируем
+вообще, либо ограничиваем по IP/basic-auth. Внешний uptime — на `/health`
+(UptimeRobot и т.п.), внутренние метрики — cron-scrape в файл или
+Prometheus.
+
 ## 8. Обновление и откат
 
 ```bash
@@ -273,7 +291,7 @@ sudo systemctl restart albion-bot albion-webhook
 
 | Грабли | Что делать |
 |---|---|
-| **Kill switch живёт в памяти** (H6) | После каждого рестарта уровень = 2 (Полностью). Проверьте `/status` и при необходимости настройте снова. |
+| **Kill switch** | С этапа 1 уровень хранится в `system_settings` и переживает рестарт — аварийный стоп не сбрасывается при деплое. |
 | **Двойной `SafeStreamHandler`** (R9-8) | Косметика, не влияет на работу. |
 | **Polling + webhook одновременно** | Нельзя: Telegram отдаёт 409. Перед переездом остановите локальный бот (или просто не запускайте его после `set_webhook` на VPS). |
 | **Docker-вариант** | В `docker-compose.yml` `albion.db` монтируется файлом (H5): при отсутствии файла Docker создаст **каталог** и бот упадёт. Либо создайте пустой файл заранее, либо используйте systemd (рекомендую). |

@@ -821,3 +821,19 @@ class ScheduleOverrideRepository(Repository):
             "SELECT * FROM schedule_overrides WHERE action='moved' AND new_date=?",
             (date_iso,),
         )
+
+class SystemSettingsRepository(Repository):
+    """Ключ-значение настройки системы (kill switch и т.п.) — переживают рестарт."""
+
+    async def get(self, key: str) -> str | None:
+        row = await self._fetchone(
+            "SELECT value FROM system_settings WHERE key=?", (key,))
+        return row["value"] if row else None
+
+    async def set(self, key: str, value: str) -> None:
+        await self._execute(
+            "INSERT INTO system_settings (key, value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+            "updated_at=datetime('now')",
+            (key, str(value)),
+        )
