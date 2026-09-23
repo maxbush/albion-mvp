@@ -763,13 +763,13 @@ _DEMO_RESET_TABLES = [
 
 async def _demo_reset_counts() -> dict:
     """Считает записи в таблицах демо-сброса (если таблицы нет — 0)."""
-    import aiosqlite
+    from src.db.engine import connect
     counts = {}
-    async with aiosqlite.connect(settings.database_path) as db:
+    async with connect(settings.db_dsn) as db:
         for t in _DEMO_RESET_TABLES:
             try:
-                row = await (await db.execute(f"SELECT COUNT(*) FROM {t}")).fetchone()
-                counts[t] = row[0] if row else 0
+                row = await db.fetchone(f"SELECT COUNT(*) AS c FROM {t}")
+                counts[t] = row["c"] if row else 0
             except Exception:
                 counts[t] = 0
     return counts
@@ -777,15 +777,14 @@ async def _demo_reset_counts() -> dict:
 
 async def perform_demo_reset() -> dict:
     """Фактический сброс; возвращает {таблица: сколько было до удаления}."""
-    import aiosqlite
+    from src.db.engine import connect
     counts = await _demo_reset_counts()
-    async with aiosqlite.connect(settings.database_path) as db:
+    async with connect(settings.db_dsn) as db:
         for t in _DEMO_RESET_TABLES:
             try:
                 await db.execute(f"DELETE FROM {t}")
             except Exception:
                 pass
-        await db.commit()
     logger.info("Demo reset performed: %s", counts)
     return counts
 
@@ -883,10 +882,12 @@ async def cmd_incidents(upd: Update, _ctx) -> None:
         if not ids:
             return {}
         ph = ", ".join("?" for _ in ids)
+        # CAST AS TEXT + str-параметры — portable sqlite/PG (PR3).
         rows = await WorkflowRepository(repo.db_path)._fetchall(
-            "SELECT json_extract(data, '$.incident_id') AS inc_id, data "
-            "FROM workflow_instances WHERE json_extract(data, '$.incident_id') IN (" + ph + ")",
-            tuple(ids))
+            "SELECT CAST(json_extract(data, '$.incident_id') AS TEXT) AS inc_id, data "
+            "FROM workflow_instances "
+            "WHERE CAST(json_extract(data, '$.incident_id') AS TEXT) IN (" + ph + ")",
+            tuple(str(i) for i in ids))
         out: dict[int, str] = {}
         for r in rows:
             try:

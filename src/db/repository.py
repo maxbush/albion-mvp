@@ -2,36 +2,36 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-import aiosqlite
-
 from src.config import settings
+from src.db.engine import connect, is_postgres
 
 # SQLite использует datetime('now') = UTC. Это правильно.
 # execute_at/locked_until храним как RFC3339 ISO-текст с timezone.
 # Для сравнения используем julianday(...), а не лексикографическое сравнение строк.
+# PR3: тот же SQL исполняется и на Postgres — translate_qmarks + compat-
+# функции в src/db/engine.py (init_db ставит их на стороне PG).
 
 
 class Repository:
     def __init__(self, db_path: str | None = None):
-        self.db_path = db_path or settings.database_path
+        self.db_path = db_path or settings.db_dsn
 
     async def _execute(self, sql: str, params: tuple = ()):
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            c = await db.execute(sql, params)
-            await db.commit()
-            return c
+        async with connect(self.db_path) as db:
+            return await db.execute(sql, params)
+
+    async def _insert(self, sql: str, params: tuple = (), id_col: str = "id"):
+        """INSERT и вернуть id новой строки (sqlite lastrowid / PG RETURNING)."""
+        async with connect(self.db_path) as db:
+            return await db.insert(sql, params, id_col)
 
     async def _fetchone(self, sql: str, params: tuple = ()) -> dict | None:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            row = await (await db.execute(sql, params)).fetchone()
-            return dict(row) if row else None
+        async with connect(self.db_path) as db:
+            return await db.fetchone(sql, params)
 
     async def _fetchall(self, sql: str, params: tuple = ()) -> list[dict]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            return [dict(r) for r in await (await db.execute(sql, params)).fetchall()]
+        async with connect(self.db_path) as db:
+            return await db.fetchall(sql, params)
 
 
 class UserRepository(Repository):
@@ -39,10 +39,10 @@ class UserRepository(Repository):
         return await self._fetchone("SELECT * FROM users WHERE telegram_id = ?", (tg,))
 
     async def create(self, tg: str, role: str, name: str, **kw) -> int:
-        return (await self._execute(
+        return await self._insert(
             "INSERT INTO users (telegram_id,role,name,username,phone,language) VALUES (?,?,?,?,?,?)",
             (tg, role, name, kw.get("username"), kw.get("phone"), kw.get("language", "ru")),
-        )).lastrowid
+        )
 
     async def get(self, uid: int) -> dict | None:
         return await self._fetchone("SELECT * FROM users WHERE id = ?", (uid,))
@@ -103,7 +103,7 @@ class IncidentRepository(Repository):
     async def create(self, **kw) -> int:
         cols = ", ".join(kw.keys())
         ph = ", ".join("?" for _ in kw)
-        return (await self._execute(f"INSERT INTO incidents ({cols}) VALUES ({ph})", tuple(kw.values()))).lastrowid
+        return await self._insert(f"INSERT INTO incidents ({cols}) VALUES ({ph})", tuple(kw.values()))
 
     async def get(self, iid: int) -> dict | None:
         return await self._fetchone("SELECT * FROM incidents WHERE id = ?", (iid,))
@@ -120,10 +120,10 @@ class IncidentRepository(Repository):
 
 class NotificationRepository(Repository):
     async def create(self, rid: int, type_: str, content: str, channel: str = "telegram") -> int:
-        return (await self._execute(
+        return await self._insert(
             "INSERT INTO notifications (recipient_id,type,channel,content,status) VALUES (?,?,?,?,'queued')",
             (rid, type_, channel, content),
-        )).lastrowid
+        )
 
     async def mark_sent(self, nid: int, channel: str | None = None) -> None:
         await self._execute(
@@ -138,10 +138,10 @@ class NotificationRepository(Repository):
 
 class WorkflowRepository(Repository):
     async def create(self, wtype: str, state: str = "pending", data: dict | None = None) -> int:
-        return (await self._execute(
+        return await self._insert(
             "INSERT INTO workflow_instances (workflow_type,state,data) VALUES (?,?,?)",
             (wtype, state, json.dumps(data or {})),
-        )).lastrowid
+        )
 
     async def find_by_json(
         self,
@@ -159,10 +159,15 @@ class WorkflowRepository(Repository):
         Заменяет LIKE-поиск по сериализованному JSON. LIKE-подстрока
         ('%"incident_id": 5%') матчила и 5, и 55 → resolve_absence(5) отменял
         workflow инцидента 55 (молчаливая потеря эскалации). json_extract
-        сравнивает значение ТОЧНО, с учётом типа (int/str)."""
+        сравнивает значение ТОЧНО, с учётом типа (int/str).
+
+        PR3: сравнение приведено к TEXT с обеих сторон — portable между
+        sqlite (json_extract → int/str) и PG (json_extract → text)."""
         sql = "SELECT * FROM workflow_instances"
-        conds = ["json_extract(data, ?) = ?"]
-        params: list = [f"$.{field}", value]
+        conds = ["CAST(json_extract(data, ?) AS TEXT) = CAST(? AS TEXT)"]
+        # str(value): asyncpg строго типизирует параметры — int не пройдёт
+        # в CAST($n AS TEXT) как есть.
+        params: list = [f"$.{field}", str(value)]
         if state:
             conds.append("state = ?")
             params.append(state)
@@ -209,10 +214,10 @@ class WorkflowRepository(Repository):
 
 class LeadRepository(Repository):
     async def create(self, msg: str, extracted: dict | None = None, source: str = "telegram") -> int:
-        return (await self._execute(
+        return await self._insert(
             "INSERT INTO leads (source,raw_message,extracted_data) VALUES (?,?,?)",
             (source, msg, json.dumps(extracted or {})),
-        )).lastrowid
+        )
 
     async def get(self, lid: int) -> dict | None:
         row = await self._fetchone("SELECT * FROM leads WHERE id = ?", (lid,))
@@ -268,36 +273,33 @@ class ScheduledActionRepository(Repository):
             "WHERE status='running' AND julianday(locked_until) < julianday('now') AND attempts < 3"
         )
 
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            rows = await (await db.execute(
+        async with connect(self.db_path) as db:
+            rows = await db.fetchall(
                 "SELECT id FROM scheduled_actions "
                 "WHERE status='pending' AND julianday(execute_at) <= julianday('now') AND attempts < 3 "
                 "LIMIT ?",
                 (limit,),
-            )).fetchall()
+            )
             ids = [r["id"] for r in rows]
             if not ids:
                 return []
             claimed = []
             for aid in ids:
-                cursor = await db.execute(
+                res = await db.execute(
                     f"UPDATE scheduled_actions SET status='running', attempts=attempts+1, "
                     f"locked_until=datetime('now','+{SCHEDULED_LOCK_MINUTES} minutes') "
                     "WHERE id=? AND status='pending'",
                     (aid,),
                 )
-                if cursor.rowcount > 0:
+                if res.rowcount > 0:
                     claimed.append(aid)
             if not claimed:
                 return []
             placeholders = ",".join("?" for _ in claimed)
-            result = await (await db.execute(
+            return await db.fetchall(
                 f"SELECT * FROM scheduled_actions WHERE id IN ({placeholders})",
                 tuple(claimed),
-            )).fetchall()
-            await db.commit()
-            return [dict(r) for r in result]
+            )
 
     async def mark_done(self, aid: str) -> None:
         await self._execute(
@@ -342,10 +344,10 @@ class ScheduledActionRepository(Repository):
 
 class DeadLetterQueueRepository(Repository):
     async def put(self, source: str, event_type: str | None, payload: dict, error: str) -> int:
-        return (await self._execute(
+        return await self._insert(
             "INSERT INTO dead_letter_queue (source, event_type, payload, error) VALUES (?,?,?,?)",
             (source, event_type, json.dumps(payload), error[:1000]),
-        )).lastrowid
+        )
 
     async def count(self) -> int:
         row = await self._fetchone("SELECT COUNT(*) as cnt FROM dead_letter_queue")
@@ -360,10 +362,10 @@ class WebhookEventRepository(Repository):
         raw_s = raw_s[:8000]
         if note:
             raw_s = raw_s + f"\n[note] {note}"
-        return (await self._execute(
+        return await self._insert(
             "INSERT INTO webhook_events (event_type, signature_ok, headers, raw) VALUES (?,?,?,?)",
             (event_type, int(signature_ok), json.dumps(headers or {}, ensure_ascii=False), raw_s),
-        )).lastrowid
+        )
 
     async def list_recent(self, limit: int = 10) -> list[dict]:
         return await self._fetchall(
@@ -641,10 +643,15 @@ class MeritHubEnrollmentRepository(Repository):
         student_name: str | None = None,
         role: str = "student",
     ) -> None:
+        # Portable upsert (sqlite ≥3.24 и PG одинаково читают ON CONFLICT).
         await self._execute(
-            "INSERT OR REPLACE INTO merithub_enrollments "
+            "INSERT INTO merithub_enrollments "
             "(class_id, merithub_user_id, client_user_id, parent_telegram_id, student_name, role) "
-            "VALUES (?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(class_id, merithub_user_id) DO UPDATE SET "
+            "client_user_id=excluded.client_user_id, "
+            "parent_telegram_id=excluded.parent_telegram_id, "
+            "student_name=excluded.student_name, role=excluded.role",
             (class_id, merithub_user_id, client_user_id, parent_telegram_id, student_name, role),
         )
 
@@ -675,7 +682,8 @@ class IdempotencyRepository(Repository):
 
     async def save(self, key: str, handler: str, response: str | None = None) -> None:
         await self._execute(
-            "INSERT OR IGNORE INTO idempotency_keys (key, handler, response) VALUES (?, ?, ?)",
+            "INSERT INTO idempotency_keys (key, handler, response) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO NOTHING",
             (key, handler, response),
         )
 
