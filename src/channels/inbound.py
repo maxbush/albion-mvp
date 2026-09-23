@@ -6,6 +6,7 @@ Webhook-процесс (src/api/whatsapp.py) кладёт немедленную
 MeritHub webhook → scheduler (см. DECISIONS.md D3/D4).
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -103,3 +104,29 @@ async def _autobind_contact(channel: str, address: str,
     await ucr.set(user["id"], "whatsapp", phone, preferred=False)
     logger.info("Autobound whatsapp %s → user %s", phone, user["id"])
     return {"user_id": user["id"], "channel": channel, "address": address}
+
+
+_BTN_MAP_PREFIX = "wa_btns:"
+
+
+async def save_button_map(phone: str, callback_ids: list[str],
+                          db_path: str | None = None) -> None:
+    """Адрес → последние нумерованные callback-кнопки.
+
+    Общий маппинг WA-провайдеров: нумерованные опции («Ответьте цифрой»)
+    у Meta-шаблона и у Twilio одинаково разворачиваются webhook'ом обратно
+    в исходный callback_id.
+    """
+    from src.db.repository import SystemSettingsRepository
+    await SystemSettingsRepository(db_path).set(
+        f"{_BTN_MAP_PREFIX}{normalize_phone(phone)}", json.dumps(callback_ids))
+
+
+async def load_button_map(phone: str, db_path: str | None = None) -> list[str]:
+    from src.db.repository import SystemSettingsRepository
+    raw = await SystemSettingsRepository(db_path).get(
+        f"{_BTN_MAP_PREFIX}{normalize_phone(phone)}")
+    try:
+        return json.loads(raw) if raw else []
+    except json.JSONDecodeError:
+        return []

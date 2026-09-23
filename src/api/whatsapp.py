@@ -17,7 +17,7 @@ import logging
 from fastapi import Request
 from fastapi.responses import PlainTextResponse
 
-from src.channels.inbound import enqueue_inbound
+from src.channels.inbound import enqueue_inbound, load_button_map
 from src.config import settings
 from src.db.repository import IdempotencyRepository, WebhookEventRepository
 
@@ -120,15 +120,27 @@ def register_whatsapp_routes(app) -> None:
             key = f"wa_msg:{it['wamid']}" if it["wamid"] else None
             if key and await idem.exists(key):
                 continue
+            # Нумерованный ответ на опции шаблона («Ответьте цифрой») →
+            # обратно в callback_id через общий button-map (wa_btns:*).
+            kind = "inbound_text" if it["kind"] == "text" else "inbound_callback"
+            callback_id = it.get("callback_id")
+            text = it.get("text")
+            if callback_id is None and text and text.isdigit() and len(text) <= 2:
+                cb_ids = await load_button_map(it["phone"])
+                idx = int(text) - 1
+                if 0 <= idx < len(cb_ids):
+                    callback_id = cb_ids[idx]
+                    text = None
+                    kind = "inbound_callback"
             # сначала enqueue — иначе падение между save и enqueue теряет
             # сообщение навсегда (Meta-повтор отсекается ключом идемпотентности)
             await enqueue_inbound(
-                "inbound_text" if it["kind"] == "text" else "inbound_callback",
+                kind,
                 channel="whatsapp",
                 address=it["phone"],
                 payload={
-                    "text": it.get("text"),
-                    "callback_id": it.get("callback_id"),
+                    "text": text,
+                    "callback_id": callback_id,
                     "wamid": it["wamid"],
                     "name": it.get("name"),
                 },

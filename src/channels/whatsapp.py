@@ -149,7 +149,9 @@ class WhatsAppSender(ChannelSender):
             return datetime.now(timezone.utc) - marked < _WA_WINDOW
         except Exception:
             logger.exception("wa_window check failed for %s", address)
-            return True  # при ошибке чтения не блокируем отправку
+            # fail closed: неизвестное состояние окна → шаблон, а не
+            # free-form, который Meta гарантированно отклонит
+            return False
 
     async def _send_template(
         self,
@@ -159,25 +161,30 @@ class WhatsAppSender(ChannelSender):
     ) -> dict:
         """Business-initiated уведомление approved-шаблоном.
 
-        Шаблон: body '{{1}}' + до 3 quick_reply кнопок (payload — наш
-        callback_id, Meta вернёт его в webhook как button.payload).
-        Кнопок больше 3 — лишние уходят нумерованным списком в тексте.
+        Шаблон: body '{{1}}' = текст + нумерованные опции кнопок.
+        Quick-reply кнопки шаблона НЕ используем: их подписи статичны
+        (заданы в шаблоне при approve), а наши payload'ы динамичны —
+        рассинхрон label/payload вводил в заблуждение. Вместо них —
+        «Ответьте цифрой» + общий button-map (wa_btns:*), который
+        webhook разворачивает обратно в callback_id. Заодно решает
+        лимит ≤3 кнопок и единый путь с Twilio-провайдером.
         """
-        shown = cb_buttons[:_WA_MAX_REPLY_BUTTONS]
-        extra = cb_buttons[_WA_MAX_REPLY_BUTTONS:]
-        if extra:
-            opts = "\n".join(f"{i + _WA_MAX_REPLY_BUTTONS + 1}. {b.label}"
-                             for i, b in enumerate(extra))
-            text = f"{text}\n\n{opts}"
+        if cb_buttons:
+            opts = "\n".join(f"{i}. {b.label}"
+                             for i, b in enumerate(cb_buttons, 1))
+            text = f"{text}\n\nОтветьте цифрой:\n{opts}"
+            try:
+                from src.channels.inbound import save_button_map
+                await save_button_map(
+                    address, [b.callback_id for b in cb_buttons],
+                    db_path=self._db_path)
+            except Exception:
+                logger.exception("wa: не удалось сохранить button map для %s",
+                                 address)
         components: list[dict] = [{
             "type": "body",
             "parameters": [{"type": "text", "text": text[:1024]}],
         }]
-        for i, b in enumerate(shown):
-            components.append({
-                "type": "button", "sub_type": "quick_reply", "index": str(i),
-                "parameters": [{"type": "payload", "payload": b.callback_id[:128]}],
-            })
         return await self._client.send_template(
             address, settings.whatsapp_notification_template,
             settings.whatsapp_template_lang, components)

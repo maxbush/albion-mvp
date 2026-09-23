@@ -1,5 +1,5 @@
 """PR10 — шаблонный режим исходящих WA-уведомлений: 24h-окно + approved
-template с quick_reply payload'ами."""
+template с нумерованными опциями в body (общий button-map)."""
 
 import json
 from datetime import datetime, timedelta, timezone
@@ -82,36 +82,38 @@ async def test_no_template_configured_always_freeform(db, monkeypatch):
 # ── Кнопки в шаблоне ─────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_template_quick_reply_payloads(db, monkeypatch):
-    """callback_id уезжают в template как quick_reply payload —
-    Meta вернёт их как button.payload во входящем."""
+async def test_template_buttons_numbered_and_mapped(db, monkeypatch):
+    """Опции шаблона — нумерованные в body {{1}} + общий button-map
+    (label'ы статичных quick_reply не используем — рассинхрон с payload)."""
     monkeypatch.setattr("src.config.settings.whatsapp_notification_template",
                         "albion_notify")
+    from src.channels.inbound import load_button_map
     client = MockWhatsAppClient()
     buttons = [ChannelButton(label="Да", callback_id="resolve:1:abc"),
                ChannelButton(label="Нет", callback_id="resolve:1:abc:no")]
     await WhatsAppSender(client, db_path=db).send("+7999", "Был?", buttons)
     comps = client.sent[0]["components"]
-    btns = [c for c in comps if c["type"] == "button"]
-    assert [b["parameters"][0]["payload"] for b in btns] == [
+    assert not [c for c in comps if c["type"] == "button"]
+    body = comps[0]["parameters"][0]["text"]
+    assert "1. Да" in body and "2. Нет" in body
+    assert await load_button_map("+7999", db_path=db) == [
         "resolve:1:abc", "resolve:1:abc:no"]
-    assert all(b["sub_type"] == "quick_reply" for b in btns)
 
 
 @pytest.mark.asyncio
-async def test_template_extra_buttons_go_text(db, monkeypatch):
-    """>3 кнопок: первые 3 — quick_reply, остальные нумерованы в body."""
+async def test_template_extra_buttons_numbered(db, monkeypatch):
+    """>3 опций тоже работают: все уходят нумерованным списком в body."""
     monkeypatch.setattr("src.config.settings.whatsapp_notification_template",
                         "albion_notify")
+    from src.channels.inbound import load_button_map
     client = MockWhatsAppClient()
     buttons = [ChannelButton(label=f"Опц{i}", callback_id=f"pick:{i}")
                for i in range(5)]
     await WhatsAppSender(client, db_path=db).send("+7999", "Выбор", buttons)
-    comps = client.sent[0]["components"]
-    btns = [c for c in comps if c["type"] == "button"]
-    assert len(btns) == 3
-    body = comps[0]["parameters"][0]["text"]
+    body = client.sent[0]["components"][0]["parameters"][0]["text"]
     assert "4. Опц3" in body and "5. Опц4" in body
+    assert await load_button_map("+7999", db_path=db) == [
+        f"pick:{i}" for i in range(5)]
 
 
 @pytest.mark.asyncio
