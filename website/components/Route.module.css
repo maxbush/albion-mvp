@@ -1,0 +1,203 @@
+.route {
+  position: relative;
+  padding-top: clamp(90px, 14vh, 170px);
+  background: var(--paper);
+}
+
+.head {
+  margin-bottom: clamp(60px, 9vh, 110px);
+}
+
+.h2 {
+  font-family: var(--font-display);
+  font-weight: 300;
+  font-size: clamp(40px, 6vw, 88px);
+  line-height: 1;
+  letter-spacing: -0.01em;
+  margin: 22px 0 26px;
+  max-width: 14ch;
+}
+
+.intro {
+  max-width: 52ch;
+  color: var(--ink-soft);
+  font-size: clamp(15px, 1.2vw, 18px);
+  line-height: 1.65;
+  margin: 0;
+}
+
+.stack {
+  position: relative;
+}
+
+.slot {
+  position: relative;
+  min-height: 105vh;
+  padding-bottom: 6vh;
+}
+
+.dossier {
+  position: sticky;
+  top: calc(9vh + var(--i) * 18px);
+  width: min(92vw, 1180px);
+  min-height: 66vh;
+  margin-inline: auto;
+  background: #faf7ef;
+  border: 1px solid var(--line);
+  box-shadow: 0 34px 90px -46px rgba(23, 33, 29, 0.42);
+  padding: clamp(26px, 4vw, 56px);
+  display: grid;
+  grid-template-columns: 1.02fr 0.98fr;
+  gap: clamp(26px, 4vw, 64px);
+  transform: rotate(var(--rot, 0deg));
+  transform-origin: 50% 20%;
+  will-change: transform;
+}
+
+/* slight lateral offsets so the pile reads as physical */
+.slot:nth-child(odd) .dossier {
+  margin-left: max(var(--gutter), calc((100vw - 1180px) / 2 - 40px));
+}
+.slot:nth-child(even) .dossier {
+  margin-right: max(var(--gutter), calc((100vw - 1180px) / 2 - 30px));
+  margin-left: auto;
+}
+.slot:nth-child(2) .dossier { width: min(92vw, 1060px); }
+.slot:nth-child(4) .dossier { width: min(92vw, 1120px); }
+
+.dBody {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dTop {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 20px;
+  border-top: 1px solid var(--ink);
+  padding-top: 16px;
+}
+
+.dIndex {
+  font-family: var(--font-display);
+  font-size: clamp(46px, 5vw, 74px);
+  font-weight: 300;
+  line-height: 0.9;
+  color: var(--ink);
+  font-variant-numeric: lining-nums;
+}
+
+.dLabel {
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  text-align: right;
+}
+
+.dTitle {
+  font-family: var(--font-display);
+  font-weight: 300;
+  font-size: clamp(32px, 3.6vw, 56px);
+  line-height: 1.04;
+  letter-spacing: -0.01em;
+  margin: auto 0 22px;
+  padding-top: 30px;
+}
+
+.dDesc {
+  color: var(--ink-soft);
+  font-size: clamp(14px, 1.1vw, 17px);
+  line-height: 1.65;
+  margin: 0 0 26px;
+  max-width: 42ch;
+}
+
+.dNote {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: clamp(15px, 1.3vw, 19px);
+  color: var(--green);
+  margin: 0 0 26px;
+}
+
+.dMeta {
+  margin-top: auto;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.dFigure {
+  position: relative;
+  margin: 0;
+  border: 1px solid var(--line);
+  background: var(--paper-2);
+  overflow: hidden;
+  min-height: 320px;
+}
+
+.dFigure .imgWrap {
+  position: absolute;
+  inset: -8% 0;
+}
+
+.dFigure img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  will-change: transform;
+}
+
+.dCaption {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(23, 33, 29, 0.55);
+  background: rgba(250, 247, 239, 0.85);
+  padding: 4px 8px;
+}
+
+.veil {
+  position: absolute;
+  inset: 0;
+  background: #faf7ef;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (max-width: 900px) {
+  .dossier {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+
+  .dFigure {
+    min-height: 42vw;
+    order: -1;
+  }
+
+  .dTitle {
+    margin-top: 8px;
+    padding-top: 8px;
+  }
+
+  .slot {
+    min-height: 92vh;
+  }
+
+  .dossier {
+    top: calc(10vh + var(--i) * 12px);
+  }
+}

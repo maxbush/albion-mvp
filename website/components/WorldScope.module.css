@@ -1,0 +1,157 @@
+.scene {
+  position: relative;
+  height: 300vh;
+}
+
+.sticky {
+  position: sticky;
+  top: 0;
+  height: 100svh;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+.rail {
+  position: absolute;
+  top: clamp(64px, 10vh, 110px);
+  left: var(--gutter);
+  z-index: 3;
+}
+
+.stage {
+  position: absolute;
+  inset: 0;
+}
+
+.mapWrap {
+  position: absolute;
+  inset: 6vh 4vw;
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+.mapWrap img {
+  object-fit: contain;
+}
+
+.dot {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 6px rgba(0, 75, 73, 0.12);
+  transform: translate(-50%, -50%);
+  will-change: opacity;
+}
+
+.ox {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(56vmin, 540px);
+  aspect-ratio: 1 / 1;
+  translate: -50% -50%;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  box-shadow: 0 40px 110px -50px rgba(23, 33, 29, 0.5);
+  will-change: transform, opacity;
+  z-index: 2;
+}
+
+.steps {
+  position: absolute;
+  left: var(--gutter);
+  bottom: clamp(56px, 10vh, 120px);
+  max-width: 560px;
+  z-index: 3;
+}
+
+.step {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  will-change: transform, opacity;
+}
+
+.step:first-child {
+  position: relative;
+  bottom: auto;
+}
+
+.stepName {
+  font-family: var(--font-display);
+  font-weight: 300;
+  font-size: clamp(44px, 6.5vw, 96px);
+  line-height: 0.95;
+  margin: 0 0 16px;
+  letter-spacing: -0.015em;
+}
+
+.stepText {
+  margin: 0;
+  font-size: clamp(14px, 1.15vw, 17px);
+  color: var(--ink-soft);
+  max-width: 44ch;
+  line-height: 1.6;
+}
+
+.static {
+  padding: clamp(90px, 14vh, 160px) 0;
+}
+
+.staticGrid {
+  margin-top: 40px;
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 40px;
+  align-items: start;
+}
+
+.staticMap {
+  border: 1px solid var(--line);
+}
+
+.staticList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.staticList li {
+  border-top: 1px solid var(--line);
+  padding: 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.staticList li:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+.staticList strong {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 24px;
+}
+
+.staticList span {
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+
+@media (max-width: 900px) {
+  .ox {
+    width: min(74vmin, 400px);
+  }
+
+  .steps {
+    bottom: 40px;
+  }
+
+  .staticGrid {
+    grid-template-columns: 1fr;
+  }
+}

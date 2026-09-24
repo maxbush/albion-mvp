@@ -1,0 +1,86 @@
+.proof {
+  padding: clamp(110px, 16vh, 190px) 0;
+  background: var(--green);
+  color: var(--paper);
+}
+
+.proof .eyebrow {
+  color: rgba(244, 241, 232, 0.55);
+}
+
+.lead {
+  max-width: 900px;
+  margin-bottom: clamp(60px, 9vh, 110px);
+}
+
+.h2 {
+  font-family: var(--font-display);
+  font-weight: 300;
+  font-size: clamp(44px, 6.5vw, 96px);
+  line-height: 1;
+  letter-spacing: -0.015em;
+  margin: 22px 0 28px;
+}
+
+.h2 em {
+  font-style: italic;
+}
+
+.intro {
+  color: rgba(244, 241, 232, 0.72);
+  font-size: clamp(15px, 1.2vw, 18px);
+  line-height: 1.65;
+  max-width: 52ch;
+  margin: 0;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: rgba(244, 241, 232, 0.18);
+  border-top: 1px solid rgba(244, 241, 232, 0.18);
+  border-bottom: 1px solid rgba(244, 241, 232, 0.18);
+}
+
+.cell {
+  background: var(--green);
+  padding: clamp(26px, 3vw, 44px) clamp(20px, 2.6vw, 36px);
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cellLabel {
+  font-size: 10.5px;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: rgba(244, 241, 232, 0.55);
+}
+
+.cellText {
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: rgba(244, 241, 232, 0.82);
+  margin: 0;
+}
+
+.cellTbc {
+  margin-top: auto;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 20px;
+  color: var(--sage);
+  letter-spacing: 0.06em;
+}
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cell {
+    min-height: 0;
+  }
+}

@@ -1,0 +1,267 @@
+.nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 18px var(--gutter);
+  transition: background-color 0.4s ease, box-shadow 0.4s ease,
+    padding 0.4s ease;
+}
+
+.nav::after {
+  content: "";
+  position: absolute;
+  left: var(--gutter);
+  right: var(--gutter);
+  bottom: 0;
+  border-top: 1px solid transparent;
+  transition: border-color 0.4s ease;
+}
+
+.scrolled {
+  background: rgba(244, 241, 232, 0.92);
+  backdrop-filter: blur(10px);
+  padding-block: 12px;
+}
+
+.scrolled::after {
+  border-color: var(--line);
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.05;
+  margin-right: auto;
+}
+
+.brandName {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 400;
+  letter-spacing: 0.16em;
+}
+
+.brandSub {
+  font-size: 9px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.desktop ul {
+  display: flex;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cat {
+  position: relative;
+}
+
+.catButton {
+  display: inline-block;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+  padding: 10px 12px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  transition: color 0.25s ease;
+}
+
+.catButton:hover,
+.cat:focus-within .catButton {
+  color: var(--ink);
+}
+
+.drop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 240px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  padding: 18px 22px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(6px);
+  transition: opacity 0.28s ease, transform 0.28s ease,
+    visibility 0s linear 0.28s;
+  box-shadow: 0 24px 60px -30px rgba(23, 33, 29, 0.35);
+}
+
+.cat:hover .drop,
+.cat:focus-within .drop {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+
+.drop ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.drop a {
+  display: block;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+  padding: 5px 0;
+  transition: color 0.2s ease, padding-left 0.25s ease;
+}
+
+.drop a:hover {
+  color: var(--green);
+  padding-left: 6px;
+}
+
+.cta {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--green);
+  border-bottom: 1px solid var(--green);
+  padding-bottom: 3px;
+  white-space: nowrap;
+  transition: color 0.25s ease, border-color 0.25s ease;
+}
+
+.cta:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.burger {
+  display: none;
+  width: 42px;
+  height: 42px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.burger span {
+  display: block;
+  width: 22px;
+  height: 1.5px;
+  background: var(--ink);
+  transition: transform 0.3s ease;
+}
+
+.burger[aria-expanded="true"] span:first-child {
+  transform: translateY(4.25px) rotate(45deg);
+}
+
+.burger[aria-expanded="true"] span:last-child {
+  transform: translateY(-4.25px) rotate(-45deg);
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  top: 0;
+  z-index: -1;
+  background: var(--paper);
+  padding: 110px var(--gutter) 40px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.overlay nav > ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.mCat {
+  border-top: 1px solid var(--line);
+}
+
+.mCat:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+.mCatButton {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: 300;
+  padding: 18px 0;
+  background: none;
+  border: 0;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.mPlus {
+  font-family: var(--font-body);
+  font-size: 18px;
+  color: var(--ink-faint);
+}
+
+.mList {
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0 0 6px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
+}
+
+.mList a {
+  display: block;
+  font-size: 15px;
+  color: var(--ink-soft);
+  padding: 7px 0 7px 14px;
+  border-left: 1px solid var(--line);
+}
+
+.mCta {
+  margin-top: 28px;
+  justify-content: center;
+}
+
+@media (max-width: 1060px) {
+  .desktop {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .nav {
+    padding-block: 14px;
+  }
+
+  .cta {
+    display: none;
+  }
+
+  .burger {
+    display: flex;
+  }
+}
